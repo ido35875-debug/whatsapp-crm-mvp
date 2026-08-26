@@ -17,6 +17,7 @@
 | `reactivate.py` | ניסוח הודעות חימום ללידים קרים + סיווג תגובות + שליחה בפועל דרך Twilio - גם כ-CLI (`--send`) וגם כפונקציה שקוראים לה מ-`/api/reactivate` ומ-`scheduler.py` | ✅ עובד |
 | `scheduler.py` | **Background Scheduler Worker** - סורק תקופתית לידים קרים לפי סף זמן פר-ורטיקל (`ecommerce`/`real_estate`, מ-`contacts.csv`) ומריץ עליהם `reactivate.py`. שני מצבי הרצה: thread בתוך `server.py` (מקומי, `python server.py`), או `scheduler_worker.py` העצמאי (APScheduler, ל-production - ראו למטה) | ✅ עובד; **dry-run בלבד כברירת מחדל** - שליחה אוטומטית אמיתית דורשת `SCHEDULER_AUTO_SEND=true` מפורש ב-`.env` (כרגע לא מוגדר) |
 | `Procfile` + `scheduler_worker.py` (2026-08-26) | פריסה לענן: `web` (Gunicorn, כמה workers) + `clock` (מנוע התזמון כתהליך עצמאי יחיד, APScheduler) | ✅ עובד; נבדק מקומית (לא ניתן להריץ Gunicorn עצמו על Windows - ראו הערה למטה) |
+| `paths.py` (2026-08-26) | `DATA_DIR` משותף - `customers.json`/`crm_data.db`/`chat_history.txt` יכולים לשבת על דיסק מתמיד בענן (`DATA_DIR` env var); ברירת מחדל = תיקיית הפרויקט, ללא שינוי מקומי | ✅ עובד ונבדק (ברירת מחדל + override) |
 | `POST /api/leads/import` (ב-`server.py`) | ייבוא לידים מ-CSV/XLSX - ממפה אוטומטית שם/טלפון/עסק/מקור/סטטוס (עברית או אנגלית), upsert לפי טלפון מנורמל (E.164) + tenant דרך `import_lead` ב-`extract.py`. כפתור "📥 ייבוא לידים" ב-`index.html` | ✅ עובד |
 | הקשחת `server.py` (2026-08-25) | משתני סביבה (PORT/HOST/FLASK_DEBUG/LOG_LEVEL/VERIFY_TWILIO_SIGNATURE), לוגים מסודרים (קונסולה + `server_error.log` מתגלגל), אימות חתימת Twilio (`X-Twilio-Signature`) ל-`/webhook`, ProxyFix מאחורי ngrok | ✅ עובד ונבדק דרך ngrok אמיתי - ראו הפירוט תחת "הקשחת production" למטה |
 
@@ -135,13 +136,20 @@
   `server:app` מ-cwd שונה לגמרי, וגם קריאה אמיתית מ-`crm_data.db` דרך אותו ייבוא -
   שניהם הצליחו ומצאו את הנתונים האמיתיים, לא קבצים ריקים חדשים.
 
-**⚠️ מגבלה קריטית שלא נפתרה - קריאה חובה לפני פריסה אמיתית לענן:**
-`customers.json` ו-`crm_data.db` הם קבצים על דיסק מקומי. **ברוב פלטפורמות הענן
-(בייחוד Heroku) מערכת הקבצים היא ephemeral** - מתאפסת בכל דיפלוי/ריסטארט/סקייל.
-המשמעות: **כל נתוני הלידים וההודעות יימחקו** בכל דיפלוי מחדש, אלא אם משתמשים בדיסק
-מתמיד (Render/Railway persistent disk, AWS EBS וכו') או עוברים ל-DB מנוהל אמיתי
-(Postgres וכו') - **לא מומש כאן**, מעבר לסקופ הבקשה. זה נכון בין אם הנתיב הפנימי
-תקין (וזה כן) ובין אם לא - זו מגבלת הפלטפורמה, לא של הקוד.
+**✅ עודכן 2026-08-26 - מגבלת ה-ephemeral filesystem טופלה חלקית:** `customers.json`,
+`crm_data.db` ו-`chat_history.txt` (State שמשתנה בזמן ריצה) עוברים עכשיו דרך `paths.py`
+חדש - `DATA_DIR` (env var, ברירת מחדל: תיקיית הפרויקט - **אין שינוי בהתנהגות מקומית**).
+ב-Render, מגדירים Disk עם Mount Path (למשל `/data`) ו-`DATA_DIR=/data` באותו ערך -
+כך הנתונים שורדים בין דיפלויים. `contacts.csv` (seed/קלט, לא state) ו-`server_error.log`
+(לוג טכני, לא קריטי לשימור) **נשארים** בתיקיית הפרויקט במכוון - ראו הערת הראש של
+`paths.py`. **נבדק בפועל**, לא רק בקוד: (1) ברירת מחדל בלי `DATA_DIR` - שלושת הנתיבים
+זהים ל-100% למה שהיו לפני השינוי (בדיקת equality ישירה); (2) עם `DATA_DIR` מוצבע
+לתיקייה נפרדת - קובץ שנוצר דרך `extract.upsert_customer` נחת שם ולא ב-`customers.json`
+האמיתי של הפרויקט (וידאתי את שניהם); (3) הרצה מלאה מחדש של השרת + הבדיקה הפונקציונלית
+המלאה (webhook חתום + 7 בדיקות נוספות) - עברה 100%, אפס שגיאות בלוג.
+**עדיין לא מומש:** מעבר ל-DB מנוהל אמיתי (Postgres וכו') - `DATA_DIR` פותר את בעיית
+ה-ephemeral filesystem, אבל `crm_data.db` נשאר SQLite קובץ-יחיד (לא תומך בכתיבה
+מקבילית אמיתית בעומס, גם עם דיסק מתמיד) - זה עדיין מחוץ לסקופ שהתבקש.
 
 ## עקרונות משותפים לכל הסוכנים
 

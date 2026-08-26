@@ -83,6 +83,7 @@ LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 VERIFY_TWILIO_SIGNATURE = os.environ.get("VERIFY_TWILIO_SIGNATURE", "true").strip().lower() == "true"
 
 BASE_DIR = Path(__file__).parent
+from paths import DATA_DIR  # noqa: E402 - chat_history.txt (state) נשמר כאן; server_error.log/index.html נשארים ב-BASE_DIR
 
 # ---- לוגים: קונסולה + קובץ מתגלגל (לא גדל לאינסוף) ----
 logger = logging.getLogger("whatsapp_crm")
@@ -139,7 +140,7 @@ def handle_uncaught_exception(exc):
 
 
 SUPPORTED_SOURCES = {"whatsapp", "instagram", "facebook"}
-CHAT_HISTORY_FILE = BASE_DIR / "chat_history.txt"
+CHAT_HISTORY_FILE = DATA_DIR / "chat_history.txt"
 
 
 def parse_incoming() -> tuple[str, str, str]:

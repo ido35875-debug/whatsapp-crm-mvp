@@ -18,7 +18,9 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-CUSTOMERS_FILE = Path(__file__).parent / "customers.json"
+from paths import DATA_DIR  # noqa: E402 - חייב אחרי load_dotenv (DATA_DIR עצמו נקרא מ-os.environ)
+
+CUSTOMERS_FILE = DATA_DIR / "customers.json"
 DEFAULT_TENANT_ID = "default"  # מזהה העסק כשאין tenant_id מפורש (תאימות לאחור)
 
 EXTRACTION_PROMPT = """\

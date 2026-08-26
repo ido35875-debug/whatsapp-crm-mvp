@@ -26,8 +26,9 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # מפורש - לא ת�
 import db
 import reactivate
 from extract import DEFAULT_TENANT_ID, _customer_key, load_customers
+from paths import DATA_DIR
 
-CHAT_HISTORY_FILE = Path(__file__).parent / "chat_history.txt"
+CHAT_HISTORY_FILE = DATA_DIR / "chat_history.txt"
 
 SCAN_INTERVAL_SECONDS = int(os.environ.get("SCHEDULER_INTERVAL_SECONDS", "3600"))
 AUTO_SEND = os.environ.get("SCHEDULER_AUTO_SEND", "false").strip().lower() == "true"

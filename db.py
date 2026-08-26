@@ -8,9 +8,10 @@
 
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 
-DB_FILE = Path(__file__).parent / "crm_data.db"
+from paths import DATA_DIR
+
+DB_FILE = DATA_DIR / "crm_data.db"
 
 _MIGRATIONS = {
     "tenant_id": "ALTER TABLE messages ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'",
