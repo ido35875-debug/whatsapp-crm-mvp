@@ -54,11 +54,14 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
 # חייב לרוץ לפני ה-import-ים הבאים - db/reactivate/scheduler/extract קוראים os.environ בזמן טעינה
 
-import db
-import reactivate
-import scheduler
-
 try:
+    # כל הייבואים האלה - כולל db/reactivate/scheduler, לא רק extract/whatsapp_send
+    # ישירות - תלויים ב-extract.py, שדורש ANTHROPIC_API_KEY בזמן טעינה (os.environ[...]).
+    # לכן כל השרשרת חייבת להיות בתוך אותו try/except - אחרת ה-KeyError קורה כבר
+    # ב-"import reactivate" למשל, לפני שמגיעים בכלל לבלוק שתופס אותו.
+    import db
+    import reactivate
+    import scheduler
     from extract import (
         DEFAULT_TENANT_ID,
         import_lead,
@@ -70,9 +73,11 @@ try:
     )
     from whatsapp_send import TWILIO_AUTH_TOKEN, _to_e164, send_whatsapp_message
 except KeyError as exc:
-    # משתנה סביבה קריטי חסר (למשל ANTHROPIC_API_KEY) - נכשלים מיד עם הודעה ברורה,
-    # לא עם KeyError גולמי שקשה להבין ממנו מה בדיוק חסר
-    print(f"שגיאת הגדרה: משתנה סביבה חסר - {exc}. בדקו את קובץ .env.", file=sys.stderr)
+    # משתנה סביבה קריטי חסר (כרגע רק ANTHROPIC_API_KEY נדרש קשיח - os.environ[...] ולא
+    # os.environ.get(...)) - נכשלים מיד עם הודעה ברורה, לא עם traceback גולמי שקשה
+    # להבין ממנו מה בדיוק חסר. ב-Render: זה בדיוק מה שקורה אם שוכחים להגדיר משתנה
+    # סביבה בדשבורד לפני ה-deploy הראשון - "Exit status 1" בלוג הוא הסימפטום החיצוני.
+    print(f"שגיאת הגדרה: משתנה סביבה חסר - {exc}. בדקו את משתני הסביבה (.env מקומית / Render Environment).", file=sys.stderr)
     sys.exit(1)
 
 # ---- הגדרות מ-.env (עם ברירות מחדל בטוחות) ----
