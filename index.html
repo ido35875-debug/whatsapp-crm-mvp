@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CRM לידים</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #ffffff;
+    --surface-2: #f9f9f7;
+    --surface-3: #f2f1ee;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --border: rgba(11,11,11,0.10);
+    --gridline: #e1e0d9;
+    --accent: #2a78d6;
+    --accent-soft: #e8f0fb;
+    --status-good: #0ca30c;
+    --status-good-soft: #e4f6e4;
+    --status-warning: #b5790a;
+    --status-warning-soft: #fdf1da;
+    --status-serious: #ec835a;
+    --status-serious-soft: #fdeae2;
+    --status-critical: #d03b3b;
+    --status-critical-soft: #fbe7e7;
+    --shadow: 0 8px 24px rgba(11,11,11,0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --surface-2: #0d0d0d;
+      --surface-3: #232322;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --border: rgba(255,255,255,0.10);
+      --gridline: #2c2c2a;
+      --accent: #3987e5;
+      --accent-soft: #1c2c40;
+      --status-good: #0ca30c;
+      --status-good-soft: #133313;
+      --status-warning: #fab219;
+      --status-warning-soft: #3a2c0d;
+      --status-serious: #ec835a;
+      --status-serious-soft: #3a2419;
+      --status-critical: #e66767;
+      --status-critical-soft: #3a1a1a;
+      --shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+  }
+  [data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --surface-2: #0d0d0d;
+    --surface-3: #232322;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --border: rgba(255,255,255,0.10);
+    --gridline: #2c2c2a;
+    --accent: #3987e5;
+    --accent-soft: #1c2c40;
+    --status-good: #0ca30c;
+    --status-good-soft: #133313;
+    --status-warning: #fab219;
+    --status-warning-soft: #3a2c0d;
+    --status-serious: #ec835a;
+    --status-serious-soft: #3a2419;
+    --status-critical: #e66767;
+    --status-critical-soft: #3a1a1a;
+    --shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--surface-2);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    min-height: 100vh;
+  }
+
+  .page { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
+
+  header.top {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; margin-bottom: 24px; flex-wrap: wrap;
+  }
+  header.top h1 { font-size: 22px; margin: 0 0 4px; }
+  header.top p { margin: 0; color: var(--text-secondary); font-size: 14px; }
+  .top-actions { display: flex; gap: 8px; }
+
+  button {
+    font-family: inherit; font-size: 13px; cursor: pointer;
+    border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface-1); color: var(--text-primary);
+    padding: 8px 14px; transition: background .15s;
+  }
+  button:hover { background: var(--surface-3); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover { filter: brightness(1.08); }
+
+  .stat-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px; margin-bottom: 24px;
+  }
+  .stat-tile {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 16px; border-inline-start: 3px solid var(--tile-color, var(--accent));
+  }
+  .stat-tile .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat-tile .label { font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; }
+
+  .import-status {
+    display: none; font-size: 13px; padding: 10px 14px; border-radius: 8px;
+    margin-bottom: 16px; background: var(--status-good-soft); color: var(--status-good);
+  }
+  .import-status.show { display: block; }
+  .import-status.error { background: var(--status-critical-soft); color: var(--status-critical); }
+
+  .toolbar {
+    display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .toolbar input, .toolbar select {
+    font-family: inherit; font-size: 13.5px; padding: 9px 12px;
+    border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface-1); color: var(--text-primary);
+  }
+  .toolbar input { flex: 1; min-width: 200px; }
+
+  .table-card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden; box-shadow: var(--shadow);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  thead th {
+    text-align: start; padding: 12px 16px; font-weight: 600;
+    color: var(--text-secondary); font-size: 12px;
+    border-bottom: 1px solid var(--gridline); white-space: nowrap;
+  }
+  tbody td { padding: 12px 16px; border-bottom: 1px solid var(--gridline); vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-3); }
+  td.name { font-weight: 600; }
+  td.muted, .muted { color: var(--text-muted); }
+  td.phone { font-variant-numeric: tabular-nums; direction: ltr; text-align: right; }
+
+  .tag {
+    display: inline-block; padding: 3px 9px; border-radius: 999px;
+    font-size: 12px; background: var(--surface-3); color: var(--text-secondary);
+    border: 1px solid var(--border);
+  }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  }
+  .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .badge.new { background: var(--surface-3); color: var(--text-secondary); }
+  .badge.contacted { background: var(--status-warning-soft); color: var(--status-warning); }
+  .badge.hot { background: var(--status-good-soft); color: var(--status-good); }
+  .badge.not_relevant { background: var(--status-critical-soft); color: var(--status-critical); }
+
+  select.status-select {
+    border: none; border-radius: 999px; padding: 3px 10px;
+    font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+    color: inherit; outline: none;
+  }
+  select.status-select.new { background: var(--surface-3); color: var(--text-secondary); }
+  select.status-select.contacted { background: var(--status-warning-soft); color: var(--status-warning); }
+  select.status-select.hot { background: var(--status-good-soft); color: var(--status-good); }
+  select.status-select.not_relevant { background: var(--status-critical-soft); color: var(--status-critical); }
+  select.status-select:disabled { opacity: .6; cursor: default; }
+  .panel-status-wrap { margin-top: 8px; }
+  .live-badge {
+    font-size: 11px; font-weight: 600; color: var(--status-good);
+    background: var(--status-good-soft); padding: 2px 8px; border-radius: 999px;
+    vertical-align: middle; margin-inline-start: 6px; animation: live-pulse 2s ease-in-out infinite;
+  }
+  @keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+
+  .empty, .loading, .error {
+    padding: 48px 20px; text-align: center; color: var(--text-secondary); font-size: 14px;
+  }
+  .error { color: var(--status-critical); }
+
+  /* פאנל היסטוריית הודעות */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(11,11,11,0.35);
+    opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 40;
+  }
+  .overlay.open { opacity: 1; pointer-events: auto; }
+
+  .panel {
+    position: fixed; top: 0; bottom: 0; inset-inline-end: 0; width: min(420px, 100vw);
+    background: var(--surface-1); box-shadow: var(--shadow); z-index: 50;
+    display: flex; flex-direction: column;
+    transform: translateX(100%);
+    transition: transform .25s ease;
+  }
+  [dir="rtl"] .panel { transform: translateX(-100%); }
+  .panel.open { transform: translateX(0); }
+
+  .panel-header {
+    padding: 18px 20px; border-bottom: 1px solid var(--gridline);
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .panel-header h2 { font-size: 16px; margin: 0 0 2px; }
+  .panel-header p { margin: 0; font-size: 12.5px; color: var(--text-secondary); }
+  .panel-close { border: none; background: transparent; font-size: 20px; line-height: 1; padding: 4px 8px; color: var(--text-secondary); }
+
+  .panel-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
+
+  .msg-row { display: flex; margin-block: 10px; }
+  .msg-row.out { justify-content: flex-start; }
+  .msg-row.in { justify-content: flex-end; }
+  .bubble {
+    max-width: 78%; padding: 10px 14px; border-radius: 14px;
+    font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+  }
+  .msg-row.out .bubble { background: var(--accent-soft); color: var(--text-primary); }
+  .msg-row.in .bubble { background: var(--surface-3); color: var(--text-primary); }
+  .bubble.simulated {
+    background: var(--status-warning-soft);
+    border: 1px dashed var(--status-warning);
+  }
+  .msg-meta {
+    font-size: 11px; color: var(--text-muted); margin-top: 4px;
+    display: flex; gap: 6px; align-items: center;
+  }
+  .msg-meta.simulated { color: var(--status-warning); font-weight: 600; }
+  .msg-row.out .msg-meta { justify-content: flex-end; }
+  .msg-row.in .msg-meta { justify-content: flex-start; }
+  .bubble-wrap { display: flex; flex-direction: column; max-width: 78%; }
+  .msg-row.out .bubble-wrap { align-items: flex-start; }
+  .msg-row.in .bubble-wrap { align-items: flex-end; }
+
+  .reactivate-actions {
+    border-top: 1px solid var(--gridline); padding: 12px 16px; flex-shrink: 0;
+    display: flex; gap: 8px;
+  }
+  .reactivate-actions button { flex: 1; }
+  .reactivate-actions button:disabled { opacity: .5; cursor: default; }
+
+  .lead-card {
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
+  }
+  .lead-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  .lead-card-name { font-weight: 600; font-size: 13.5px; }
+  .lead-card-phone { font-size: 12px; color: var(--text-muted); direction: ltr; }
+  .lead-card-message { font-size: 13px; color: var(--text-secondary); white-space: pre-wrap; line-height: 1.5; }
+  .lead-card-result { margin-top: 8px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .lead-card-result.ok { color: var(--status-good); }
+  .lead-card-result.fail { color: var(--status-critical); }
+
+  .composer {
+    border-top: 1px solid var(--gridline); padding: 12px 16px; flex-shrink: 0;
+  }
+  .composer form { display: flex; gap: 8px; align-items: flex-end; }
+  .composer textarea {
+    flex: 1; resize: none; max-height: 100px; min-height: 38px;
+    font-family: inherit; font-size: 13.5px; padding: 9px 12px; line-height: 1.4;
+    border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text-primary);
+  }
+  .composer button { flex-shrink: 0; }
+  .composer button:disabled { opacity: .6; cursor: default; }
+  .composer-error {
+    display: none; color: var(--status-critical); font-size: 12.5px;
+    margin-bottom: 8px; padding: 8px 10px; background: var(--status-critical-soft);
+    border-radius: 8px;
+  }
+  .composer-error.show { display: block; }
+  .composer-error.warning { color: var(--status-warning); background: var(--status-warning-soft); }
+
+  @media (max-width: 720px) {
+    .table-card { overflow-x: auto; }
+    table { min-width: 760px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div>
+      <h1>CRM לידים</h1>
+      <p>כל הפניות שהתקבלו, הסטטוס שלהן, והיסטוריית ההודעות המלאה</p>
+    </div>
+    <div class="top-actions">
+      <button id="importBtn">📥 ייבוא לידים</button>
+      <input type="file" id="importFileInput" accept=".csv,.xlsx" style="display:none">
+      <button id="reactivateBtn">🔥 החייאת לידים קרים</button>
+      <button id="themeToggle" title="החלף מצב תצוגה">🌓 מצב תצוגה</button>
+      <button id="refreshBtn" class="primary">↻ רענון</button>
+    </div>
+  </header>
+  <div class="import-status" id="importStatus"></div>
+
+  <div class="stat-grid" id="statGrid"></div>
+
+  <div class="toolbar">
+    <input id="searchInput" type="text" placeholder="חיפוש לפי שם, טלפון או עסק...">
+    <select id="statusFilter">
+      <option value="">כל הסטטוסים</option>
+      <option value="__new">חדש</option>
+      <option value="contacted">נוצר קשר</option>
+      <option value="hot">חם</option>
+      <option value="not_relevant">לא רלוונטי</option>
+    </select>
+    <select id="tenantFilter">
+      <option value="">כל העסקים (tenants)</option>
+    </select>
+  </div>
+
+  <div class="table-card">
+    <div id="tableWrap"></div>
+  </div>
+</div>
+
+<div class="overlay" id="overlay"></div>
+<aside class="panel" id="panel">
+  <div class="panel-header">
+    <div>
+      <h2>
+        <span id="panelName">היסטוריית הודעות</span>
+        <span class="live-badge" title="חלון חי - מתעדכן אוטומטית">🟢 חי</span>
+      </h2>
+      <p id="panelSub"></p>
+      <div id="panelStatusWrap" class="panel-status-wrap"></div>
+    </div>
+    <button class="panel-close" id="panelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body" id="panelBody"></div>
+  <div class="composer">
+    <div class="composer-error" id="composerError"></div>
+    <form id="composerForm">
+      <textarea id="composerInput" placeholder="כתוב הודעה..." rows="1" required></textarea>
+      <button type="submit" class="primary" id="composerSend">שלח</button>
+    </form>
+  </div>
+</aside>
+
+<aside class="panel" id="reactivatePanel">
+  <div class="panel-header">
+    <div>
+      <h2>החייאת לידים קרים</h2>
+      <p>קמפיין חימום מתוך contacts.csv - תצוגה מקדימה חובה לפני שליחה בפועל</p>
+    </div>
+    <button class="panel-close" id="reactivatePanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body" id="reactivateBody">
+    <div class="empty">לחץ על "תצוגה מקדימה" כדי לראות אילו לידים קרים ימתינו לפנייה, ומה ההודעה שתיוצר לכל אחד מהם - לפני כל שליחה בפועל.</div>
+  </div>
+  <div class="reactivate-actions">
+    <button id="reactivatePreviewBtn">תצוגה מקדימה</button>
+    <button id="reactivateSendBtn" class="primary" disabled>🔥 שלח בפועל לכל הלידים</button>
+  </div>
+</aside>
+
+<script>
+const STATUS_META = {
+  hot:           { label: "חם",         cls: "hot" },
+  contacted:     { label: "נוצר קשר",   cls: "contacted" },
+  not_relevant:  { label: "לא רלוונטי", cls: "not_relevant" },
+};
+function statusMeta(status) {
+  return STATUS_META[status] || { label: "חדש", cls: "new" };
+}
+const STATUS_OPTIONS = [
+  ["new", "חדש"], ["contacted", "נוצר קשר"], ["hot", "חם"], ["not_relevant", "לא רלוונטי"],
+];
+function statusSelectHtml(phone, tenantId, currentStatus) {
+  const value = currentStatus || "new";
+  const cls = statusMeta(currentStatus).cls;
+  const options = STATUS_OPTIONS.map(([v, label]) =>
+    `<option value="${v}" ${v === value ? "selected" : ""}>${label}</option>`
+  ).join("");
+  return `<select class="status-select ${cls}" data-phone="${escapeHtml(phone)}" data-tenant="${escapeHtml(tenantId)}">${options}</select>`;
+}
+function findLead(phone, tenantId) {
+  return allLeads.find(l => l.phone === phone && (l.tenant_id || "default") === tenantId);
+}
+const CHANNEL_LABELS = { whatsapp: "וואטסאפ", instagram: "אינסטגרם", facebook: "פייסבוק" };
+function channelLabel(ch) { return CHANNEL_LABELS[ch] || ch || "—"; }
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str ?? "";
+  return div.innerHTML;
+}
+
+let allLeads = [];
+
+async function loadLeads() {
+  const wrap = document.getElementById("tableWrap");
+  wrap.innerHTML = '<div class="loading">טוען לידים...</div>';
+  try {
+    const res = await fetch("/api/leads");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    allLeads = await res.json();
+    populateTenantFilter();
+    renderStats();
+    renderTable();
+  } catch (err) {
+    wrap.innerHTML = '<div class="error">שגיאה בטעינת הלידים: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function populateTenantFilter() {
+  const select = document.getElementById("tenantFilter");
+  const current = select.value;
+  const tenants = [...new Set(allLeads.map(l => l.tenant_id).filter(Boolean))].sort();
+  select.innerHTML = '<option value="">כל העסקים (tenants)</option>' +
+    tenants.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("");
+  select.value = current;
+}
+
+function renderStats() {
+  const total = allLeads.length;
+  const counts = { hot: 0, contacted: 0, not_relevant: 0, new: 0 };
+  for (const lead of allLeads) {
+    const key = lead.lead_status && counts.hasOwnProperty(lead.lead_status) ? lead.lead_status : "new";
+    counts[key]++;
+  }
+  const tiles = [
+    { label: "סה\"כ לידים", value: total, color: "var(--accent)" },
+    { label: "חדשים", value: counts.new, color: "var(--text-muted)" },
+    { label: "נוצר קשר", value: counts.contacted, color: "var(--status-warning)" },
+    { label: "חמים", value: counts.hot, color: "var(--status-good)" },
+    { label: "לא רלוונטי", value: counts.not_relevant, color: "var(--status-critical)" },
+  ];
+  document.getElementById("statGrid").innerHTML = tiles.map(t => `
+    <div class="stat-tile" style="--tile-color:${t.color}">
+      <div class="value">${t.value}</div>
+      <div class="label">${t.label}</div>
+    </div>
+  `).join("");
+}
+
+function getFilteredLeads() {
+  const q = document.getElementById("searchInput").value.trim().toLowerCase();
+  const statusFilter = document.getElementById("statusFilter").value;
+  const tenantFilter = document.getElementById("tenantFilter").value;
+
+  return allLeads.filter(lead => {
+    if (tenantFilter && lead.tenant_id !== tenantFilter) return false;
+    if (statusFilter) {
+      const effective = lead.lead_status || "__new";
+      if (effective !== statusFilter) return false;
+    }
+    if (q) {
+      const haystack = [lead.customer_name, lead.phone, lead.business_name, lead.location]
+        .filter(Boolean).join(" ").toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function renderTable() {
+  const wrap = document.getElementById("tableWrap");
+  const leads = getFilteredLeads();
+
+  if (allLeads.length === 0) {
+    wrap.innerHTML = '<div class="empty">אין עדיין לידים ב-customers.json</div>';
+    return;
+  }
+  if (leads.length === 0) {
+    wrap.innerHTML = '<div class="empty">אין לידים תואמים לסינון הנוכחי</div>';
+    return;
+  }
+
+  const rows = leads.map(lead => {
+    const tenantId = lead.tenant_id || "default";
+    return `
+      <tr>
+        <td class="name">${escapeHtml(lead.customer_name || "ללא שם")}</td>
+        <td class="phone">${escapeHtml(lead.phone)}</td>
+        <td class="${lead.business_name ? "" : "muted"}">${escapeHtml(lead.business_name || "—")}</td>
+        <td class="${lead.location ? "" : "muted"}">${escapeHtml(lead.location || "—")}</td>
+        <td><span class="tag">${escapeHtml(channelLabel(lead.source_channel))}</span></td>
+        <td class="${lead.import_source ? "" : "muted"}">${escapeHtml(lead.import_source || "—")}</td>
+        <td><span class="tag">${escapeHtml(tenantId)}</span></td>
+        <td>${statusSelectHtml(lead.phone, tenantId, lead.lead_status)}</td>
+        <td><button data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}" data-name="${escapeHtml(lead.customer_name || lead.phone)}" class="history-btn">💬 היסטוריה</button></td>
+      </tr>
+    `;
+  }).join("");
+
+  wrap.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>שם</th><th>טלפון</th><th>עסק</th><th>מיקום</th><th>ערוץ</th><th>מקור</th><th>Tenant</th><th>סטטוס</th><th></th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+  wrap.querySelectorAll(".history-btn").forEach(btn => {
+    btn.addEventListener("click", () => openHistory(btn.dataset.phone, btn.dataset.tenant, btn.dataset.name));
+  });
+}
+
+let currentLead = null; // { phone, tenantId } - הליד שהפאנל פתוח עבורו כרגע
+let lastMessageTimestamp = null; // timestamp ההודעה האחרונה שכבר מוצגת - לשימוש polling עם since=
+let livePollTimer = null;
+let isPolling = false;
+let pollAgainRequested = false; // אם ביקשו poll בזמן שאחד כבר רץ - לא מדלגים בשקט, מריצים עוד סבב מיד אחריו
+
+const LIVE_POLL_INTERVAL_MS = 3000;
+
+function startLivePolling() {
+  stopLivePolling();
+  livePollTimer = setInterval(pollForNewMessages, LIVE_POLL_INTERVAL_MS);
+}
+
+function stopLivePolling() {
+  if (livePollTimer) {
+    clearInterval(livePollTimer);
+    livePollTimer = null;
+  }
+}
+
+async function pollForNewMessages() {
+  // "חלון צ'אט חי": בזמן שהפאנל פתוח, בודקים כל כמה שניות אם יש הודעות חדשות (נכנסות
+  // מהלקוח, או שנשלחו ע"י נציג אחר) ומוסיפים אותן - בלי לרענן את הדף. since= מבטיח
+  // ששולפים רק הודעות חדשות, לא את כל ההיסטוריה מחדש בכל בדיקה.
+  if (!currentLead) return;
+
+  // אם כבר רץ poll (למשל טיק רקע שהתנגש עם הקריאה הזו), לא מדלגים בשקט - מסמנים
+  // בקשה לסבב נוסף כדי שהודעה שהמשתמש רק שלח לא "תיתקע" עד הטיק הבא. ה-caller
+  // הנוכחי לא ימתין לתוצאה שלה, אבל הסבב הרץ יריץ עוד פעם אחת מיד כשיסיים.
+  if (isPolling) {
+    pollAgainRequested = true;
+    return;
+  }
+  isPolling = true;
+
+  do {
+    pollAgainRequested = false;
+    try {
+      const { phone, tenantId } = currentLead;
+      let url = `/api/messages?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`;
+      if (lastMessageTimestamp) url += `&since=${encodeURIComponent(lastMessageTimestamp)}`;
+
+      const res = await fetch(url);
+      if (res.ok) {
+        const messages = await res.json();
+        if (messages.length > 0) {
+          const body = document.getElementById("panelBody");
+          const empty = body.querySelector(".empty");
+          if (empty) body.innerHTML = "";
+          const wasNearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+          body.insertAdjacentHTML("beforeend", messages.map(renderBubble).join(""));
+          lastMessageTimestamp = messages[messages.length - 1].timestamp;
+          if (wasNearBottom) body.scrollTop = body.scrollHeight;
+        }
+      }
+    } catch (err) {
+      console.error("live polling נכשל:", err);
+    }
+  } while (pollAgainRequested && currentLead);
+
+  isPolling = false;
+}
+
+function renderBubble(m) {
+  const dir = m.direction === "out" ? "out" : "in";
+  const time = new Date(m.timestamp).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
+  const statusLabel = m.simulated ? "⚠️ סימולציה - לא נשלח בפועל" : (dir === "out" ? "נשלח" : "התקבל");
+  return `
+    <div class="msg-row ${dir}">
+      <div class="bubble-wrap">
+        <div class="bubble${m.simulated ? " simulated" : ""}">${escapeHtml(m.message)}</div>
+        <div class="msg-meta${m.simulated ? " simulated" : ""}"><span>${statusLabel}</span><span>·</span><span>${time}</span></div>
+      </div>
+    </div>
+  `;
+}
+
+function syncPanelStatus() {
+  if (!currentLead) return;
+  const lead = findLead(currentLead.phone, currentLead.tenantId);
+  document.getElementById("panelStatusWrap").innerHTML =
+    statusSelectHtml(currentLead.phone, currentLead.tenantId, lead ? lead.lead_status : null);
+}
+
+async function openHistory(phone, tenantId, name) {
+  currentLead = { phone, tenantId };
+  lastMessageTimestamp = null;
+  document.getElementById("panelName").textContent = name;
+  document.getElementById("panelSub").textContent = phone + " · " + tenantId;
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("panel").classList.add("open");
+  hideComposerError();
+  document.getElementById("composerInput").value = "";
+  syncPanelStatus();
+
+  const body = document.getElementById("panelBody");
+  body.innerHTML = '<div class="loading">טוען היסטוריה...</div>';
+
+  try {
+    const res = await fetch(`/api/messages?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const messages = await res.json();
+    if (messages.length === 0) {
+      body.innerHTML = '<div class="empty">אין הודעות רשומות למסד הנתונים עבור ליד זה</div>';
+    } else {
+      body.innerHTML = messages.map(renderBubble).join("");
+      body.scrollTop = body.scrollHeight;
+      lastMessageTimestamp = messages[messages.length - 1].timestamp;
+    }
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה בטעינת ההיסטוריה: ' + escapeHtml(err.message) + "</div>";
+  }
+
+  startLivePolling(); // חלון צ'אט חי - ממשיך לבדוק הודעות חדשות כל עוד הפאנל פתוח
+}
+
+function closeHistory() {
+  document.getElementById("overlay").classList.remove("open");
+  document.getElementById("panel").classList.remove("open");
+  currentLead = null;
+  stopLivePolling();
+}
+
+function closeAllPanels() {
+  document.getElementById("overlay").classList.remove("open");
+  document.getElementById("panel").classList.remove("open");
+  document.getElementById("reactivatePanel").classList.remove("open");
+  currentLead = null;
+  stopLivePolling();
+}
+
+function hideComposerError() {
+  const el = document.getElementById("composerError");
+  el.classList.remove("show", "warning");
+  el.textContent = "";
+}
+function showComposerError(text, isWarning = false) {
+  const el = document.getElementById("composerError");
+  el.textContent = text;
+  el.classList.toggle("warning", isWarning);
+  el.classList.add("show");
+}
+
+document.getElementById("composerForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!currentLead) return;
+
+  const input = document.getElementById("composerInput");
+  const sendBtn = document.getElementById("composerSend");
+  const text = input.value.trim();
+  if (!text) return;
+
+  hideComposerError();
+  sendBtn.disabled = true;
+  input.disabled = true;
+
+  try {
+    const res = await fetch("/api/messages/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: currentLead.phone, tenant_id: currentLead.tenantId, message: text }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+
+    input.value = "";
+    // מציגים את ההודעה שנשלחה דרך אותו נתיב בדיוק כמו הודעות נכנסות חיות (polling) -
+    // כך שאין סיכון לכפילות בין תצוגה "אופטימית" מקומית לבין מה שבאמת נשמר ב-DB
+    await pollForNewMessages();
+    if (data.simulated) showComposerError(data.warning || "ההודעה נרשמה כסימולציה - לא נשלחה בפועל.", true);
+  } catch (err) {
+    showComposerError("שליחה נכשלה: " + err.message);
+  } finally {
+    sendBtn.disabled = false;
+    input.disabled = false;
+    input.focus();
+  }
+});
+
+document.getElementById("composerInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    document.getElementById("composerForm").requestSubmit();
+  }
+});
+
+document.getElementById("overlay").addEventListener("click", closeAllPanels);
+document.getElementById("panelClose").addEventListener("click", closeAllPanels);
+document.getElementById("refreshBtn").addEventListener("click", loadLeads);
+document.getElementById("searchInput").addEventListener("input", renderTable);
+document.getElementById("statusFilter").addEventListener("change", renderTable);
+document.getElementById("tenantFilter").addEventListener("change", renderTable);
+
+function showImportStatus(text, isError = false) {
+  const el = document.getElementById("importStatus");
+  el.textContent = text;
+  el.classList.toggle("error", isError);
+  el.classList.add("show");
+}
+
+document.getElementById("importBtn").addEventListener("click", () => {
+  document.getElementById("importFileInput").click();
+});
+
+document.getElementById("importFileInput").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const importBtn = document.getElementById("importBtn");
+  const originalLabel = importBtn.textContent;
+  importBtn.disabled = true;
+  importBtn.textContent = "מייבא...";
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const res = await fetch("/api/leads/import", { method: "POST", body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+
+    let msg = `יובאו ${data.imported} לידים חדשים, עודכנו ${data.updated} קיימים (מתוך ${data.total_rows} שורות)`;
+    if (data.skipped.length > 0) msg += ` · דולגו ${data.skipped.length} שורות ללא מספר טלפון`;
+    showImportStatus(msg);
+    await loadLeads(); // מרענן את הטבלה + הסטטיסטיקות מיד עם הנתונים המיובאים
+  } catch (err) {
+    showImportStatus("ייבוא נכשל: " + err.message, true);
+  } finally {
+    importBtn.disabled = false;
+    importBtn.textContent = originalLabel;
+    e.target.value = ""; // מאפשר לבחור שוב את אותו קובץ בפעם הבאה
+  }
+});
+
+// עדכון סטטוס ליד - מהשורה בטבלה או מפאנל ההיסטוריה (event delegation כי הטבלה נבנית מחדש בכל רענון)
+document.addEventListener("change", async (e) => {
+  const select = e.target.closest(".status-select");
+  if (!select) return;
+
+  const phone = select.dataset.phone;
+  const tenantId = select.dataset.tenant;
+  const newStatus = select.value;
+  select.disabled = true;
+
+  try {
+    const res = await fetch("/api/leads/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, tenant_id: tenantId, status: newStatus }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    await loadLeads(); // מרענן את הטבלה + הסטטיסטיקות לפי הנתונים המעודכנים
+    syncPanelStatus(); // אם הפאנל פתוח לאותו ליד, מעדכן גם שם
+  } catch (err) {
+    alert("עדכון סטטוס נכשל: " + err.message);
+    await loadLeads(); // משחזר את הבחירה הקודמת מהשרת
+  }
+});
+
+let lastReactivateResults = [];
+
+function renderReactivatePreview(results) {
+  const body = document.getElementById("reactivateBody");
+  const sendBtn = document.getElementById("reactivateSendBtn");
+  if (results.length === 0) {
+    body.innerHTML = '<div class="empty">אין לידים קרים חדשים ב-contacts.csv - כולם כבר טופלו (contacted/hot/not_relevant).</div>';
+    sendBtn.disabled = true;
+    return;
+  }
+  body.innerHTML = results.map(r => `
+    <div class="lead-card" data-phone="${escapeHtml(r.phone)}">
+      <div class="lead-card-head">
+        <span class="lead-card-name">${escapeHtml(r.name)}</span>
+        <span class="lead-card-phone">${escapeHtml(r.phone)}</span>
+      </div>
+      <div class="lead-card-message">${escapeHtml(r.message)}</div>
+      <div class="lead-card-result-slot"></div>
+    </div>
+  `).join("");
+  sendBtn.disabled = false;
+}
+
+function renderReactivateSendResults(results) {
+  const body = document.getElementById("reactivateBody");
+  results.forEach(r => {
+    const card = body.querySelector(`.lead-card[data-phone="${CSS.escape(r.phone)}"]`);
+    if (!card) return;
+    const slot = card.querySelector(".lead-card-result-slot");
+    slot.innerHTML = r.sent
+      ? `<div class="lead-card-result ok">✅ נשלח בהצלחה (SID: ${escapeHtml(r.sid)})</div>`
+      : `<div class="lead-card-result fail">❌ נכשל: ${escapeHtml(r.error || "")}</div>`;
+  });
+  document.getElementById("reactivateSendBtn").disabled = true;
+}
+
+document.getElementById("reactivateBtn").addEventListener("click", () => {
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("reactivatePanel").classList.add("open");
+});
+document.getElementById("reactivatePanelClose").addEventListener("click", closeAllPanels);
+
+document.getElementById("reactivatePreviewBtn").addEventListener("click", async () => {
+  const body = document.getElementById("reactivateBody");
+  body.innerHTML = '<div class="loading">מייצר תצוגה מקדימה...</div>';
+  document.getElementById("reactivateSendBtn").disabled = true;
+  try {
+    const res = await fetch("/api/reactivate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ send: false }),
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    lastReactivateResults = data.results;
+    renderReactivatePreview(data.results);
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה בהפקת תצוגה מקדימה: ' + escapeHtml(err.message) + "</div>";
+  }
+});
+
+document.getElementById("reactivateSendBtn").addEventListener("click", async () => {
+  if (lastReactivateResults.length === 0) return;
+  const ok = confirm(`פעולה זו תשלח ${lastReactivateResults.length} הודעות WhatsApp אמיתיות ללידים קרים דרך Twilio. להמשיך?`);
+  if (!ok) return;
+
+  const sendBtn = document.getElementById("reactivateSendBtn");
+  sendBtn.disabled = true;
+  const originalLabel = sendBtn.textContent;
+  sendBtn.textContent = "שולח...";
+  try {
+    const res = await fetch("/api/reactivate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ send: true }),
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    renderReactivateSendResults(data.results);
+    loadLeads();
+  } catch (err) {
+    document.getElementById("reactivateBody").insertAdjacentHTML(
+      "afterbegin", '<div class="error">שגיאה בשליחה: ' + escapeHtml(err.message) + "</div>"
+    );
+  } finally {
+    sendBtn.textContent = originalLabel;
+  }
+});
+
+document.getElementById("themeToggle").addEventListener("click", () => {
+  const root = document.documentElement;
+  const current = root.getAttribute("data-theme");
+  const next = current === "dark" ? "light" : current === "light" ? null : "dark";
+  if (next) { root.setAttribute("data-theme", next); } else { root.removeAttribute("data-theme"); }
+  try { localStorage.setItem("crm-theme", next || ""); } catch (e) {}
+});
+try {
+  const saved = localStorage.getItem("crm-theme");
+  if (saved) document.documentElement.setAttribute("data-theme", saved);
+} catch (e) {}
+
+loadLeads();
+</script>
+</body>
+</html>

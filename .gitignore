@@ -1,0 +1,41 @@
+# --- סודות ותצורה מקומית ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# --- מסדי נתונים / נתוני אפליקציה (לא מקור, נוצרים/מתעדכנים בזמן ריצה) ---
+*.db
+*.sqlite
+*.sqlite3
+crm_data.db
+customers.json
+chat_history.txt
+
+# --- לוגים ---
+*.log
+server_out.log
+server_error.log
+ngrok_out.log
+ngrok_err.log
+
+# --- קבצי הרצה זמניים ---
+running_pids.txt
+
+# --- כלים חיצוניים שהורדו (לא חלק מהקוד) ---
+ngrok-v3-stable-windows-amd64.zip
+ngrok.exe
+
+# --- מערכת הפעלה / IDE ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
