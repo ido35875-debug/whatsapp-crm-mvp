@@ -184,22 +184,33 @@ def index():
 
 @app.route("/api/leads")
 def api_leads():
-    """רשימת כל הלידים מ-customers.json (מקור האמת) - לשימוש הדשבורד ב-index.html."""
+    """רשימת כל הלידים מ-customers.json (מקור האמת) - לשימוש הדשבורד ב-index.html.
+    ?include_last_message=1 (משמש את תצוגת ה-Unified Inbox): מוסיף לכל ליד את ההודעה
+    האחרונה מטבלת messages (תצוגה מקדימה + מיון לפי פעילות) - כבוי כברירת מחדל כדי
+    לא להאט את טעינת הטבלה הרגילה עם שאילתת DB נוספת לכל שורה."""
+    include_last_message = request.args.get("include_last_message") == "1"
+
     leads = []
     for key, card in load_customers().items():
         tenant_id, _, key_phone = key.partition("::")
-        leads.append(
-            {
-                "tenant_id": card.get("tenant_id", tenant_id),
-                "phone": card.get("phone", key_phone),
-                "customer_name": card.get("customer_name"),
-                "business_name": card.get("business_name"),
-                "location": card.get("location"),
-                "source_channel": card.get("source_channel"),
-                "import_source": card.get("import_source"),
-                "lead_status": card.get("lead_status"),
-            }
-        )
+        phone = card.get("phone", key_phone)
+        resolved_tenant_id = card.get("tenant_id", tenant_id)
+        lead = {
+            "tenant_id": resolved_tenant_id,
+            "phone": phone,
+            "customer_name": card.get("customer_name"),
+            "business_name": card.get("business_name"),
+            "location": card.get("location"),
+            "source_channel": card.get("source_channel"),
+            "import_source": card.get("import_source"),
+            "lead_status": card.get("lead_status"),
+        }
+        if include_last_message:
+            last = db.get_last_message(phone, tenant_id=resolved_tenant_id)
+            lead["last_message"] = last["message"] if last else None
+            lead["last_message_at"] = last["timestamp"] if last else None
+            lead["last_message_direction"] = last["direction"] if last else None
+        leads.append(lead)
     return jsonify(leads)
 
 

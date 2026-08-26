@@ -11,8 +11,8 @@
 | קובץ | תפקיד | סטטוס |
 |---|---|---|
 | `extract.py` | מנוע חילוץ פרטים מטקסט + שכבת CRM (`customers.json`) | ✅ עובד |
-| `server.py` | שרת Webhook רב-ערוצי (whatsapp אמיתי + מענה אוטומטי, instagram/facebook placeholder) + דשבורד (`/`) + API (`/api/leads`, `/api/messages` קריאה-בלבד; `/api/leads/status` מעדכן `lead_status`; `/api/messages/send` ו-`/api/reactivate` **שולחים בפועל**) | ✅ עובד (whatsapp), ⚠️ placeholder (שאר הערוצים) |
-| `index.html` | דשבורד לידים (טבלה עם סטטוס ניתן לעריכה + סטטיסטיקות, **חלון צ'אט חי** לכל ליד - היסטוריה + שליחה + עדכון אוטומטי ב-polling כל 3 שניות בלי רענון דף, פאנל החייאת לידים קרים) - נטען ב-`/` | ✅ עובד |
+| `server.py` | שרת Webhook רב-ערוצי (whatsapp אמיתי + מענה אוטומטי, instagram/facebook placeholder) + דשבורד (`/`) + API (`/api/leads` - עם `?include_last_message=1` אופציונלי לתצוגת Inbox; `/api/messages` קריאה-בלבד; `/api/leads/status` מעדכן `lead_status`; `/api/messages/send` ו-`/api/reactivate` **שולחים בפועל**) | ✅ עובד (whatsapp), ⚠️ placeholder (שאר הערוצים) |
+| `index.html` | דשבורד לידים - שתי תצוגות מתחלפות: **טבלה** (סטטוס ניתן לעריכה + סטטיסטיקות + פאנל היסטוריה נגלל + פאנל החייאת לידים קרים) ו-**Unified Inbox** (רשימת שיחות ממוינת לפי פעילות אחרונה + חלון צ'אט קבוע לצידה) - שתיהן חולקות אותה לוגיקת צ'אט חי (`createChatController`, ראו למטה) - נטען ב-`/` | ✅ עובד |
 | `whatsapp_send.py` | עטיפת שליחה משותפת ל-Twilio (`send_whatsapp_message`) - בשימוש `reactivate.py` וגם `server.py` | ✅ עובד; דורש פרטי Twilio אמיתיים ב-`.env` |
 | `reactivate.py` | ניסוח הודעות חימום ללידים קרים + סיווג תגובות + שליחה בפועל דרך Twilio - גם כ-CLI (`--send`) וגם כפונקציה שקוראים לה מ-`/api/reactivate` ומ-`scheduler.py` | ✅ עובד |
 | `scheduler.py` | **Background Scheduler Worker** - סורק תקופתית לידים קרים לפי סף זמן פר-ורטיקל (`ecommerce`/`real_estate`, מ-`contacts.csv`) ומריץ עליהם `reactivate.py`. שני מצבי הרצה: thread בתוך `server.py` (מקומי, `python server.py`), או `scheduler_worker.py` העצמאי (APScheduler, ל-production - ראו למטה) | ✅ עובד; **dry-run בלבד כברירת מחדל** - שליחה אוטומטית אמיתית דורשת `SCHEDULER_AUTO_SEND=true` מפורש ב-`.env` (כרגע לא מוגדר) |
@@ -102,6 +102,43 @@
 "להיבלע" בשקט אם התנגשה עם טיק polling ברקע (guard `isPolling` פשוט) - במקום להיעלם,
 עכשיו היא מסמנת `pollAgainRequested` ומריצה סבב נוסף מיד; ה-fix אומת (בדיקה חוזרת:
 בועה אחת בדיוק, בלי כפילות, בלי השהיה נסתרת).
+
+### Unified Inbox (2026-08-26)
+
+**מה נוסף:** תצוגה שנייה ב-`index.html`, לצד הטבלה הקיימת (כפתורי מעבר "📋 טבלה" /
+"💬 Inbox" - `switchView`) - רשימת שיחות (`#inboxList`, ממוינת לפי `last_message_at`
+יורד - השיחה עם הפעילות האחרונה למעלה, בדיוק כמו כל אפליקציית צ'אט) לצד חלון צ'אט
+קבוע (לא slide-over כמו הפאנל הקיים). לכל שורה ברשימה: שם, תצוגה מקדימה של ההודעה
+האחרונה (עם קידומת "את/ה: " אם היא יצאה מהמערכת), זמן, ותג סטטוס.
+
+**Backend:** `db.get_last_message(phone, tenant_id)` חדש ב-`db.py` - שולף רק את
+ההודעה האחרונה (לא כל ההיסטוריה) לכל ליד. `GET /api/leads?include_last_message=1`
+(אופציונלי - ברירת המחדל בלי הפרמטר לא השתנתה, לא פוגע בטבלה הקיימת) מצרף
+`last_message`/`last_message_at`/`last_message_direction` לכל ליד ברשימה.
+
+**Frontend - refactor, לא שכפול:** הלוגיקה של "חלון צ'אט חי" (polling, composer,
+race-fix `pollAgainRequested`, עדכון סטטוס) חולצה מהקוד הישן (שהיה קשור ישירות ל-
+ID-ים של הפאנל הנגלל) לפונקציית מפעל `createChatController(ids)` ב-`index.html`
+שמחזירה controller עם `open`/`close`/`syncStatus`. שני מופעים עצמאיים: `panelChat`
+(מפעיל את `#panel` הישן - `openHistory`/`closeAllPanels` עכשיו רק wrappers דקים
+סביבו) ו-`inboxChat` (מפעיל את חלון הצ'אט ב-Inbox). **אותו קוד מדויק, שתי מופעים** -
+אין סיכון לסחף בין הגרסאות כמו שהיה קורה עם copy-paste. `switchView` דואג שרק
+controller אחד "חי" בכל רגע - עובר ל-Inbox סוגר את הפאנל הישן (`closeAllPanels`),
+ועובר לטבלה עוצר את ה-polling של ה-Inbox (`inboxChat.close()`) - כדי שלא ירוצו שני
+מחזורי polling מקבילים על אותו ליד.
+
+**נבדק אמיתי (Playwright), לא רק בקוד:**
+1. טעינת שתי התצוגות + מעבר ביניהן - 0 שגיאות קונסולה.
+2. פתיחת שיחה ב-Inbox, מעבר לשיחה שנייה - היסטוריה נטענת נכון בכל פעם, כולל מקרה
+   "אין הודעות רשומות" לליד בלי היסטוריה.
+3. **רגרסיה**: הפאנל הנגלל הישן (`#panel`) עדיין עובד זהה לחלוטין אחרי ה-refactor.
+4. שליחת הודעה דרך הקומפוזר של ה-Inbox - עובד קצה-לקצה (כולל הטיפול הקיים ב-
+   מגבלת Twilio Trial: הודעה נרשמת כ-`simulated`, מוצגת עם אזהרה מתאימה).
+5. **זמן-אמת אמיתי**: webhook חתום (Twilio signature תקין) נשלח בזמן ששיחה פתוחה
+   ב-Inbox - ההודעה הנכנסת + התגובה האוטומטית הופיעו בלי שום אינטראקציה עם הדף,
+   תוך פחות ממחזור polling אחד (זהה בדיוק להתנהגות שנבדקה על הפאנל הישן).
+כל נתוני הבדיקה (הודעות טסט ב-`crm_data.db`, `customers.json`, `chat_history.txt`)
+נוקו בסוף.
 
 ### פריסה לענן (2026-08-26) - Procfile, Gunicorn, נתיבים, ומגבלה קריטית
 

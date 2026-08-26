@@ -280,6 +280,52 @@
     .table-card { overflow-x: auto; }
     table { min-width: 760px; }
   }
+
+  /* Unified Inbox - תצוגה חלופית לטבלה: רשימת שיחות בצד אחד, חלון צ'אט קבוע בצד שני */
+  .view-toggle { display: flex; gap: 6px; margin-bottom: 20px; }
+  .view-tab {
+    padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface-1); color: var(--text-secondary); font-size: 13.5px;
+  }
+  .view-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .inbox-layout {
+    display: flex; height: calc(100vh - 260px); min-height: 460px;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px;
+    overflow: hidden; box-shadow: var(--shadow);
+  }
+  .inbox-list {
+    width: 300px; flex-shrink: 0; overflow-y: auto;
+    border-inline-end: 1px solid var(--gridline);
+  }
+  .inbox-contact {
+    display: block; width: 100%; text-align: inherit; padding: 12px 16px;
+    border: none; border-bottom: 1px solid var(--gridline); border-radius: 0;
+    background: transparent; cursor: pointer;
+  }
+  .inbox-contact:hover { background: var(--surface-3); }
+  .inbox-contact.active { background: var(--accent-soft); }
+  .inbox-contact-top {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-bottom: 4px;
+  }
+  .inbox-contact-name { font-weight: 600; font-size: 13.5px; }
+  .inbox-contact-time { font-size: 11px; color: var(--text-muted); flex-shrink: 0; white-space: nowrap; }
+  .inbox-contact-preview {
+    font-size: 12.5px; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 6px;
+  }
+
+  .inbox-chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .inbox-chat-header { padding: 16px 20px; border-bottom: 1px solid var(--gridline); }
+  .inbox-chat-header h2 { font-size: 16px; margin: 0 0 2px; }
+  .inbox-chat-header p { margin: 0; font-size: 12.5px; color: var(--text-secondary); }
+  .inbox-chat-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
+  .inbox-chat-empty { display: flex; align-items: center; justify-content: center; height: 100%; }
+
+  @media (max-width: 720px) {
+    .inbox-layout { flex-direction: column; height: auto; }
+    .inbox-list { width: 100%; max-height: 240px; border-inline-end: none; border-bottom: 1px solid var(--gridline); }
+  }
 </style>
 </head>
 <body>
@@ -299,24 +345,57 @@
   </header>
   <div class="import-status" id="importStatus"></div>
 
-  <div class="stat-grid" id="statGrid"></div>
-
-  <div class="toolbar">
-    <input id="searchInput" type="text" placeholder="חיפוש לפי שם, טלפון או עסק...">
-    <select id="statusFilter">
-      <option value="">כל הסטטוסים</option>
-      <option value="__new">חדש</option>
-      <option value="contacted">נוצר קשר</option>
-      <option value="hot">חם</option>
-      <option value="not_relevant">לא רלוונטי</option>
-    </select>
-    <select id="tenantFilter">
-      <option value="">כל העסקים (tenants)</option>
-    </select>
+  <div class="view-toggle">
+    <button type="button" id="tableViewBtn" class="view-tab active">📋 טבלה</button>
+    <button type="button" id="inboxViewBtn" class="view-tab">💬 Inbox</button>
   </div>
 
-  <div class="table-card">
-    <div id="tableWrap"></div>
+  <div id="tableView">
+    <div class="stat-grid" id="statGrid"></div>
+
+    <div class="toolbar">
+      <input id="searchInput" type="text" placeholder="חיפוש לפי שם, טלפון או עסק...">
+      <select id="statusFilter">
+        <option value="">כל הסטטוסים</option>
+        <option value="__new">חדש</option>
+        <option value="contacted">נוצר קשר</option>
+        <option value="hot">חם</option>
+        <option value="not_relevant">לא רלוונטי</option>
+      </select>
+      <select id="tenantFilter">
+        <option value="">כל העסקים (tenants)</option>
+      </select>
+    </div>
+
+    <div class="table-card">
+      <div id="tableWrap"></div>
+    </div>
+  </div>
+
+  <div id="inboxView" style="display:none;">
+    <div class="inbox-layout">
+      <aside class="inbox-list" id="inboxList"></aside>
+      <section class="inbox-chat">
+        <div class="inbox-chat-header" id="inboxChatHeader" style="display:none;">
+          <h2>
+            <span id="inboxChatName"></span>
+            <span class="live-badge" title="חלון חי - מתעדכן אוטומטית">🟢 חי</span>
+          </h2>
+          <p id="inboxChatSub"></p>
+          <div id="inboxChatStatusWrap" class="panel-status-wrap"></div>
+        </div>
+        <div class="inbox-chat-body" id="inboxChatBody">
+          <div class="inbox-chat-empty muted">בחר שיחה מהרשימה כדי להתחיל</div>
+        </div>
+        <div class="composer" id="inboxComposerWrap" style="display:none;">
+          <div class="composer-error" id="inboxComposerError"></div>
+          <form id="inboxComposerForm">
+            <textarea id="inboxComposerInput" placeholder="כתוב הודעה..." rows="1" required></textarea>
+            <button type="submit" class="primary" id="inboxComposerSend">שלח</button>
+          </form>
+        </div>
+      </section>
+    </div>
   </div>
 </div>
 
@@ -506,68 +585,7 @@ function renderTable() {
   });
 }
 
-let currentLead = null; // { phone, tenantId } - הליד שהפאנל פתוח עבורו כרגע
-let lastMessageTimestamp = null; // timestamp ההודעה האחרונה שכבר מוצגת - לשימוש polling עם since=
-let livePollTimer = null;
-let isPolling = false;
-let pollAgainRequested = false; // אם ביקשו poll בזמן שאחד כבר רץ - לא מדלגים בשקט, מריצים עוד סבב מיד אחריו
-
 const LIVE_POLL_INTERVAL_MS = 3000;
-
-function startLivePolling() {
-  stopLivePolling();
-  livePollTimer = setInterval(pollForNewMessages, LIVE_POLL_INTERVAL_MS);
-}
-
-function stopLivePolling() {
-  if (livePollTimer) {
-    clearInterval(livePollTimer);
-    livePollTimer = null;
-  }
-}
-
-async function pollForNewMessages() {
-  // "חלון צ'אט חי": בזמן שהפאנל פתוח, בודקים כל כמה שניות אם יש הודעות חדשות (נכנסות
-  // מהלקוח, או שנשלחו ע"י נציג אחר) ומוסיפים אותן - בלי לרענן את הדף. since= מבטיח
-  // ששולפים רק הודעות חדשות, לא את כל ההיסטוריה מחדש בכל בדיקה.
-  if (!currentLead) return;
-
-  // אם כבר רץ poll (למשל טיק רקע שהתנגש עם הקריאה הזו), לא מדלגים בשקט - מסמנים
-  // בקשה לסבב נוסף כדי שהודעה שהמשתמש רק שלח לא "תיתקע" עד הטיק הבא. ה-caller
-  // הנוכחי לא ימתין לתוצאה שלה, אבל הסבב הרץ יריץ עוד פעם אחת מיד כשיסיים.
-  if (isPolling) {
-    pollAgainRequested = true;
-    return;
-  }
-  isPolling = true;
-
-  do {
-    pollAgainRequested = false;
-    try {
-      const { phone, tenantId } = currentLead;
-      let url = `/api/messages?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`;
-      if (lastMessageTimestamp) url += `&since=${encodeURIComponent(lastMessageTimestamp)}`;
-
-      const res = await fetch(url);
-      if (res.ok) {
-        const messages = await res.json();
-        if (messages.length > 0) {
-          const body = document.getElementById("panelBody");
-          const empty = body.querySelector(".empty");
-          if (empty) body.innerHTML = "";
-          const wasNearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
-          body.insertAdjacentHTML("beforeend", messages.map(renderBubble).join(""));
-          lastMessageTimestamp = messages[messages.length - 1].timestamp;
-          if (wasNearBottom) body.scrollTop = body.scrollHeight;
-        }
-      }
-    } catch (err) {
-      console.error("live polling נכשל:", err);
-    }
-  } while (pollAgainRequested && currentLead);
-
-  isPolling = false;
-}
 
 function renderBubble(m) {
   const dir = m.direction === "out" ? "out" : "in";
@@ -583,114 +601,196 @@ function renderBubble(m) {
   `;
 }
 
-function syncPanelStatus() {
-  if (!currentLead) return;
-  const lead = findLead(currentLead.phone, currentLead.tenantId);
-  document.getElementById("panelStatusWrap").innerHTML =
-    statusSelectHtml(currentLead.phone, currentLead.tenantId, lead ? lead.lead_status : null);
-}
+// חלון צ'אט חי (היסטוריה + polling + composer) - לוגיקה משותפת בין הפאנל הנגלל
+// (טבלה) לבין ה-Unified Inbox, כדי לא לשכפל את מנגנון ה-polling/composer פעמיים.
+// ids: {body, name, sub, statusWrap, composerForm, composerInput, composerSend, composerError, onOpen, onClose}
+function createChatController(ids) {
+  let currentLead = null;
+  let lastMessageTimestamp = null;
+  let livePollTimer = null;
+  let isPolling = false;
+  let pollAgainRequested = false;
 
-async function openHistory(phone, tenantId, name) {
-  currentLead = { phone, tenantId };
-  lastMessageTimestamp = null;
-  document.getElementById("panelName").textContent = name;
-  document.getElementById("panelSub").textContent = phone + " · " + tenantId;
-  document.getElementById("overlay").classList.add("open");
-  document.getElementById("panel").classList.add("open");
-  hideComposerError();
-  document.getElementById("composerInput").value = "";
-  syncPanelStatus();
+  const bodyEl = () => document.getElementById(ids.body);
+  const composerInputEl = () => document.getElementById(ids.composerInput);
+  const composerSendEl = () => document.getElementById(ids.composerSend);
 
-  const body = document.getElementById("panelBody");
-  body.innerHTML = '<div class="loading">טוען היסטוריה...</div>';
-
-  try {
-    const res = await fetch(`/api/messages?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`);
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const messages = await res.json();
-    if (messages.length === 0) {
-      body.innerHTML = '<div class="empty">אין הודעות רשומות למסד הנתונים עבור ליד זה</div>';
-    } else {
-      body.innerHTML = messages.map(renderBubble).join("");
-      body.scrollTop = body.scrollHeight;
-      lastMessageTimestamp = messages[messages.length - 1].timestamp;
-    }
-  } catch (err) {
-    body.innerHTML = '<div class="error">שגיאה בטעינת ההיסטוריה: ' + escapeHtml(err.message) + "</div>";
+  function hideComposerError() {
+    const el = document.getElementById(ids.composerError);
+    el.classList.remove("show", "warning");
+    el.textContent = "";
+  }
+  function showComposerError(text, isWarning = false) {
+    const el = document.getElementById(ids.composerError);
+    el.textContent = text;
+    el.classList.toggle("warning", isWarning);
+    el.classList.add("show");
   }
 
-  startLivePolling(); // חלון צ'אט חי - ממשיך לבדוק הודעות חדשות כל עוד הפאנל פתוח
+  function syncStatus() {
+    if (!currentLead) return;
+    const lead = findLead(currentLead.phone, currentLead.tenantId);
+    document.getElementById(ids.statusWrap).innerHTML =
+      statusSelectHtml(currentLead.phone, currentLead.tenantId, lead ? lead.lead_status : null);
+  }
+
+  function stopPolling() {
+    if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
+  }
+  function startPolling() {
+    stopPolling();
+    livePollTimer = setInterval(pollForNew, LIVE_POLL_INTERVAL_MS);
+  }
+
+  async function pollForNew() {
+    if (!currentLead) return;
+    // אם כבר רץ poll (למשל טיק רקע שהתנגש עם הקריאה הזו), לא מדלגים בשקט - מסמנים
+    // בקשה לסבב נוסף כדי שהודעה שהמשתמש רק שלח לא "תיתקע" עד הטיק הבא.
+    if (isPolling) { pollAgainRequested = true; return; }
+    isPolling = true;
+
+    do {
+      pollAgainRequested = false;
+      try {
+        const { phone, tenantId } = currentLead;
+        let url = `/api/messages?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`;
+        if (lastMessageTimestamp) url += `&since=${encodeURIComponent(lastMessageTimestamp)}`;
+
+        const res = await fetch(url);
+        if (res.ok) {
+          const messages = await res.json();
+          if (messages.length > 0) {
+            const el = bodyEl();
+            const empty = el.querySelector(".empty, .inbox-chat-empty");
+            if (empty) el.innerHTML = "";
+            const wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+            el.insertAdjacentHTML("beforeend", messages.map(renderBubble).join(""));
+            lastMessageTimestamp = messages[messages.length - 1].timestamp;
+            if (wasNearBottom) el.scrollTop = el.scrollHeight;
+          }
+        }
+      } catch (err) {
+        console.error("live polling נכשל:", err);
+      }
+    } while (pollAgainRequested && currentLead);
+
+    isPolling = false;
+  }
+
+  async function open(phone, tenantId, name) {
+    currentLead = { phone, tenantId };
+    lastMessageTimestamp = null;
+    document.getElementById(ids.name).textContent = name;
+    document.getElementById(ids.sub).textContent = phone + " · " + tenantId;
+    hideComposerError();
+    composerInputEl().value = "";
+    syncStatus();
+    if (ids.onOpen) ids.onOpen();
+
+    const el = bodyEl();
+    el.innerHTML = '<div class="loading">טוען היסטוריה...</div>';
+
+    try {
+      const res = await fetch(`/api/messages?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const messages = await res.json();
+      if (messages.length === 0) {
+        el.innerHTML = '<div class="empty">אין הודעות רשומות למסד הנתונים עבור ליד זה</div>';
+      } else {
+        el.innerHTML = messages.map(renderBubble).join("");
+        el.scrollTop = el.scrollHeight;
+        lastMessageTimestamp = messages[messages.length - 1].timestamp;
+      }
+    } catch (err) {
+      el.innerHTML = '<div class="error">שגיאה בטעינת ההיסטוריה: ' + escapeHtml(err.message) + "</div>";
+    }
+
+    startPolling();
+  }
+
+  function close() {
+    currentLead = null;
+    stopPolling();
+    if (ids.onClose) ids.onClose();
+  }
+
+  document.getElementById(ids.composerForm).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!currentLead) return;
+
+    const inputEl = composerInputEl();
+    const sendBtn = composerSendEl();
+    const text = inputEl.value.trim();
+    if (!text) return;
+
+    hideComposerError();
+    sendBtn.disabled = true;
+    inputEl.disabled = true;
+
+    try {
+      const res = await fetch("/api/messages/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: currentLead.phone, tenant_id: currentLead.tenantId, message: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+
+      inputEl.value = "";
+      // מציגים את ההודעה שנשלחה דרך אותו נתיב בדיוק כמו הודעות נכנסות חיות (polling) -
+      // כך שאין סיכון לכפילות בין תצוגה "אופטימית" מקומית לבין מה שבאמת נשמר ב-DB
+      await pollForNew();
+      if (data.simulated) showComposerError(data.warning || "ההודעה נרשמה כסימולציה - לא נשלחה בפועל.", true);
+    } catch (err) {
+      showComposerError("שליחה נכשלה: " + err.message);
+    } finally {
+      sendBtn.disabled = false;
+      inputEl.disabled = false;
+      inputEl.focus();
+    }
+  });
+
+  composerInputEl().addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      document.getElementById(ids.composerForm).requestSubmit();
+    }
+  });
+
+  return {
+    open, close, syncStatus,
+    get currentLead() { return currentLead; },
+  };
 }
 
-function closeHistory() {
-  document.getElementById("overlay").classList.remove("open");
-  document.getElementById("panel").classList.remove("open");
-  currentLead = null;
-  stopLivePolling();
+const panelChat = createChatController({
+  body: "panelBody", name: "panelName", sub: "panelSub", statusWrap: "panelStatusWrap",
+  composerForm: "composerForm", composerInput: "composerInput",
+  composerSend: "composerSend", composerError: "composerError",
+});
+
+const inboxChat = createChatController({
+  body: "inboxChatBody", name: "inboxChatName", sub: "inboxChatSub", statusWrap: "inboxChatStatusWrap",
+  composerForm: "inboxComposerForm", composerInput: "inboxComposerInput",
+  composerSend: "inboxComposerSend", composerError: "inboxComposerError",
+  onOpen: () => {
+    document.getElementById("inboxChatHeader").style.display = "";
+    document.getElementById("inboxComposerWrap").style.display = "";
+  },
+});
+
+function openHistory(phone, tenantId, name) {
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("panel").classList.add("open");
+  panelChat.open(phone, tenantId, name);
 }
 
 function closeAllPanels() {
   document.getElementById("overlay").classList.remove("open");
   document.getElementById("panel").classList.remove("open");
   document.getElementById("reactivatePanel").classList.remove("open");
-  currentLead = null;
-  stopLivePolling();
+  panelChat.close();
 }
-
-function hideComposerError() {
-  const el = document.getElementById("composerError");
-  el.classList.remove("show", "warning");
-  el.textContent = "";
-}
-function showComposerError(text, isWarning = false) {
-  const el = document.getElementById("composerError");
-  el.textContent = text;
-  el.classList.toggle("warning", isWarning);
-  el.classList.add("show");
-}
-
-document.getElementById("composerForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  if (!currentLead) return;
-
-  const input = document.getElementById("composerInput");
-  const sendBtn = document.getElementById("composerSend");
-  const text = input.value.trim();
-  if (!text) return;
-
-  hideComposerError();
-  sendBtn.disabled = true;
-  input.disabled = true;
-
-  try {
-    const res = await fetch("/api/messages/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: currentLead.phone, tenant_id: currentLead.tenantId, message: text }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
-
-    input.value = "";
-    // מציגים את ההודעה שנשלחה דרך אותו נתיב בדיוק כמו הודעות נכנסות חיות (polling) -
-    // כך שאין סיכון לכפילות בין תצוגה "אופטימית" מקומית לבין מה שבאמת נשמר ב-DB
-    await pollForNewMessages();
-    if (data.simulated) showComposerError(data.warning || "ההודעה נרשמה כסימולציה - לא נשלחה בפועל.", true);
-  } catch (err) {
-    showComposerError("שליחה נכשלה: " + err.message);
-  } finally {
-    sendBtn.disabled = false;
-    input.disabled = false;
-    input.focus();
-  }
-});
-
-document.getElementById("composerInput").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    document.getElementById("composerForm").requestSubmit();
-  }
-});
 
 document.getElementById("overlay").addEventListener("click", closeAllPanels);
 document.getElementById("panelClose").addEventListener("click", closeAllPanels);
@@ -698,6 +798,80 @@ document.getElementById("refreshBtn").addEventListener("click", loadLeads);
 document.getElementById("searchInput").addEventListener("input", renderTable);
 document.getElementById("statusFilter").addEventListener("change", renderTable);
 document.getElementById("tenantFilter").addEventListener("change", renderTable);
+
+// ---- Unified Inbox: רשימת שיחות + חלון צ'אט קבוע (לא slide-over) ----
+let inboxLeads = [];
+
+async function loadInboxList() {
+  const listEl = document.getElementById("inboxList");
+  listEl.innerHTML = '<div class="loading">טוען...</div>';
+  try {
+    const res = await fetch("/api/leads?include_last_message=1");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    inboxLeads = await res.json();
+    renderInboxList();
+  } catch (err) {
+    listEl.innerHTML = '<div class="error">שגיאה בטעינת הרשימה: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function renderInboxList() {
+  const listEl = document.getElementById("inboxList");
+  if (inboxLeads.length === 0) {
+    listEl.innerHTML = '<div class="empty">אין עדיין לידים</div>';
+    return;
+  }
+
+  const sorted = [...inboxLeads].sort((a, b) => (b.last_message_at || "").localeCompare(a.last_message_at || ""));
+
+  listEl.innerHTML = sorted.map(lead => {
+    const tenantId = lead.tenant_id || "default";
+    const active = inboxChat.currentLead && inboxChat.currentLead.phone === lead.phone && inboxChat.currentLead.tenantId === tenantId;
+    const meta = statusMeta(lead.lead_status);
+    const previewPrefix = lead.last_message_direction === "out" ? "את/ה: " : "";
+    const preview = lead.last_message ? (previewPrefix + lead.last_message) : "אין הודעות עדיין";
+    const time = lead.last_message_at
+      ? new Date(lead.last_message_at).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" })
+      : "";
+    return `
+      <button type="button" class="inbox-contact${active ? " active" : ""}"
+              data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}"
+              data-name="${escapeHtml(lead.customer_name || lead.phone)}">
+        <div class="inbox-contact-top">
+          <span class="inbox-contact-name">${escapeHtml(lead.customer_name || lead.phone)}</span>
+          <span class="inbox-contact-time">${escapeHtml(time)}</span>
+        </div>
+        <div class="inbox-contact-preview ${lead.last_message ? "" : "muted"}">${escapeHtml(preview)}</div>
+        <span class="badge ${meta.cls}">${meta.label}</span>
+      </button>
+    `;
+  }).join("");
+
+  listEl.querySelectorAll(".inbox-contact").forEach(btn => {
+    btn.addEventListener("click", () => {
+      inboxChat.open(btn.dataset.phone, btn.dataset.tenant, btn.dataset.name);
+      listEl.querySelectorAll(".inbox-contact").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+    });
+  });
+}
+
+function switchView(view) {
+  const isInbox = view === "inbox";
+  document.getElementById("tableView").style.display = isInbox ? "none" : "";
+  document.getElementById("inboxView").style.display = isInbox ? "" : "none";
+  document.getElementById("tableViewBtn").classList.toggle("active", !isInbox);
+  document.getElementById("inboxViewBtn").classList.toggle("active", isInbox);
+
+  if (isInbox) {
+    closeAllPanels(); // אם הפאנל הנגלל פתוח, סוגרים אותו כדי לא להריץ שני chat sessions מקבילים
+    loadInboxList();
+  } else {
+    inboxChat.close(); // עוצרים polling של ה-inbox כשלא רואים אותו
+  }
+}
+document.getElementById("tableViewBtn").addEventListener("click", () => switchView("table"));
+document.getElementById("inboxViewBtn").addEventListener("click", () => switchView("inbox"));
 
 function showImportStatus(text, isError = false) {
   const el = document.getElementById("importStatus");
@@ -759,7 +933,9 @@ document.addEventListener("change", async (e) => {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
     await loadLeads(); // מרענן את הטבלה + הסטטיסטיקות לפי הנתונים המעודכנים
-    syncPanelStatus(); // אם הפאנל פתוח לאותו ליד, מעדכן גם שם
+    panelChat.syncStatus(); // אם הפאנל פתוח לאותו ליד, מעדכן גם שם
+    inboxChat.syncStatus(); // ואותו דבר עבור ה-Unified Inbox אם פתוח
+    if (document.getElementById("inboxView").style.display !== "none") await loadInboxList();
   } catch (err) {
     alert("עדכון סטטוס נכשל: " + err.message);
     await loadLeads(); // משחזר את הבחירה הקודמת מהשרת

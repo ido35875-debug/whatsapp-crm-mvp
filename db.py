@@ -105,6 +105,22 @@ def get_messages(phone: str, tenant_id: str = "default", since: str | None = Non
         conn.close()
 
 
+def get_last_message(phone: str, tenant_id: str = "default") -> dict | None:
+    """מחזיר את ההודעה האחרונה (נכנסת או יוצאת) של ליד, או None אם אין בכלל - לשימוש
+    תצוגת ה-Unified Inbox (תצוגה מקדימה + מיון לפי פעילות אחרונה ברשימת השיחות)."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT channel, direction, message, timestamp, simulated FROM messages "
+            "WHERE phone = ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT 1",
+            (phone, tenant_id),
+        ).fetchone()
+        return dict(row) | {"simulated": bool(row["simulated"])} if row else None
+    finally:
+        conn.close()
+
+
 def log_scheduler_run(
     leads_scanned: int, leads_due: int, auto_send: bool, summary: str, tenant_id: str = "default"
 ) -> None:
