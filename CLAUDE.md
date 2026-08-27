@@ -20,6 +20,7 @@
 | `paths.py` (2026-08-26) | `DATA_DIR` משותף - `customers.json`/`crm_data.db`/`chat_history.txt` יכולים לשבת על דיסק מתמיד בענן (`DATA_DIR` env var); ברירת מחדל = תיקיית הפרויקט, ללא שינוי מקומי | ✅ עובד ונבדק (ברירת מחדל + override) |
 | `POST /api/leads/import` (ב-`server.py`) | ייבוא לידים מ-CSV/XLSX - ממפה אוטומטית שם/טלפון/עסק/מקור/סטטוס (עברית או אנגלית), upsert לפי טלפון מנורמל (E.164) + tenant דרך `import_lead` ב-`extract.py`. כפתור "📥 ייבוא לידים" ב-`index.html` | ✅ עובד |
 | הקשחת `server.py` (2026-08-25) | משתני סביבה (PORT/HOST/FLASK_DEBUG/LOG_LEVEL/VERIFY_TWILIO_SIGNATURE), לוגים מסודרים (קונסולה + `server_error.log` מתגלגל), אימות חתימת Twilio (`X-Twilio-Signature`) ל-`/webhook`, ProxyFix מאחורי ngrok | ✅ עובד ונבדק דרך ngrok אמיתי - ראו הפירוט תחת "הקשחת production" למטה |
+| `voice_call.py` (חדש) + `/api/calls/*`,`/voice/*` ב-`server.py` + טבלת `calls` ב-`db.py` + כפתור "📞 שיחה" ב-`index.html` (2026-08-27) | **Click-to-Call**: גישור שיחה (Twilio מתקשר לנציג, ואז מגשר ללקוח) + הקלטה + הערות ידניות של הנציג → Claude מייצר תקציר שמשוקף גם ל-`customers.json`/`messages` (channel="voice") | ✅ **צינור ה-DB/AI/UI נבדק מקצה-לקצה** (במצב simulated - ראו למטה); ⚠️ שיחת Voice אמיתית (חיוג בפועל, TwiML bridge, הקלטה אמיתית) **לא נבדקה** - אין עדיין מספר Twilio Voice/`AGENT_PHONE_NUMBER`/`PUBLIC_BASE_URL` מוגדרים |
 
 תפקידי QA / Sales / Scheduling / BI שמתוארים למטה **עדיין אין להם קובץ מימוש**. כדי שסוכן
 יהפוך מ"תיאור תפקיד" ל"תהליך שרץ בפועל" צריך: (1) לבנות עבורו סקריפט ייעודי, ו-(2) לתזמן
@@ -41,6 +42,13 @@
   הוא עלול "לפגוש" ולעדכן כרטיס אחר שכבר קיים ב-E.164 עבור אותו מספר, ולא את הכרטיס
   שציפיתם לו. **צריך ניקוי/איחוד נתונים ידני** של הכרטיסים הכפולים לפני שסומכים על
   זיהוי-כפילויות אוטומטי בייבוא בסביבת production; זו לא נבדקה/תוקנה אוטומטית כאן.
+- **⚠️ אין עדיין מספר Twilio Voice-capable מוגדר, ואין `PUBLIC_BASE_URL` חי (2026-08-27).**
+  Click-to-Call (`voice_call.py`) בנוי ונבדק במלואו במצב `simulated` (בדיוק כמו חסימת
+  Trial ב-WhatsApp), אבל שיחת גישור אמיתית - חיוג בפועל לנציג, TwiML ב-`/voice/connect`,
+  הקלטה אמיתית, ואימות חתימת Twilio על שלושת ה-webhooks החדשים - **לא נבדקו** כאן. דורש
+  מהמשתמש לרכוש מספר Voice בקונסולת Twilio, להגדיר `AGENT_PHONE_NUMBER`/
+  `TWILIO_VOICE_FROM`/`PUBLIC_BASE_URL` ב-`.env`, ולחשוף URL ציבורי (ngrok/Render) - אותה
+  מגבלה עקרונית כמו Gunicorn-על-Windows ואימות חתימת `/webhook` שנבדק רק דרך ngrok אמיתי.
 
 ### הקשחת production ב-server.py (2026-08-25) - מה כן ומה לא
 
@@ -139,6 +147,52 @@ controller אחד "חי" בכל רגע - עובר ל-Inbox סוגר את הפא�
    תוך פחות ממחזור polling אחד (זהה בדיוק להתנהגות שנבדקה על הפאנל הישן).
 כל נתוני הבדיקה (הודעות טסט ב-`crm_data.db`, `customers.json`, `chat_history.txt`)
 נוקו בסוף.
+
+### Click-to-Call + תקציר שיחה אוטומטי (2026-08-27)
+
+**מנגנון:** כפתור "📞 שיחה" (בפאנל ההיסטוריה הנגלל וב-Inbox, ליד ה-header של הצ'אט)
+פותח פאנל ייעודי (`#callPanel`) וקורא ל-`POST /api/calls/start`. זה יוזם **גישור** דרך
+Twilio (`voice_call.start_bridge_call` - חדש): Twilio מתקשר קודם לנציג
+(`AGENT_PHONE_NUMBER`), וברגע שהוא עונה, TwiML ב-`/voice/connect` מגשר (`<Dial
+record="record-from-answer">`) למספר הלקוח - **לא** Softphone מבוסס-WebRTC בדפדפן
+(זה היה דורש יצירת TwiML Application ידנית בקונסולת Twilio, לא ניתן לסקריפט + גישה
+למיקרופון). ההקלטה נשמרת (URL בלבד, דרך `/voice/recording-status`) - **אין תמלול/STT
+אוטומטי** בגרסה הזו (הוחלט במפורש מול המשתמש: "הקלטה + הערות ידניות" עדיף על תמלול
+Twilio המובנה - איכות מוטלת בספק בעברית - ועל הוספת ספק STT חדש כמו OpenAI Whisper -
+עלות/תלות חדשה). אחרי השיחה, הנציג מקליד הערות חופשיות (`POST
+/api/calls/<id>/notes`), ו-Claude מייצר מהן תקציר עברי קצר
+(`extract.generate_call_summary` - אותו pattern בדיוק כמו `generate_reply`/
+`generate_outreach_message`). התקציר נשמר בטבלת `calls` החדשה ב-`db.py` (audit trail:
+`call_sid`/`status`/`duration_seconds`/`recording_url`/`notes`/`summary`) **וגם**
+משוקף להיסטוריה הרגילה (`extract.log_call_summary`, בכוונה לא נוגע ב-`lead_status` -
+כמו `log_manual_reply`) **וגם** לטבלת `messages` עם `channel="voice"` - כך שהוא מופיע
+אוטומטית כבועה בצ'אט הקיים (פאנל/Inbox) דרך אותו polling שכבר קיים ונבדק, בלי קוד
+רינדור נוסף (`renderBubble` קיבל רק הסתעפות קטנה ל-`channel==="voice"`).
+
+**Fallback מדומה - בדיוק כמו Trial ב-WhatsApp:** בסביבת הפיתוח הזו **אין** עדיין מספר
+Twilio Voice/`AGENT_PHONE_NUMBER`/`PUBLIC_BASE_URL` מוגדרים ב-`.env`. `/api/calls/start`
+תופס את זה (`RuntimeError` מ-`voice_call.py`, נבדק כ-`status="simulated_no_config"`)
+ומתנהג בדיוק כמו `_is_trial_restriction` ב-`/api/messages/send`: רושם שיחה כ-`simulated`
+ומחזיר 200 (לא 502) - כדי לאפשר לבדוק את כל שאר הצינור (הערות → Claude → תקציר → כרטיס)
+בלי מספר Voice אמיתי.
+
+**נבדק בפועל (Playwright + קריאות API ישירות), לא רק בקוד:**
+- `POST /api/calls/start` → `simulated:true, status:"simulated_no_config"` כצפוי.
+- `POST /api/calls/<id>/notes` עם הערות עבריות אמיתיות → תקציר Claude איכותי ותמציתי
+  (לא stub - `ANTHROPIC_API_KEY` כבר מוגדר), נשמר גם ב-`calls` וגם ב-`customers.json`
+  history (`channel:"voice"`) וגם ב-`messages`; אומת ש-`lead_status` **לא** השתנה.
+- Playwright: כפתור "📞 שיחה" מהפאנל הנגלל וגם מה-Inbox - שניהם פותחים את `#callPanel`
+  נכון (כולל stacking נכון מעל הפאנל/ה-Inbox, ו-overlay שנשאר פתוח אם `#panel` עדיין
+  פתוח מתחתיו). התקציר שנוצר הופיע כבועה חדשה עם תווית "📞 תקציר שיחה" בצ'אט תוך מחזור
+  polling אחד אחרי סגירת פאנל השיחה - **בלי רענון ידני**, בדיוק כמו שיחת webhook נכנסת.
+  0 שגיאות קונסולה, ורגרסיה מלאה: שליחת הודעה רגילה דרך הקומפוזר הקיים ב-Inbox עדיין
+  עובדת אחרי כל השינויים.
+- **לא נבדק (ולא ניתן לבדיקה כאן):** חיוג אמיתי לטלפון נציג, `/voice/connect` שנקרא
+  בפועל ע"י Twilio ומגשר ללקוח, הקלטה אמיתית + `/voice/recording-status` עם
+  `RecordingUrl` אמיתי, מעברי `CallStatus` אמיתיים ב-`/voice/status`, ואימות חתימת
+  Twilio אמיתי (`_verify_twilio_request`) על שלושת ה-webhooks החדשים - דורש מספר Voice
+  אמיתי + `AGENT_PHONE_NUMBER` + `PUBLIC_BASE_URL` ציבורי (ngrok/Render) שהמשתמש טרם
+  סיפק. כל נתוני הבדיקה נוקו בסוף (`calls`, `messages`, `customers.json` history).
 
 ### פריסה לענן (2026-08-26) - Procfile, Gunicorn, נתיבים, ומגבלה קריטית
 
@@ -245,6 +299,12 @@ traceback גולמי לא ברור בלוג, ולא כהודעת השגיאה ה
   Twilio. בזמן פיתוח/בדיקה - אל תשלחו למספרים אמיתיים בלי אישור מפורש; מספרים שלא הצטרפו
   ל-Sandbox (לא שלחו `join <קוד>`) יידחו אוטומטית ע"י Twilio כ"unverified" - זו רשת ביטחון
   חלקית לבדיקות, לא תחליף לזהירות.
+- **`AGENT_PHONE_NUMBER`/`TWILIO_VOICE_FROM`/`PUBLIC_BASE_URL` (2026-08-27, ל-Click-to-Call
+  ב-`voice_call.py`) - עדיין לא מוגדרים ב-`.env`.** בניגוד ל-`ANTHROPIC_API_KEY` (נבדק
+  קשיח בזמן import, מפיל את השרת אם חסר), אלה נבדקים **רק בזמן קריאה** (בתוך
+  `start_bridge_call`) - Voice הוא feature אופציונלי, והשרת ממשיך לעלות ולשרת WhatsApp
+  גם בלעדיהם (`/api/calls/start` פשוט חוזר במצב `simulated`). `PUBLIC_BASE_URL` בלי `/`
+  בסוף.
 
 ## חלוקת סוכנים
 

@@ -227,6 +227,7 @@
     background: var(--status-warning-soft);
     border: 1px dashed var(--status-warning);
   }
+  .bubble.voice { border-inline-start: 3px solid var(--accent); }
   .msg-meta {
     font-size: 11px; color: var(--text-muted); margin-top: 4px;
     display: flex; gap: 6px; align-items: center;
@@ -275,6 +276,20 @@
   }
   .composer-error.show { display: block; }
   .composer-error.warning { color: var(--status-warning); background: var(--status-warning-soft); }
+
+  /* Click-to-Call */
+  .call-btn { font-size: 12.5px; padding: 6px 12px; }
+  .call-status-line { font-size: 13px; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .call-summary-box {
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+    font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; background: var(--surface-3);
+  }
+  .call-notes-form textarea {
+    width: 100%; resize: vertical; min-height: 90px; font-family: inherit; font-size: 13.5px;
+    padding: 9px 12px; line-height: 1.4; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text-primary); box-sizing: border-box;
+  }
+  .call-notes-form { display: flex; flex-direction: column; gap: 10px; }
 
   @media (max-width: 720px) {
     .table-card { overflow-x: auto; }
@@ -383,6 +398,7 @@
           </h2>
           <p id="inboxChatSub"></p>
           <div id="inboxChatStatusWrap" class="panel-status-wrap"></div>
+          <button type="button" class="call-btn" id="inboxCallBtn">📞 שיחה</button>
         </div>
         <div class="inbox-chat-body" id="inboxChatBody">
           <div class="inbox-chat-empty muted">בחר שיחה מהרשימה כדי להתחיל</div>
@@ -409,6 +425,7 @@
       </h2>
       <p id="panelSub"></p>
       <div id="panelStatusWrap" class="panel-status-wrap"></div>
+      <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
     </div>
     <button class="panel-close" id="panelClose" aria-label="סגור">✕</button>
   </div>
@@ -420,6 +437,17 @@
       <button type="submit" class="primary" id="composerSend">שלח</button>
     </form>
   </div>
+</aside>
+
+<aside class="panel" id="callPanel">
+  <div class="panel-header">
+    <div>
+      <h2 id="callPanelName">שיחה</h2>
+      <p id="callPanelSub"></p>
+    </div>
+    <button class="panel-close" id="callPanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body" id="callPanelBody"></div>
 </aside>
 
 <aside class="panel" id="reactivatePanel">
@@ -590,11 +618,14 @@ const LIVE_POLL_INTERVAL_MS = 3000;
 function renderBubble(m) {
   const dir = m.direction === "out" ? "out" : "in";
   const time = new Date(m.timestamp).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
-  const statusLabel = m.simulated ? "⚠️ סימולציה - לא נשלח בפועל" : (dir === "out" ? "נשלח" : "התקבל");
+  const isVoice = m.channel === "voice";
+  const statusLabel = m.simulated
+    ? "⚠️ סימולציה - לא נשלח בפועל"
+    : isVoice ? "📞 תקציר שיחה" : (dir === "out" ? "נשלח" : "התקבל");
   return `
     <div class="msg-row ${dir}">
       <div class="bubble-wrap">
-        <div class="bubble${m.simulated ? " simulated" : ""}">${escapeHtml(m.message)}</div>
+        <div class="bubble${m.simulated ? " simulated" : ""}${isVoice ? " voice" : ""}">${escapeHtml(m.message)}</div>
         <div class="msg-meta${m.simulated ? " simulated" : ""}"><span>${statusLabel}</span><span>·</span><span>${time}</span></div>
       </div>
     </div>
@@ -779,6 +810,125 @@ const inboxChat = createChatController({
   },
 });
 
+// ---- Click-to-Call: פאנל שיחה + הערות → תקציר AI ----
+let activeCall = null; // { phone, tenantId, name, callId, simulated }
+
+function renderCallPanelCalling() {
+  document.getElementById("callPanelBody").innerHTML =
+    '<div class="call-status-line">📞 מתקשר לנציג...</div>';
+}
+
+function renderCallPanelInProgress(data) {
+  const body = document.getElementById("callPanelBody");
+  if (data.simulated) {
+    body.innerHTML = `
+      <div class="call-status-line">⚠️ ${escapeHtml(data.warning || "שיחה לא בוצעה בפועל - מצב סימולציה")}</div>
+    `;
+    renderCallNotesForm();
+    return;
+  }
+  body.innerHTML = `
+    <div class="call-status-line">📞 השיחה בעיצומה...</div>
+    <button type="button" class="primary" id="callEndedBtn">השיחה הסתיימה - הזן הערות</button>
+  `;
+  document.getElementById("callEndedBtn").addEventListener("click", renderCallNotesForm);
+}
+
+function renderCallNotesForm() {
+  document.getElementById("callPanelBody").innerHTML = `
+    <form class="call-notes-form" id="callNotesForm">
+      <textarea id="callNotesInput" placeholder="מה עלה בשיחה? הקלד הערות חופשיות..." required></textarea>
+      <button type="submit" class="primary" id="callNotesSubmit">ייצר תקציר</button>
+    </form>
+  `;
+  document.getElementById("callNotesForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const notes = document.getElementById("callNotesInput").value.trim();
+    if (notes) submitCallNotes(notes);
+  });
+}
+
+function renderCallSummarizing() {
+  document.getElementById("callPanelBody").innerHTML =
+    '<div class="call-status-line">✍️ Claude מייצר תקציר...</div>';
+}
+
+function renderCallDone(summary) {
+  document.getElementById("callPanelBody").innerHTML = `
+    <div class="call-status-line">✅ התקציר נשמר בכרטיס הלקוח</div>
+    <div class="call-summary-box">${escapeHtml(summary)}</div>
+  `;
+}
+
+async function openCallPanel(phone, tenantId, name) {
+  activeCall = { phone, tenantId, name, callId: null, simulated: false };
+  document.getElementById("callPanelName").textContent = "📞 " + name;
+  document.getElementById("callPanelSub").textContent = phone + " · " + tenantId;
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("callPanel").classList.add("open");
+  renderCallPanelCalling();
+
+  try {
+    const res = await fetch("/api/calls/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, tenant_id: tenantId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    if (!activeCall) return; // הפאנל נסגר בזמן ההמתנה לתשובה
+    activeCall.callId = data.call_id;
+    activeCall.simulated = data.simulated;
+    renderCallPanelInProgress(data);
+  } catch (err) {
+    if (!activeCall) return;
+    document.getElementById("callPanelBody").innerHTML =
+      '<div class="error">שגיאה ביזום השיחה: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+async function submitCallNotes(notesText) {
+  renderCallSummarizing();
+  try {
+    const res = await fetch(`/api/calls/${activeCall.callId}/notes`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: notesText }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    if (!activeCall) return;
+    renderCallDone(data.summary);
+    // לא צריך לרענן את הצ'אט ידנית - polling הקיים (כל 3 שניות) יביא את בועת ה-voice
+    // אוטומטית אם פאנל הצ'אט עדיין פתוח, בדיוק כמו כל הודעה יוצאת אחרת.
+  } catch (err) {
+    if (!activeCall) return;
+    document.getElementById("callPanelBody").innerHTML =
+      '<div class="error">שגיאה בייצור התקציר: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function closeCallPanel() {
+  document.getElementById("callPanel").classList.remove("open");
+  // אם נפתח מעל #panel (הצ'אט הנגלל) - הוא עדיין open מתחתיו, וה-overlay צריך
+  // להישאר כדי שימשיך לעמעם/לאפשר סגירה שלו. אם נפתח מה-Inbox (בלי overlay
+  // משלו) - אין panel נגלל אחר פתוח, ומסירים את ה-overlay לגמרי.
+  const panelStillOpen = document.getElementById("panel").classList.contains("open");
+  const reactivateStillOpen = document.getElementById("reactivatePanel").classList.contains("open");
+  if (!panelStillOpen && !reactivateStillOpen) {
+    document.getElementById("overlay").classList.remove("open");
+  }
+  activeCall = null;
+}
+
+document.getElementById("panelCallBtn").addEventListener("click", () => {
+  const lead = panelChat.currentLead;
+  if (lead) openCallPanel(lead.phone, lead.tenantId, document.getElementById("panelName").textContent);
+});
+document.getElementById("inboxCallBtn").addEventListener("click", () => {
+  const lead = inboxChat.currentLead;
+  if (lead) openCallPanel(lead.phone, lead.tenantId, document.getElementById("inboxChatName").textContent);
+});
+document.getElementById("callPanelClose").addEventListener("click", closeCallPanel);
+
 function openHistory(phone, tenantId, name) {
   document.getElementById("overlay").classList.add("open");
   document.getElementById("panel").classList.add("open");
@@ -788,7 +938,9 @@ function openHistory(phone, tenantId, name) {
 function closeAllPanels() {
   document.getElementById("overlay").classList.remove("open");
   document.getElementById("panel").classList.remove("open");
+  document.getElementById("callPanel").classList.remove("open");
   document.getElementById("reactivatePanel").classList.remove("open");
+  activeCall = null;
   panelChat.close();
 }
 

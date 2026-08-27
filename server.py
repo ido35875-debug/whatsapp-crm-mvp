@@ -49,6 +49,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from openpyxl import load_workbook
 from twilio.base.exceptions import TwilioRestException
 from twilio.request_validator import RequestValidator
+from twilio.twiml.voice_response import Dial, VoiceResponse
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
@@ -62,10 +63,13 @@ try:
     import db
     import reactivate
     import scheduler
+    import voice_call
     from extract import (
         DEFAULT_TENANT_ID,
+        generate_call_summary,
         import_lead,
         load_customers,
+        log_call_summary,
         log_manual_reply,
         process_message,
         process_message_with_reply,
@@ -424,6 +428,128 @@ def api_send_message():
             "ההודעה נרשמה כסימולציה לצורך בדיקה, אך לא נשלחה ללקוח."
         )
     return jsonify(response)
+
+
+@app.route("/api/calls/start", methods=["POST"])
+def api_calls_start():
+    """יוזם Click-to-Call (גישור נציג→לקוח). אישור אנושי = הקליק על '📞 שיחה' בדשבורד.
+    כרגע (סביבת פיתוח) אין מספר Twilio Voice/PUBLIC_BASE_URL מוגדרים - זה ייתפס כאן
+    ויתנהג בדיוק כמו _is_trial_restriction ב-/api/messages/send: נרשם כ-simulated,
+    מוחזר 200 (לא 502), כדי לאפשר להמשיך ולבדוק את שאר הזרימה (הערות → תקציר → כרטיס)."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+
+    simulated, call_sid, status = False, None, "initiated"
+    try:
+        call_sid = voice_call.start_bridge_call(phone, tenant_id=tenant_id)
+    except RuntimeError as exc:
+        logger.warning("שיחת Voice לא הופעלה (תצורה חסרה): %s", exc)
+        simulated, status = True, "simulated_no_config"
+    except Exception as exc:
+        if not _is_trial_restriction(exc):
+            return jsonify({"error": str(exc)}), 502
+        simulated, status = True, "simulated_trial_restriction"
+
+    call_id = db.create_call(phone, tenant_id=tenant_id, call_sid=call_sid, status=status, simulated=simulated)
+    response = {"ok": True, "call_id": call_id, "call_sid": call_sid, "simulated": simulated, "status": status}
+    if simulated:
+        response["warning"] = (
+            "שיחה אמיתית לא בוצעה (חסרה תצורת Voice ב-.env, או שחשבון Trial חוסם) - "
+            "נרשמה כסימולציה כדי לאפשר להמשיך למילוי הערות ותקציר."
+        )
+    return jsonify(response)
+
+
+@app.route("/api/calls/<int:call_id>/notes", methods=["POST"])
+def api_call_notes(call_id):
+    """הנציג שולח הערות חופשיות שהקליד אחרי השיחה → Claude מייצר תקציר
+    (extract.generate_call_summary) → נשמר ב-calls (audit trail: הערות + תקציר) וגם
+    משוקף להיסטוריה/messages (extract.log_call_summary + db.log_message, channel=
+    "voice") - כך שהוא מופיע אוטומטית בצ'אט הקיים (פאנל/Inbox) דרך אותו polling
+    שכבר קיים, בלי קוד רינדור נוסף. עובד גם על call_id שנוצר במצב simulated - ולכן
+    ניתן לבדיקה מלאה גם בלי שיחת Twilio אמיתית."""
+    data = request.get_json(silent=True) or {}
+    notes = (data.get("notes") or "").strip()
+    if not notes:
+        return jsonify({"error": "חסרות הערות"}), 400
+
+    call = db.get_call(call_id)
+    if not call:
+        return jsonify({"error": "שיחה לא נמצאה"}), 404
+
+    phone, tenant_id, simulated = call["phone"], call["tenant_id"], call["simulated"]
+    card = load_customers().get(f"{tenant_id}::{phone}", {})
+    summary = generate_call_summary(notes, card)
+
+    updated_call = db.save_call_notes_and_summary(call_id, notes, summary)
+    log_call_summary(phone, summary, tenant_id=tenant_id, simulated=simulated)
+    db.log_message(phone, summary, direction="out", tenant_id=tenant_id, channel="voice", simulated=simulated)
+
+    return jsonify({"ok": True, "call": updated_call, "summary": summary})
+
+
+@app.route("/api/calls")
+def api_calls():
+    """יומן שיחות Voice של ליד - בדומה ל-/api/messages, אבל לטבלת calls (שיחה = שורה,
+    לא הודעה בודדת)."""
+    phone = request.args.get("phone", "")
+    tenant_id = request.args.get("tenant_id", DEFAULT_TENANT_ID)
+    if not phone:
+        return Response(status=400)
+    return jsonify(db.get_calls(phone, tenant_id=tenant_id))
+
+
+@app.route("/voice/connect", methods=["POST"])
+def voice_connect():
+    """TwiML: Twilio מגיע לכאן ברגע שהנציג (הרגל הראשונה של הגישור) עונה. מגשר
+    (<Dial>) למספר הלקוח, עם הקלטה (record="record-from-answer") ו-callback כשההקלטה
+    מוכנה. אין תמלול אוטומטי - הוחלט במפורש (ראו voice_call.py)."""
+    if VERIFY_TWILIO_SIGNATURE and not _verify_twilio_request(request):
+        logger.warning("בקשת /voice/connect נדחתה - חתימת Twilio לא תקינה/חסרה")
+        return Response(status=403)
+
+    customer_phone = request.args.get("customer_phone", "")
+    if not customer_phone:
+        return Response(status=400)
+
+    response = VoiceResponse()
+    dial = Dial(
+        record="record-from-answer",
+        recording_status_callback=f"{voice_call.PUBLIC_BASE_URL}/voice/recording-status",
+        recording_status_callback_event=["completed"],
+    )
+    dial.number(customer_phone)
+    response.append(dial)
+    return Response(str(response), mimetype="text/xml")
+
+
+@app.route("/voice/status", methods=["POST"])
+def voice_status():
+    """Status callback לרגל הראשונה של הגשר (הנציג) - CallSid/CallStatus/CallDuration."""
+    if VERIFY_TWILIO_SIGNATURE and not _verify_twilio_request(request):
+        return Response(status=403)
+    call_sid = request.form.get("CallSid", "")
+    status = request.form.get("CallStatus", "")
+    duration = request.form.get("CallDuration")
+    if call_sid and status:
+        db.update_call_status(call_sid, status, duration_seconds=int(duration) if duration else None)
+    return Response(status=204)
+
+
+@app.route("/voice/recording-status", methods=["POST"])
+def voice_recording_status():
+    """הקלטת השיחה המגושרת מוכנה - שומר רק RecordingUrl. אין תמלול/STT אוטומטי
+    (הוחלט במפורש - ראו "Recording + הערות ידניות" ב-CLAUDE.md)."""
+    if VERIFY_TWILIO_SIGNATURE and not _verify_twilio_request(request):
+        return Response(status=403)
+    call_sid = request.form.get("CallSid", "")
+    recording_url = request.form.get("RecordingUrl", "")
+    if call_sid and recording_url:
+        db.save_recording_url(call_sid, recording_url)
+    return Response(status=204)
 
 
 @app.route("/webhook", methods=["POST"])

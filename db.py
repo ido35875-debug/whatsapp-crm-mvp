@@ -54,6 +54,25 @@ def _get_connection() -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            phone TEXT NOT NULL,
+            call_sid TEXT,
+            status TEXT NOT NULL DEFAULT 'initiated',
+            direction TEXT NOT NULL DEFAULT 'outbound',
+            duration_seconds INTEGER,
+            recording_url TEXT,
+            notes TEXT,
+            summary TEXT,
+            simulated INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     conn.commit()
     return conn
 
@@ -148,5 +167,102 @@ def get_scheduler_runs(limit: int = 20) -> list[dict]:
             (limit,),
         ).fetchall()
         return [dict(row) | {"auto_send": bool(row["auto_send"])} for row in rows]
+    finally:
+        conn.close()
+
+
+def create_call(
+    phone: str,
+    tenant_id: str = "default",
+    call_sid: str | None = None,
+    status: str = "initiated",
+    direction: str = "outbound",
+    simulated: bool = False,
+) -> int:
+    """יוצר שורת שיחה חדשה בטבלת calls (Click-to-Call). מוחזר ה-id (INTEGER PRIMARY
+    KEY) - זה מה שהדשבורד שולח חזרה ב-POST /api/calls/<id>/notes אחרי שהשיחה נגמרה."""
+    conn = _get_connection()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        cur = conn.execute(
+            "INSERT INTO calls (tenant_id, phone, call_sid, status, direction, simulated, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (tenant_id, phone, call_sid, status, direction, int(simulated), now, now),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_call_status(call_sid: str, status: str, duration_seconds: int | None = None) -> None:
+    """מעדכן סטטוס שיחה לפי call_sid - קורא ל-POST /voice/status (status callback של
+    הרגל הראשונה בגישור, הנציג, מ-Twilio)."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calls SET status = ?, duration_seconds = COALESCE(?, duration_seconds), "
+            "updated_at = ? WHERE call_sid = ?",
+            (status, duration_seconds, datetime.now(timezone.utc).isoformat(), call_sid),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_recording_url(call_sid: str, recording_url: str) -> None:
+    """שומר קישור להקלטת השיחה לפי call_sid - קורא ל-POST /voice/recording-status.
+    לא מוריד/מתמלל את התוכן - רק שומר את ה-URL (הוחלט במפורש: תמלול אוטומטי מחוץ
+    לסקופ הגרסה הזו - ראו "Recording + הערות ידניות" ב-CLAUDE.md)."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calls SET recording_url = ?, updated_at = ? WHERE call_sid = ?",
+            (recording_url, datetime.now(timezone.utc).isoformat(), call_sid),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_call_notes_and_summary(call_id: int, notes: str, summary: str) -> dict | None:
+    """שומר הערות חופשיות שהקליד הנציג + תקציר שנוצר ע"י Claude על שורת שיחה קיימת
+    (לפי id, לא call_sid). מחזיר את השורה המעודכנת המלאה."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calls SET notes = ?, summary = ?, updated_at = ? WHERE id = ?",
+            (notes, summary, datetime.now(timezone.utc).isoformat(), call_id),
+        )
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM calls WHERE id = ?", (call_id,)).fetchone()
+        return dict(row) | {"simulated": bool(row["simulated"])} if row else None
+    finally:
+        conn.close()
+
+
+def get_calls(phone: str, tenant_id: str = "default") -> list[dict]:
+    """כל השיחות של ליד, החדשה ביותר קודם - לשימוש GET /api/calls (יומן שיחות מיני)."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM calls WHERE phone = ? AND tenant_id = ? ORDER BY created_at DESC",
+            (phone, tenant_id),
+        ).fetchall()
+        return [dict(row) | {"simulated": bool(row["simulated"])} for row in rows]
+    finally:
+        conn.close()
+
+
+def get_call(call_id: int) -> dict | None:
+    """שיחה בודדת לפי id - קורא ל-POST /api/calls/<id>/notes (צריך phone/tenant_id/
+    simulated לפני שקוראים ל-Claude ומשקפים את התקציר להיסטוריה)."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM calls WHERE id = ?", (call_id,)).fetchone()
+        return dict(row) | {"simulated": bool(row["simulated"])} if row else None
     finally:
         conn.close()

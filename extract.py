@@ -142,6 +142,37 @@ def generate_reply(message_text: str, card: dict) -> str:
     return next(block.text for block in response.content if block.type == "text").strip()
 
 
+CALL_SUMMARY_PROMPT = """\
+אתה עוזר שמסכם שיחת טלפון בין נציג מכירות/שירות ללקוח, על סמך הערות חופשיות שהקליד
+הנציג מיד אחרי השיחה.
+פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}, מיקום - {location}.
+
+הערות הנציג מהשיחה:
+"{notes}"
+
+כתוב תקציר קצר וברור בעברית (2-4 משפטים): מה עלה בשיחה, מה הלקוח ביקש/הביע, ומה הצעדים
+הבאים שסוכמו (אם יש). אל תמציא פרטים שלא נכתבו בהערות. החזר רק את טקסט התקציר, בלי
+מרכאות ובלי הסברים נוספים.
+"""
+
+
+def generate_call_summary(notes: str, card: dict) -> str:
+    prompt = CALL_SUMMARY_PROMPT.format(
+        customer_name=card.get("customer_name") or "לא ידוע",
+        business_name=card.get("business_name") or "לא ידוע",
+        location=card.get("location") or "לא ידוע",
+        notes=notes,
+    )
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=300,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return next(block.text for block in response.content if block.type == "text").strip()
+
+
 def process_message_with_reply(
     phone: str,
     message_text: str,
@@ -177,6 +208,25 @@ def log_manual_reply(
     card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
     card.setdefault("source_channel", source_channel)
     _append_history(card, source_channel, message, direction="out", simulated=simulated)
+    customers[key] = card
+    save_customers(customers)
+    return card
+
+
+def log_call_summary(
+    phone: str,
+    summary: str,
+    tenant_id: str = DEFAULT_TENANT_ID,
+    simulated: bool = False,
+) -> dict:
+    """רושם תקציר שיחת טלפון (מיוצר ע"י Claude מתוך הערות חופשיות שהקליד הנציג -
+    ראו generate_call_summary) בהיסטוריית הכרטיס, בערוץ channel="voice". בכוונה לא
+    נוגע ב-lead_status - כמו log_manual_reply."""
+    customers = load_customers()
+    key = _customer_key(tenant_id, phone)
+    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+    card.setdefault("source_channel", "whatsapp")  # לא דורסים את הערוץ המקורי שהליד הגיע ממנו
+    _append_history(card, "voice", summary, direction="out", simulated=simulated)
     customers[key] = card
     save_customers(customers)
     return card
