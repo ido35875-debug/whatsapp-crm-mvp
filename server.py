@@ -64,8 +64,8 @@ try:
     import reactivate
     import scheduler
     import prompts
+    import transcription
     import voice_call
-    from transcription import transcribe_audio
     from extract import (
         DEFAULT_TENANT_ID,
         generate_call_summary,
@@ -651,7 +651,7 @@ def api_call_transcribe(call_id):
 
     upload = request.files["audio"]
     try:
-        text = transcribe_audio(upload.read(), upload.filename or "recording.webm")
+        text = transcription.transcribe_audio(upload.read(), upload.filename or "recording.webm")
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -850,6 +850,20 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
             return Response(status=403)
 
     contact_id, message_text, source = parse_incoming()
+
+    # הודעה קולית נכנסת (WhatsApp voice note): Twilio שולח Body ריק ורק מדיה
+    # (NumMedia/MediaUrl0/MediaContentType0) - בלי הטיפול הזה message_text היה
+    # נשאר ריק וההודעה כולה נדחית ב-400 למטה, בלי להירשם בשום מקום ("נעלמת"
+    # מה-Inbox). מתמלל אוטומטית (transcription.transcribe_incoming_voice_message,
+    # OpenAI Whisper) ומשתמש בטקסט המתומלל בדיוק כמו הודעת טקסט רגילה מכאן והלאה -
+    # אותו צינור process_message_with_reply/db.log_message, בלי קוד כפול. אם
+    # התמלול עצמו נכשל (OPENAI_API_KEY לא מוגדר, שגיאת רשת/API) - עדיין מקבלים
+    # טקסט placeholder ברור (⚠️) במקום None, כדי שההודעה עדיין תירשם ותופיע
+    # ב-Inbox עם סימון שקרה כשל, לא תיעלם בשקט.
+    if not message_text and source == "whatsapp" and not request.is_json:
+        voice_text = transcription.transcribe_incoming_voice_message(request.form)
+        if voice_text:
+            message_text = voice_text
 
     if not contact_id or not message_text:
         return Response(status=400)
