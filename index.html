@@ -134,6 +134,17 @@
     font-size: 12px; color: var(--text-muted); overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; max-width: 220px;
   }
+  /* סוג נכס/תקציב שחולצו אוטומטית מהודעה קולית (transcription.extract_voice_message_fields,
+     gpt-4o-mini) - תגיות בולטות, לא טקסט מעומעם כמו name-cell-secondary, כדי שיהיו
+     "ברורות ובולטות" כפי שהתבקש - מוצגות רק כשיש ערך בפועל (רוב הלידים שאינם נדל"ן לא יראו כלום) */
+  .name-cell-property { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+  .property-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .property-badge.property-type { background: var(--accent-soft); color: var(--accent); }
+  .property-badge.budget { background: var(--status-serious-soft); color: var(--status-serious); }
 
   /* בחירת שורות מרובות (checkbox) + פס פעולות בצע-בצוותא */
   input.row-checkbox { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
@@ -266,6 +277,9 @@
   .score-badge.warm { background: var(--status-warning-soft); color: var(--status-warning); }
   .score-badge.cold { background: var(--accent-soft); color: var(--accent); }
   .panel-score-wrap { margin-top: 8px; }
+  .panel-property-wrap { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .panel-property-wrap:empty { display: none; margin-top: 0; }
+  .panel-property-wrap .property-badge { font-size: 12.5px; padding: 4px 10px; }
 
   /* קטגוריה חופשית (נדל"ן/פרטי/משפחה וכו') - שדה טקסט ניתן לעריכה בטבלה */
   input.category-input {
@@ -622,6 +636,7 @@
           <p id="inboxChatSub"></p>
           <div id="inboxChatStatusWrap" class="panel-status-wrap"></div>
           <div id="inboxChatScoreWrap" class="panel-score-wrap"></div>
+          <div id="inboxChatPropertyWrap" class="panel-property-wrap"></div>
           <button type="button" class="call-btn" id="inboxCallBtn">📞 שיחה</button>
           <button type="button" class="call-btn" id="inboxTasksBtn">📅 משימות</button>
         </div>
@@ -651,6 +666,7 @@
       <p id="panelSub"></p>
       <div id="panelStatusWrap" class="panel-status-wrap"></div>
       <div id="panelScoreWrap" class="panel-score-wrap"></div>
+      <div id="panelPropertyWrap" class="panel-property-wrap"></div>
       <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
       <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
     </div>
@@ -804,6 +820,21 @@ function scoreBand(score) {
 function scoreBadgeHtml(score) {
   if (score == null) return '<span class="muted">—</span>';
   return `<span class="score-badge ${scoreBand(score)}">${score}</span>`;
+}
+
+// סוג נכס/תקציב שחולצו אוטומטית מהודעה קולית (ראו CLAUDE.md - "חילוץ שדות אוטומטי
+// מהודעה קולית עם gpt-4o-mini") - מוצג רק כשיש ערך בפועל
+function propertyBadgeChips(lead) {
+  if (!lead) return "";
+  const chips = [];
+  if (lead.property_type) chips.push(`<span class="property-badge property-type">🏠 ${escapeHtml(lead.property_type)}</span>`);
+  if (lead.budget) chips.push(`<span class="property-badge budget">💰 ${escapeHtml(lead.budget)}</span>`);
+  return chips.join("");
+}
+// לתא השם בטבלה - עטוף ב-div נפרד (מרווח עליון) כדי לא "להיצמד" לשורת עסק/מיקום
+function propertyBadgesHtml(lead, wrapperClass) {
+  const chips = propertyBadgeChips(lead);
+  return chips ? `<div class="${wrapperClass}">${chips}</div>` : "";
 }
 
 // אווטאר עגול: ראשי תיבות (משם, או שתי הספרות האחרונות בטלפון אם אין שם) + צבע
@@ -973,6 +1004,7 @@ function renderTable() {
             <div class="name-cell-text">
               <div class="name-cell-primary">${escapeHtml(lead.customer_name || "ללא שם")}</div>
               ${secondary ? `<div class="name-cell-secondary">${escapeHtml(secondary)}</div>` : ""}
+              ${propertyBadgesHtml(lead, "name-cell-property")}
             </div>
           </div>
         </td>
@@ -1088,6 +1120,9 @@ function createChatController(ids) {
       statusSelectHtml(currentLead.phone, currentLead.tenantId, lead ? lead.lead_status : null);
     if (ids.scoreWrap) {
       document.getElementById(ids.scoreWrap).innerHTML = scoreBadgeHtml(lead ? lead.score : null);
+    }
+    if (ids.propertyWrap) {
+      document.getElementById(ids.propertyWrap).innerHTML = propertyBadgeChips(lead);
     }
   }
 
@@ -1222,12 +1257,14 @@ function createChatController(ids) {
 
 const panelChat = createChatController({
   body: "panelBody", name: "panelName", sub: "panelSub", statusWrap: "panelStatusWrap", scoreWrap: "panelScoreWrap",
+  propertyWrap: "panelPropertyWrap",
   composerForm: "composerForm", composerInput: "composerInput",
   composerSend: "composerSend", composerError: "composerError",
 });
 
 const inboxChat = createChatController({
   body: "inboxChatBody", name: "inboxChatName", sub: "inboxChatSub", statusWrap: "inboxChatStatusWrap", scoreWrap: "inboxChatScoreWrap",
+  propertyWrap: "inboxChatPropertyWrap",
   composerForm: "inboxComposerForm", composerInput: "inboxComposerInput",
   composerSend: "inboxComposerSend", composerError: "inboxComposerError",
   onOpen: () => {
