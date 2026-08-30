@@ -56,6 +56,33 @@ def _get_connection() -> sqlite3.Connection:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS calendar_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            phone TEXT NOT NULL,
+            title TEXT NOT NULL,
+            due_date TEXT NOT NULL,
+            due_time TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            notes TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            feedback_type TEXT NOT NULL DEFAULT 'idea',
+            description TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'new',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS calls (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -264,5 +291,122 @@ def get_call(call_id: int) -> dict | None:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM calls WHERE id = ?", (call_id,)).fetchone()
         return dict(row) | {"simulated": bool(row["simulated"])} if row else None
+    finally:
+        conn.close()
+
+
+def create_task(
+    phone: str,
+    tenant_id: str = "default",
+    title: str = "",
+    due_date: str = "",
+    due_time: str | None = None,
+    notes: str | None = None,
+) -> int:
+    """יוצר משימת מעקב/תזכורת (follow-up) לליד. מוחזר ה-id."""
+    conn = _get_connection()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        cur = conn.execute(
+            "INSERT INTO calendar_tasks (tenant_id, phone, title, due_date, due_time, notes, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (tenant_id, phone, title, due_date, due_time, notes, now, now),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_task_status(task_id: int, status: str) -> dict | None:
+    """מעדכן סטטוס משימה (pending/done/cancelled). מחזיר את השורה המעודכנת."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calendar_tasks SET status = ?, updated_at = ? WHERE id = ?",
+            (status, datetime.now(timezone.utc).isoformat(), task_id),
+        )
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM calendar_tasks WHERE id = ?", (task_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_tasks(phone: str | None = None, tenant_id: str | None = None, status: str | None = None) -> list[dict]:
+    """משימות מעקב. עם phone - רק המשימות של הליד הזה (לפאנל "📅 משימות" - כל סטטוס).
+    בלי phone - כל המשימות (לתצוגת "📅 יומן" הגלובלית), עם סינון אופציונלי לפי
+    tenant_id/status. ממוין לפי due_date/due_time עולה (הקרוב ביותר קודם) - בכוונה
+    שונה מכל שאר הטבלאות בקובץ הזה (שממוינות לפי זמן יצירה): כאן מה שחשוב הוא מתי
+    המשימה אמורה לקרות, לא מתי היא נוצרה."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        clauses, params = [], []
+        if phone:
+            clauses.append("phone = ?")
+            params.append(phone)
+        if tenant_id:
+            clauses.append("tenant_id = ?")
+            params.append(tenant_id)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = conn.execute(
+            f"SELECT * FROM calendar_tasks {where} ORDER BY due_date ASC, due_time ASC",
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_task(task_id: int) -> dict | None:
+    """משימה בודדת לפי id."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM calendar_tasks WHERE id = ?", (task_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def create_feedback(feedback_type: str, description: str) -> int:
+    """יוצר רשומת משוב על המערכת עצמה (באג/רעיון) - לא קשור ללידים. מוחזר ה-id."""
+    conn = _get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO system_feedback (feedback_type, description, created_at) VALUES (?, ?, ?)",
+            (feedback_type, description, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_feedback_status(feedback_id: int, status: str) -> dict | None:
+    """מעדכן סטטוס טיפול במשוב (new/in_progress/done/wontfix). מחזיר את השורה המעודכנת."""
+    conn = _get_connection()
+    try:
+        conn.execute("UPDATE system_feedback SET status = ? WHERE id = ?", (status, feedback_id))
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM system_feedback WHERE id = ?", (feedback_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_feedback() -> list[dict]:
+    """כל רשומות המשוב, החדשה ביותר קודם."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM system_feedback ORDER BY created_at DESC").fetchall()
+        return [dict(row) for row in rows]
     finally:
         conn.close()

@@ -284,12 +284,35 @@
     border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
     font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; background: var(--surface-3);
   }
-  .call-notes-form textarea {
-    width: 100%; resize: vertical; min-height: 90px; font-family: inherit; font-size: 13.5px;
-    padding: 9px 12px; line-height: 1.4; border-radius: 10px; border: 1px solid var(--border);
-    background: var(--surface-2); color: var(--text-primary); box-sizing: border-box;
+  /* טפסים קטנים משותפים - הערות שיחה / הוספת משימה / הוספת משוב */
+  .mini-form { display: flex; flex-direction: column; gap: 10px; }
+  .mini-form textarea, .mini-form input[type="text"], .mini-form input[type="date"],
+  .mini-form input[type="time"], .mini-form select {
+    width: 100%; font-family: inherit; font-size: 13.5px; padding: 9px 12px; line-height: 1.4;
+    border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--text-primary); box-sizing: border-box;
   }
-  .call-notes-form { display: flex; flex-direction: column; gap: 10px; }
+  .mini-form textarea { resize: vertical; min-height: 90px; }
+
+  /* משימות מעקב (יומן) ומשוב מערכת */
+  .mini-row-list { margin-bottom: 16px; }
+  .task-row, .feedback-row {
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+    display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px;
+  }
+  .task-row.clickable { cursor: pointer; }
+  .task-row-main, .feedback-row-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .task-row-title { font-weight: 600; }
+  .task-row.done .task-row-title { text-decoration: line-through; color: var(--text-muted); }
+  .task-row-due, .task-row-lead { font-size: 12px; color: var(--text-muted); }
+  .task-row-actions, .feedback-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .task-row-actions button { font-size: 12px; padding: 4px 8px; }
+  .feedback-row-desc { white-space: pre-wrap; line-height: 1.4; }
+  .feedback-row-type { font-size: 12px; color: var(--text-muted); }
+  select.feedback-status-select {
+    font-size: 12px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface-3); color: var(--text-secondary);
+  }
 
   @media (max-width: 720px) {
     .table-card { overflow-x: auto; }
@@ -354,6 +377,8 @@
       <button id="importBtn">📥 ייבוא לידים</button>
       <input type="file" id="importFileInput" accept=".csv,.xlsx" style="display:none">
       <button id="reactivateBtn">🔥 החייאת לידים קרים</button>
+      <button id="calendarBtn">📅 יומן</button>
+      <button id="feedbackBtn">💡 משוב</button>
       <button id="themeToggle" title="החלף מצב תצוגה">🌓 מצב תצוגה</button>
       <button id="refreshBtn" class="primary">↻ רענון</button>
     </div>
@@ -399,6 +424,7 @@
           <p id="inboxChatSub"></p>
           <div id="inboxChatStatusWrap" class="panel-status-wrap"></div>
           <button type="button" class="call-btn" id="inboxCallBtn">📞 שיחה</button>
+          <button type="button" class="call-btn" id="inboxTasksBtn">📅 משימות</button>
         </div>
         <div class="inbox-chat-body" id="inboxChatBody">
           <div class="inbox-chat-empty muted">בחר שיחה מהרשימה כדי להתחיל</div>
@@ -426,6 +452,7 @@
       <p id="panelSub"></p>
       <div id="panelStatusWrap" class="panel-status-wrap"></div>
       <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
+      <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
     </div>
     <button class="panel-close" id="panelClose" aria-label="סגור">✕</button>
   </div>
@@ -448,6 +475,39 @@
     <button class="panel-close" id="callPanelClose" aria-label="סגור">✕</button>
   </div>
   <div class="panel-body" id="callPanelBody"></div>
+</aside>
+
+<aside class="panel" id="tasksPanel">
+  <div class="panel-header">
+    <div>
+      <h2 id="tasksPanelName">משימות</h2>
+      <p id="tasksPanelSub"></p>
+    </div>
+    <button class="panel-close" id="tasksPanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body" id="tasksPanelBody"></div>
+</aside>
+
+<aside class="panel" id="calendarPanel">
+  <div class="panel-header">
+    <div>
+      <h2>📅 יומן</h2>
+      <p>כל המשימות הפתוחות (ממתין), מהקרובה ביותר</p>
+    </div>
+    <button class="panel-close" id="calendarPanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body" id="calendarPanelBody"></div>
+</aside>
+
+<aside class="panel" id="feedbackPanel">
+  <div class="panel-header">
+    <div>
+      <h2>💡 משוב על המערכת</h2>
+      <p>באגים ורעיונות לגבי כלי ה-CRM עצמו - לא קשור ללידים</p>
+    </div>
+    <button class="panel-close" id="feedbackPanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body" id="feedbackPanelBody"></div>
 </aside>
 
 <aside class="panel" id="reactivatePanel">
@@ -836,7 +896,7 @@ function renderCallPanelInProgress(data) {
 
 function renderCallNotesForm() {
   document.getElementById("callPanelBody").innerHTML = `
-    <form class="call-notes-form" id="callNotesForm">
+    <form class="mini-form" id="callNotesForm">
       <textarea id="callNotesInput" placeholder="מה עלה בשיחה? הקלד הערות חופשיות..." required></textarea>
       <button type="submit" class="primary" id="callNotesSubmit">ייצר תקציר</button>
     </form>
@@ -906,16 +966,18 @@ async function submitCallNotes(notesText) {
   }
 }
 
+// פאנלים נוספים (שיחה/משימות/יומן/משוב) נפתחים מעל #panel/#inboxView באותו overlay
+// המשותף - כשסוגרים אחד מהם, מסירים את ה-overlay רק אם אף פאנל אחר לא עדיין open
+// (למשל #panel, אם הפאנל השני נפתח מעליו ולא מה-Inbox).
+const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "calendarPanel", "feedbackPanel"];
+function closeSubPanel(id) {
+  document.getElementById(id).classList.remove("open");
+  const anyOpen = OVERLAY_PANEL_IDS.some(pid => document.getElementById(pid).classList.contains("open"));
+  if (!anyOpen) document.getElementById("overlay").classList.remove("open");
+}
+
 function closeCallPanel() {
-  document.getElementById("callPanel").classList.remove("open");
-  // אם נפתח מעל #panel (הצ'אט הנגלל) - הוא עדיין open מתחתיו, וה-overlay צריך
-  // להישאר כדי שימשיך לעמעם/לאפשר סגירה שלו. אם נפתח מה-Inbox (בלי overlay
-  // משלו) - אין panel נגלל אחר פתוח, ומסירים את ה-overlay לגמרי.
-  const panelStillOpen = document.getElementById("panel").classList.contains("open");
-  const reactivateStillOpen = document.getElementById("reactivatePanel").classList.contains("open");
-  if (!panelStillOpen && !reactivateStillOpen) {
-    document.getElementById("overlay").classList.remove("open");
-  }
+  closeSubPanel("callPanel");
   activeCall = null;
 }
 
@@ -929,6 +991,238 @@ document.getElementById("inboxCallBtn").addEventListener("click", () => {
 });
 document.getElementById("callPanelClose").addEventListener("click", closeCallPanel);
 
+// ---- משימות מעקב (follow-up) - פאנל פר-ליד + יומן גלובלי ----
+let activeTasksLead = null; // { phone, tenantId, name }
+
+function taskDueLabel(t) {
+  return t.due_time ? `${t.due_date} · ${t.due_time}` : t.due_date;
+}
+
+function renderTaskRow(t, { showLead = false } = {}) {
+  const lead = showLead ? findLead(t.phone, t.tenant_id) : null;
+  const leadLine = showLead
+    ? `<div class="task-row-lead">${escapeHtml(lead ? (lead.customer_name || t.phone) : t.phone)}</div>`
+    : "";
+  return `
+    <div class="task-row${t.status === "done" ? " done" : ""}${showLead ? " clickable" : ""}" data-task-id="${t.id}" data-phone="${escapeHtml(t.phone)}" data-tenant="${escapeHtml(t.tenant_id)}">
+      <div class="task-row-main">
+        <div class="task-row-title">${escapeHtml(t.title)}</div>
+        <div class="task-row-due">📅 ${escapeHtml(taskDueLabel(t))}</div>
+        ${leadLine}
+      </div>
+      <div class="task-row-actions">
+        ${t.status !== "done" ? '<button type="button" class="task-done-btn">✓ בוצע</button>' : ""}
+        ${t.status === "pending" ? '<button type="button" class="task-cancel-btn">✗ בטל</button>' : ""}
+      </div>
+    </div>
+  `;
+}
+
+async function loadTasksPanel() {
+  const body = document.getElementById("tasksPanelBody");
+  body.innerHTML = '<div class="loading">טוען משימות...</div>';
+  try {
+    const { phone, tenantId } = activeTasksLead;
+    const res = await fetch(`/api/tasks?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const tasks = await res.json();
+    const list = tasks.length
+      ? `<div class="mini-row-list">${tasks.map(t => renderTaskRow(t)).join("")}</div>`
+      : '<div class="empty">אין עדיין משימות מעקב לליד הזה</div>';
+    body.innerHTML = list + `
+      <form class="mini-form" id="addTaskForm">
+        <input type="text" id="taskTitleInput" placeholder="כותרת (למשל: לחזור עם הצעת מחיר)" required>
+        <input type="date" id="taskDateInput" required>
+        <input type="time" id="taskTimeInput">
+        <textarea id="taskNotesInput" placeholder="הערות (אופציונלי)"></textarea>
+        <button type="submit" class="primary">+ הוסף משימה</button>
+      </form>
+    `;
+    document.getElementById("addTaskForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const title = document.getElementById("taskTitleInput").value.trim();
+      const dueDate = document.getElementById("taskDateInput").value;
+      const dueTime = document.getElementById("taskTimeInput").value;
+      const notes = document.getElementById("taskNotesInput").value.trim();
+      if (!title || !dueDate) return;
+      await fetch("/api/tasks", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, tenant_id: tenantId, title, due_date: dueDate, due_time: dueTime, notes }),
+      });
+      loadTasksPanel();
+    });
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה בטעינת משימות: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function openTasksPanel(phone, tenantId, name) {
+  activeTasksLead = { phone, tenantId, name };
+  document.getElementById("tasksPanelName").textContent = "📅 " + name;
+  document.getElementById("tasksPanelSub").textContent = phone + " · " + tenantId;
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("tasksPanel").classList.add("open");
+  loadTasksPanel();
+}
+
+function closeTasksPanel() {
+  closeSubPanel("tasksPanel");
+  activeTasksLead = null;
+}
+
+document.getElementById("panelTasksBtn").addEventListener("click", () => {
+  const lead = panelChat.currentLead;
+  if (lead) openTasksPanel(lead.phone, lead.tenantId, document.getElementById("panelName").textContent);
+});
+document.getElementById("inboxTasksBtn").addEventListener("click", () => {
+  const lead = inboxChat.currentLead;
+  if (lead) openTasksPanel(lead.phone, lead.tenantId, document.getElementById("inboxChatName").textContent);
+});
+document.getElementById("tasksPanelClose").addEventListener("click", closeTasksPanel);
+
+async function setTaskStatus(taskId, status) {
+  await fetch(`/api/tasks/${taskId}/status`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+}
+
+document.getElementById("tasksPanelBody").addEventListener("click", async (e) => {
+  const row = e.target.closest(".task-row");
+  if (!row) return;
+  if (e.target.classList.contains("task-done-btn")) {
+    await setTaskStatus(row.dataset.taskId, "done");
+    loadTasksPanel();
+  } else if (e.target.classList.contains("task-cancel-btn")) {
+    await setTaskStatus(row.dataset.taskId, "cancelled");
+    loadTasksPanel();
+  }
+});
+
+// ---- יומן גלובלי - כל המשימות הפתוחות, מהקרובה ביותר ----
+async function loadCalendarPanel() {
+  const body = document.getElementById("calendarPanelBody");
+  body.innerHTML = '<div class="loading">טוען יומן...</div>';
+  try {
+    const tenantId = document.getElementById("tenantFilter").value;
+    let url = "/api/tasks?status=pending";
+    if (tenantId) url += `&tenant_id=${encodeURIComponent(tenantId)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const tasks = await res.json();
+    body.innerHTML = tasks.length
+      ? tasks.map(t => renderTaskRow(t, { showLead: true })).join("")
+      : '<div class="empty">אין משימות פתוחות ✅</div>';
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה בטעינת היומן: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function openCalendarPanel() {
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("calendarPanel").classList.add("open");
+  loadCalendarPanel();
+}
+function closeCalendarPanel() { closeSubPanel("calendarPanel"); }
+
+document.getElementById("calendarBtn").addEventListener("click", openCalendarPanel);
+document.getElementById("calendarPanelClose").addEventListener("click", closeCalendarPanel);
+
+document.getElementById("calendarPanelBody").addEventListener("click", async (e) => {
+  const row = e.target.closest(".task-row");
+  if (!row) return;
+  if (e.target.classList.contains("task-done-btn")) {
+    await setTaskStatus(row.dataset.taskId, "done");
+    loadCalendarPanel();
+    return;
+  }
+  if (e.target.classList.contains("task-cancel-btn")) {
+    await setTaskStatus(row.dataset.taskId, "cancelled");
+    loadCalendarPanel();
+    return;
+  }
+  // קליק על השורה עצמה (לא על אחד הכפתורים) - פותח את הצ'אט של הליד
+  const lead = findLead(row.dataset.phone, row.dataset.tenant);
+  closeSubPanel("calendarPanel");
+  openHistory(row.dataset.phone, row.dataset.tenant, lead ? (lead.customer_name || row.dataset.phone) : row.dataset.phone);
+});
+
+// ---- משוב על המערכת (באגים/רעיונות) - לא קשור ללידים ----
+const FEEDBACK_TYPE_META = { bug: "🐛 באג", idea: "💡 רעיון" };
+const FEEDBACK_STATUS_META = { new: "חדש", in_progress: "בטיפול", done: "טופל", wontfix: "לא יטופל" };
+
+function renderFeedbackRow(f) {
+  const options = Object.entries(FEEDBACK_STATUS_META)
+    .map(([v, label]) => `<option value="${v}" ${v === f.status ? "selected" : ""}>${label}</option>`)
+    .join("");
+  return `
+    <div class="feedback-row">
+      <div class="feedback-row-main">
+        <div class="feedback-row-type">${FEEDBACK_TYPE_META[f.feedback_type] || f.feedback_type}</div>
+        <div class="feedback-row-desc">${escapeHtml(f.description)}</div>
+      </div>
+      <select class="feedback-status-select" data-feedback-id="${f.id}">${options}</select>
+    </div>
+  `;
+}
+
+async function loadFeedbackPanel() {
+  const body = document.getElementById("feedbackPanelBody");
+  body.innerHTML = '<div class="loading">טוען משוב...</div>';
+  try {
+    const res = await fetch("/api/feedback");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const items = await res.json();
+    const list = items.length
+      ? `<div class="mini-row-list">${items.map(renderFeedbackRow).join("")}</div>`
+      : '<div class="empty">אין עדיין משוב</div>';
+    body.innerHTML = `
+      <form class="mini-form" id="addFeedbackForm">
+        <select id="feedbackTypeInput">
+          <option value="idea">💡 רעיון</option>
+          <option value="bug">🐛 באג</option>
+        </select>
+        <textarea id="feedbackDescInput" placeholder="תאר את הבאג/הרעיון..." required></textarea>
+        <button type="submit" class="primary">+ שלח משוב</button>
+      </form>
+    ` + list;
+    document.getElementById("addFeedbackForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const feedbackType = document.getElementById("feedbackTypeInput").value;
+      const description = document.getElementById("feedbackDescInput").value.trim();
+      if (!description) return;
+      await fetch("/api/feedback", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback_type: feedbackType, description }),
+      });
+      loadFeedbackPanel();
+    });
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה בטעינת משוב: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function openFeedbackPanel() {
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("feedbackPanel").classList.add("open");
+  loadFeedbackPanel();
+}
+function closeFeedbackPanel() { closeSubPanel("feedbackPanel"); }
+
+document.getElementById("feedbackBtn").addEventListener("click", openFeedbackPanel);
+document.getElementById("feedbackPanelClose").addEventListener("click", closeFeedbackPanel);
+
+document.getElementById("feedbackPanelBody").addEventListener("change", async (e) => {
+  const select = e.target.closest(".feedback-status-select");
+  if (!select) return;
+  select.disabled = true;
+  await fetch(`/api/feedback/${select.dataset.feedbackId}/status`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: select.value }),
+  });
+  select.disabled = false;
+});
+
 function openHistory(phone, tenantId, name) {
   document.getElementById("overlay").classList.add("open");
   document.getElementById("panel").classList.add("open");
@@ -939,6 +1233,9 @@ function closeAllPanels() {
   document.getElementById("overlay").classList.remove("open");
   document.getElementById("panel").classList.remove("open");
   document.getElementById("callPanel").classList.remove("open");
+  document.getElementById("tasksPanel").classList.remove("open");
+  document.getElementById("calendarPanel").classList.remove("open");
+  document.getElementById("feedbackPanel").classList.remove("open");
   document.getElementById("reactivatePanel").classList.remove("open");
   activeCall = null;
   panelChat.close();

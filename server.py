@@ -502,6 +502,86 @@ def api_calls():
     return jsonify(db.get_calls(phone, tenant_id=tenant_id))
 
 
+VALID_TASK_STATUSES = {"pending", "done", "cancelled"}
+
+
+@app.route("/api/tasks", methods=["GET", "POST"])
+def api_tasks():
+    """משימות מעקב/תזכורות (follow-up) - לא קשור להודעות. GET עם ?phone=&tenant_id=
+    מחזיר את המשימות של ליד ספציפי (לפאנל "📅 משימות"); GET בלי phone מחזיר את כל
+    המשימות (אופציונלית מסונן ב-?tenant_id=&status=, לתצוגת "📅 יומן" הגלובלית).
+    POST יוצר משימה חדשה."""
+    if request.method == "GET":
+        phone = request.args.get("phone") or None
+        tenant_id = request.args.get("tenant_id") or None
+        status = request.args.get("status") or None
+        return jsonify(db.get_tasks(phone=phone, tenant_id=tenant_id, status=status))
+
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    title = (data.get("title") or "").strip()
+    due_date = (data.get("due_date") or "").strip()
+    due_time = (data.get("due_time") or "").strip() or None
+    notes = (data.get("notes") or "").strip() or None
+
+    if not phone or not title or not due_date:
+        return jsonify({"error": "חסר טלפון, כותרת או תאריך יעד"}), 400
+
+    task_id = db.create_task(phone, tenant_id=tenant_id, title=title, due_date=due_date, due_time=due_time, notes=notes)
+    return jsonify({"ok": True, "task_id": task_id})
+
+
+@app.route("/api/tasks/<int:task_id>/status", methods=["POST"])
+def api_task_status(task_id):
+    """מעדכן סטטוס משימה (pending/done/cancelled) - מהתגית "✓ בוצע"/"✗ בטל" בפאנל
+    המשימות או ביומן הגלובלי."""
+    data = request.get_json(silent=True) or {}
+    status = data.get("status")
+    if status not in VALID_TASK_STATUSES:
+        return jsonify({"error": "סטטוס לא תקין"}), 400
+
+    task = db.update_task_status(task_id, status)
+    if not task:
+        return jsonify({"error": "משימה לא נמצאה"}), 404
+    return jsonify({"ok": True, "task": task})
+
+
+VALID_FEEDBACK_TYPES = {"bug", "idea"}
+VALID_FEEDBACK_STATUSES = {"new", "in_progress", "done", "wontfix"}
+
+
+@app.route("/api/feedback", methods=["GET", "POST"])
+def api_feedback():
+    """משוב על המערכת עצמה (באג/רעיון) - לא קשור ללידים בכלל, פנימי לצוות שמפעיל
+    את ה-CRM. GET מחזיר את כל הרשומות (החדש ביותר קודם); POST יוצר רשומה חדשה."""
+    if request.method == "GET":
+        return jsonify(db.get_feedback())
+
+    data = request.get_json(silent=True) or {}
+    feedback_type = data.get("feedback_type")
+    description = (data.get("description") or "").strip()
+    if feedback_type not in VALID_FEEDBACK_TYPES or not description:
+        return jsonify({"error": "סוג משוב או תיאור לא תקינים"}), 400
+
+    feedback_id = db.create_feedback(feedback_type, description)
+    return jsonify({"ok": True, "feedback_id": feedback_id})
+
+
+@app.route("/api/feedback/<int:feedback_id>/status", methods=["POST"])
+def api_feedback_status(feedback_id):
+    """מעדכן סטטוס טיפול במשוב (new/in_progress/done/wontfix)."""
+    data = request.get_json(silent=True) or {}
+    status = data.get("status")
+    if status not in VALID_FEEDBACK_STATUSES:
+        return jsonify({"error": "סטטוס לא תקין"}), 400
+
+    feedback = db.update_feedback_status(feedback_id, status)
+    if not feedback:
+        return jsonify({"error": "משוב לא נמצא"}), 404
+    return jsonify({"ok": True, "feedback": feedback})
+
+
 @app.route("/voice/connect", methods=["POST"])
 def voice_connect():
     """TwiML: Twilio מגיע לכאן ברגע שהנציג (הרגל הראשונה של הגישור) עונה. מגשר
