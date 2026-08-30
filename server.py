@@ -73,6 +73,7 @@ try:
         log_manual_reply,
         process_message,
         process_message_with_reply,
+        update_lead_category,
         update_lead_status,
     )
     from whatsapp_send import TWILIO_AUTH_TOKEN, _to_e164, send_whatsapp_message
@@ -191,8 +192,12 @@ def api_leads():
     """רשימת כל הלידים מ-customers.json (מקור האמת) - לשימוש הדשבורד ב-index.html.
     ?include_last_message=1 (משמש את תצוגת ה-Unified Inbox): מוסיף לכל ליד את ההודעה
     האחרונה מטבלת messages (תצוגה מקדימה + מיון לפי פעילות) - כבוי כברירת מחדל כדי
-    לא להאט את טעינת הטבלה הרגילה עם שאילתת DB נוספת לכל שורה."""
+    לא להאט את טעינת הטבלה הרגילה עם שאילתת DB נוספת לכל שורה.
+    ?include_score=1 (משמש את הטבלה הראשית + מסנן טווח הציון): מוסיף "ציון חום"
+    מחושב (1-100, ראו db.compute_lead_score) - גם הוא כבוי כברירת מחדל מאותה סיבה
+    (עוד כמה שאילתות DB לכל שורה)."""
     include_last_message = request.args.get("include_last_message") == "1"
+    include_score = request.args.get("include_score") == "1"
 
     leads = []
     for key, card in load_customers().items():
@@ -208,14 +213,44 @@ def api_leads():
             "source_channel": card.get("source_channel"),
             "import_source": card.get("import_source"),
             "lead_status": card.get("lead_status"),
+            "category": card.get("category"),
         }
         if include_last_message:
             last = db.get_last_message(phone, tenant_id=resolved_tenant_id)
             lead["last_message"] = last["message"] if last else None
             lead["last_message_at"] = last["timestamp"] if last else None
             lead["last_message_direction"] = last["direction"] if last else None
+        if include_score:
+            lead["score"] = db.compute_lead_score(phone, tenant_id=resolved_tenant_id)
         leads.append(lead)
     return jsonify(leads)
+
+
+@app.route("/api/search")
+def api_search():
+    """חיפוש חופשי רב-שדות: קודם בודק התאמה ישירה בשדות הכרטיס (שם/עסק/מיקום/טלפון/
+    קטגוריה, מ-customers.json - בזיכרון, זול), ובנוסף מחפש בתוכן פעילות (הודעות
+    וואטסאפ, הערות/תקציר שיחות, כותרת/הערות משימות - db.search_activity). מחזיר
+    איחוד (union) של שתי ההתאמות כרשימת {phone, tenant_id} - הדשבורד מסנן לפיה את
+    allLeads הטעון כבר, בלי לשלוף מחדש את כל רשימת הלידים."""
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify([])
+    q_lower = q.lower()
+
+    matches = set()
+    for key, card in load_customers().items():
+        tenant_id, _, key_phone = key.partition("::")
+        phone = card.get("phone", key_phone)
+        resolved_tenant_id = card.get("tenant_id", tenant_id)
+        haystack = " ".join(str(card.get(f) or "") for f in
+                             ("customer_name", "business_name", "location", "phone", "category")).lower()
+        if q_lower in haystack:
+            matches.add((phone, resolved_tenant_id))
+
+    matches.update(db.search_activity(q))
+
+    return jsonify([{"phone": phone, "tenant_id": tenant_id} for phone, tenant_id in matches])
 
 
 VALID_LEAD_STATUSES = {"new", "contacted", "hot", "not_relevant"}
@@ -237,6 +272,22 @@ def api_update_lead_status():
     return jsonify({"ok": True, "card": card})
 
 
+@app.route("/api/leads/category", methods=["POST"])
+def api_update_lead_category():
+    """מעדכן קטגוריה חופשית לליד (לדוגמה: נדל"ן/פרטי/משפחה) - שדה סיווג ידני,
+    לא קשור ל-lead_status. category ריק ("") מנקה את השדה."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    category = (data.get("category") or "").strip()
+
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+
+    card = update_lead_category(phone, category, tenant_id=tenant_id)
+    return jsonify({"ok": True, "card": card})
+
+
 # ייבוא לידים מ-CSV/Excel - מיפוי אוטומטי של עמודות (בעברית או באנגלית) לשדות הסטנדרטיים
 ALLOWED_IMPORT_EXTENSIONS = {".csv", ".xlsx"}
 IMPORT_FIELD_ALIASES = {
@@ -245,6 +296,7 @@ IMPORT_FIELD_ALIASES = {
     "business_name": {"business", "business_name", "company", "עסק", "שם עסק", "חברה"},
     "import_source": {"source", "lead_source", "מקור", "מקור ליד", "ערוץ מקור"},
     "lead_status": {"status", "lead_status", "סטטוס"},
+    "category": {"category", "vertical", "קטגוריה", "סיווג"},
 }
 
 
@@ -326,6 +378,7 @@ def api_import_leads():
             business_name=mapped.get("business_name"),
             lead_status=status,
             import_source=mapped.get("import_source"),
+            category=mapped.get("category"),
         )
         if is_new:
             imported += 1

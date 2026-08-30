@@ -240,6 +240,7 @@ def import_lead(
     location: str | None = None,
     lead_status: str | None = None,
     import_source: str | None = None,
+    category: str | None = None,
 ) -> tuple[dict, bool]:
     """יוצר/מעדכן כרטיס לקוח מייבוא CSV/Excel (ראו /api/leads/import ב-server.py).
     לא הודעה - אין רישום ב-history. Upsert לפי phone+tenant_id (מונע כפילויות).
@@ -258,9 +259,27 @@ def import_lead(
         card["lead_status"] = lead_status
     if import_source:
         card["import_source"] = import_source
+    if category:
+        card["category"] = category
     customers[key] = card
     save_customers(customers)
     return card, is_new
+
+
+def update_lead_category(phone: str, category: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
+    """מעדכן קטגוריה חופשית לליד (למשל "נדל\"ן"/"פרטי"/"משפחה") - שדה סיווג ידני,
+    לא קשור ל-lead_status. category ריק ("") מנקה את השדה. לא נרשם ב-history - זה
+    מטא-דאטה כמו import_source, לא אינטראקציה עם הלקוח."""
+    customers = load_customers()
+    key = _customer_key(tenant_id, phone)
+    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+    if category:
+        card["category"] = category
+    else:
+        card.pop("category", None)
+    customers[key] = card
+    save_customers(customers)
+    return card
 
 
 def update_lead_status(

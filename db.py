@@ -410,3 +410,82 @@ def get_feedback() -> list[dict]:
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+# ---- ציון חום לליד (Lead Scoring) ----
+# רכיבי הציון (סה"כ מקסימלי = 100, מובטח רצפה של 1):
+#   הודעות וואטסאפ  - עד 35 נק' (4 נק' להודעה, נחסם ב-35)
+#   שיחות (calls)    - עד 25 נק' (10 נק' לשיחה, נחסם ב-25)
+#   משימות שהושלמו  - עד 15 נק' (5 נק' למשימה, נחסם ב-15)
+#   עדכניות (recency)- עד 25 נק' (לפי כמה זמן עבר מאז הפעילות האחרונה - הודעה/שיחה/משימה)
+# זהו חישוב נגזר (derived) בלבד - לא נשמר בשום מקום, מחושב לפי דרישה (כמו
+# get_last_message) כדי שלא יידרש invalidation בכל פעם שמתווספת פעילות חדשה.
+_SCORE_MESSAGE_POINTS, _SCORE_MESSAGE_CAP = 4, 35
+_SCORE_CALL_POINTS, _SCORE_CALL_CAP = 10, 25
+_SCORE_TASK_POINTS, _SCORE_TASK_CAP = 5, 15
+_SCORE_RECENCY_BANDS = [(1, 25), (3, 18), (7, 10), (30, 4)]  # (גיל מקסימלי בימים, נקודות)
+
+
+def compute_lead_score(phone: str, tenant_id: str = "default") -> int:
+    """מחשב "ציון חום" (1-100) לליד על בסיס פעילות בפועל בטבלאות messages/calls/
+    calendar_tasks - ראו פירוט המשקלים מעל. משמש את GET /api/leads?include_score=1."""
+    conn = _get_connection()
+    try:
+        message_count = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE phone = ? AND tenant_id = ?", (phone, tenant_id)
+        ).fetchone()[0]
+        call_count = conn.execute(
+            "SELECT COUNT(*) FROM calls WHERE phone = ? AND tenant_id = ?", (phone, tenant_id)
+        ).fetchone()[0]
+        done_task_count = conn.execute(
+            "SELECT COUNT(*) FROM calendar_tasks WHERE phone = ? AND tenant_id = ? AND status = 'done'",
+            (phone, tenant_id),
+        ).fetchone()[0]
+        last_activity = conn.execute(
+            "SELECT MAX(ts) FROM ("
+            "SELECT MAX(timestamp) AS ts FROM messages WHERE phone = ? AND tenant_id = ? "
+            "UNION ALL "
+            "SELECT MAX(created_at) AS ts FROM calls WHERE phone = ? AND tenant_id = ? "
+            "UNION ALL "
+            "SELECT MAX(updated_at) AS ts FROM calendar_tasks WHERE phone = ? AND tenant_id = ?"
+            ")",
+            (phone, tenant_id, phone, tenant_id, phone, tenant_id),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    score = (
+        min(message_count * _SCORE_MESSAGE_POINTS, _SCORE_MESSAGE_CAP)
+        + min(call_count * _SCORE_CALL_POINTS, _SCORE_CALL_CAP)
+        + min(done_task_count * _SCORE_TASK_POINTS, _SCORE_TASK_CAP)
+    )
+
+    if last_activity:
+        age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(last_activity)).days
+        for max_age, points in _SCORE_RECENCY_BANDS:
+            if age_days <= max_age:
+                score += points
+                break
+
+    return max(1, min(100, score))
+
+
+def search_activity(query: str) -> list[tuple[str, str]]:
+    """מחפש טקסט חופשי בתוכן פעילות (לא בשדות הכרטיס עצמו - אלה נבדקים בנפרד ב-
+    server.py מ-customers.json) - טקסט הודעות, הערות/תקציר שיחות, וכותרת/הערות
+    משימות. מחזיר רשימת (phone, tenant_id) ייחודיים שיש בהם התאמה - לשימוש
+    GET /api/search, כחלק מהחיפוש החופשי הרב-שדות בדשבורד."""
+    like = f"%{query}%"
+    conn = _get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT phone, tenant_id FROM messages WHERE message LIKE ? "
+            "UNION "
+            "SELECT DISTINCT phone, tenant_id FROM calls WHERE notes LIKE ? OR summary LIKE ? "
+            "UNION "
+            "SELECT DISTINCT phone, tenant_id FROM calendar_tasks WHERE title LIKE ? OR notes LIKE ?",
+            (like, like, like, like, like),
+        ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+    finally:
+        conn.close()

@@ -175,6 +175,26 @@
   select.status-select.not_relevant { background: var(--status-critical-soft); color: var(--status-critical); }
   select.status-select:disabled { opacity: .6; cursor: default; }
   .panel-status-wrap { margin-top: 8px; }
+
+  /* ציון חום לליד: אדום=חם, כתום=פושר, כחול=קר */
+  .score-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700;
+  }
+  .score-badge.hot { background: var(--status-critical-soft); color: var(--status-critical); }
+  .score-badge.warm { background: var(--status-warning-soft); color: var(--status-warning); }
+  .score-badge.cold { background: var(--accent-soft); color: var(--accent); }
+  .panel-score-wrap { margin-top: 8px; }
+
+  /* קטגוריה חופשית (נדל"ן/פרטי/משפחה וכו') - שדה טקסט ניתן לעריכה בטבלה */
+  input.category-input {
+    width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12.5px;
+    padding: 5px 8px; border-radius: 8px; border: 1px solid transparent;
+    background: transparent; color: var(--text-secondary);
+  }
+  input.category-input:hover, input.category-input:focus {
+    border-color: var(--border); background: var(--surface-2); outline: none;
+  }
   .live-badge {
     font-size: 11px; font-weight: 600; color: var(--status-good);
     background: var(--status-good-soft); padding: 2px 8px; border-radius: 999px;
@@ -394,13 +414,22 @@
     <div class="stat-grid" id="statGrid"></div>
 
     <div class="toolbar">
-      <input id="searchInput" type="text" placeholder="חיפוש לפי שם, טלפון או עסק...">
+      <input id="searchInput" type="text" placeholder="חיפוש בשם, טלפון, עסק, מיקום, הערות והיסטוריה...">
       <select id="statusFilter">
         <option value="">כל הסטטוסים</option>
         <option value="__new">חדש</option>
         <option value="contacted">נוצר קשר</option>
         <option value="hot">חם</option>
         <option value="not_relevant">לא רלוונטי</option>
+      </select>
+      <select id="scoreFilter">
+        <option value="">כל ציוני החום</option>
+        <option value="hot">🔴 חם (70-100)</option>
+        <option value="warm">🟠 פושר (40-69)</option>
+        <option value="cold">🔵 קר (1-39)</option>
+      </select>
+      <select id="categoryFilter">
+        <option value="">כל הקטגוריות</option>
       </select>
       <select id="tenantFilter">
         <option value="">כל העסקים (tenants)</option>
@@ -423,6 +452,7 @@
           </h2>
           <p id="inboxChatSub"></p>
           <div id="inboxChatStatusWrap" class="panel-status-wrap"></div>
+          <div id="inboxChatScoreWrap" class="panel-score-wrap"></div>
           <button type="button" class="call-btn" id="inboxCallBtn">📞 שיחה</button>
           <button type="button" class="call-btn" id="inboxTasksBtn">📅 משימות</button>
         </div>
@@ -451,6 +481,7 @@
       </h2>
       <p id="panelSub"></p>
       <div id="panelStatusWrap" class="panel-status-wrap"></div>
+      <div id="panelScoreWrap" class="panel-score-wrap"></div>
       <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
       <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
     </div>
@@ -550,6 +581,18 @@ function statusSelectHtml(phone, tenantId, currentStatus) {
 function findLead(phone, tenantId) {
   return allLeads.find(l => l.phone === phone && (l.tenant_id || "default") === tenantId);
 }
+
+// ציון חום (1-100, מחושב בשרת - ראו db.compute_lead_score): אדום=חם, כתום=פושר, כחול=קר
+function scoreBand(score) {
+  if (score == null) return null;
+  if (score >= 70) return "hot";
+  if (score >= 40) return "warm";
+  return "cold";
+}
+function scoreBadgeHtml(score) {
+  if (score == null) return '<span class="muted">—</span>';
+  return `<span class="score-badge ${scoreBand(score)}">${score}</span>`;
+}
 const CHANNEL_LABELS = { whatsapp: "וואטסאפ", instagram: "אינסטגרם", facebook: "פייסבוק" };
 function channelLabel(ch) { return CHANNEL_LABELS[ch] || ch || "—"; }
 
@@ -560,15 +603,17 @@ function escapeHtml(str) {
 }
 
 let allLeads = [];
+let searchMatchSet = null; // Set של "tenant::phone" מ-/api/search - null = אין חיפוש טקסט חופשי פעיל
 
 async function loadLeads() {
   const wrap = document.getElementById("tableWrap");
   wrap.innerHTML = '<div class="loading">טוען לידים...</div>';
   try {
-    const res = await fetch("/api/leads");
+    const res = await fetch("/api/leads?include_score=1");
     if (!res.ok) throw new Error("HTTP " + res.status);
     allLeads = await res.json();
     populateTenantFilter();
+    populateCategoryFilter();
     renderStats();
     renderTable();
   } catch (err) {
@@ -582,6 +627,15 @@ function populateTenantFilter() {
   const tenants = [...new Set(allLeads.map(l => l.tenant_id).filter(Boolean))].sort();
   select.innerHTML = '<option value="">כל העסקים (tenants)</option>' +
     tenants.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("");
+  select.value = current;
+}
+
+function populateCategoryFilter() {
+  const select = document.getElementById("categoryFilter");
+  const current = select.value;
+  const categories = [...new Set(allLeads.map(l => l.category).filter(Boolean))].sort();
+  select.innerHTML = '<option value="">כל הקטגוריות</option>' +
+    categories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
   select.value = current;
 }
 
@@ -611,17 +665,26 @@ function getFilteredLeads() {
   const q = document.getElementById("searchInput").value.trim().toLowerCase();
   const statusFilter = document.getElementById("statusFilter").value;
   const tenantFilter = document.getElementById("tenantFilter").value;
+  const categoryFilter = document.getElementById("categoryFilter").value;
+  const scoreFilter = document.getElementById("scoreFilter").value;
 
   return allLeads.filter(lead => {
     if (tenantFilter && lead.tenant_id !== tenantFilter) return false;
+    if (categoryFilter && lead.category !== categoryFilter) return false;
+    if (scoreFilter && scoreBand(lead.score) !== scoreFilter) return false;
     if (statusFilter) {
       const effective = lead.lead_status || "__new";
       if (effective !== statusFilter) return false;
     }
     if (q) {
-      const haystack = [lead.customer_name, lead.phone, lead.business_name, lead.location]
+      // חיפוש מקומי (מיידי) בשדות שכבר טעונים בזיכרון - שם/טלפון/עסק/מיקום/קטגוריה.
+      // חיפוש עמוק יותר (הודעות/הערות שיחה/משימות) מגיע מ-/api/search דרך searchMatchSet
+      // (ראו scheduleSearch למטה) - אם הוא פעיל, מספיקה התאמה באחד מהשניים (OR).
+      const haystack = [lead.customer_name, lead.phone, lead.business_name, lead.location, lead.category]
         .filter(Boolean).join(" ").toLowerCase();
-      if (!haystack.includes(q)) return false;
+      const localMatch = haystack.includes(q);
+      const deepMatch = searchMatchSet && searchMatchSet.has(`${lead.tenant_id || "default"}::${lead.phone}`);
+      if (!localMatch && !deepMatch) return false;
     }
     return true;
   });
@@ -648,6 +711,8 @@ function renderTable() {
         <td class="phone">${escapeHtml(lead.phone)}</td>
         <td class="${lead.business_name ? "" : "muted"}">${escapeHtml(lead.business_name || "—")}</td>
         <td class="${lead.location ? "" : "muted"}">${escapeHtml(lead.location || "—")}</td>
+        <td>${scoreBadgeHtml(lead.score)}</td>
+        <td><input type="text" class="category-input" placeholder="קטגוריה..." value="${escapeHtml(lead.category || "")}" data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}"></td>
         <td><span class="tag">${escapeHtml(channelLabel(lead.source_channel))}</span></td>
         <td class="${lead.import_source ? "" : "muted"}">${escapeHtml(lead.import_source || "—")}</td>
         <td><span class="tag">${escapeHtml(tenantId)}</span></td>
@@ -661,7 +726,7 @@ function renderTable() {
     <table>
       <thead>
         <tr>
-          <th>שם</th><th>טלפון</th><th>עסק</th><th>מיקום</th><th>ערוץ</th><th>מקור</th><th>Tenant</th><th>סטטוס</th><th></th>
+          <th>שם</th><th>טלפון</th><th>עסק</th><th>מיקום</th><th>ציון חום</th><th>קטגוריה</th><th>ערוץ</th><th>מקור</th><th>Tenant</th><th>סטטוס</th><th></th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -723,6 +788,9 @@ function createChatController(ids) {
     const lead = findLead(currentLead.phone, currentLead.tenantId);
     document.getElementById(ids.statusWrap).innerHTML =
       statusSelectHtml(currentLead.phone, currentLead.tenantId, lead ? lead.lead_status : null);
+    if (ids.scoreWrap) {
+      document.getElementById(ids.scoreWrap).innerHTML = scoreBadgeHtml(lead ? lead.score : null);
+    }
   }
 
   function stopPolling() {
@@ -855,13 +923,13 @@ function createChatController(ids) {
 }
 
 const panelChat = createChatController({
-  body: "panelBody", name: "panelName", sub: "panelSub", statusWrap: "panelStatusWrap",
+  body: "panelBody", name: "panelName", sub: "panelSub", statusWrap: "panelStatusWrap", scoreWrap: "panelScoreWrap",
   composerForm: "composerForm", composerInput: "composerInput",
   composerSend: "composerSend", composerError: "composerError",
 });
 
 const inboxChat = createChatController({
-  body: "inboxChatBody", name: "inboxChatName", sub: "inboxChatSub", statusWrap: "inboxChatStatusWrap",
+  body: "inboxChatBody", name: "inboxChatName", sub: "inboxChatSub", statusWrap: "inboxChatStatusWrap", scoreWrap: "inboxChatScoreWrap",
   composerForm: "inboxComposerForm", composerInput: "inboxComposerInput",
   composerSend: "inboxComposerSend", composerError: "inboxComposerError",
   onOpen: () => {
@@ -1244,8 +1312,31 @@ function closeAllPanels() {
 document.getElementById("overlay").addEventListener("click", closeAllPanels);
 document.getElementById("panelClose").addEventListener("click", closeAllPanels);
 document.getElementById("refreshBtn").addEventListener("click", loadLeads);
-document.getElementById("searchInput").addEventListener("input", renderTable);
+// חיפוש חופשי: סינון מקומי מיידי (שם/טלפון/עסק/מיקום/קטגוריה - כבר טעונים בזיכרון)
+// + debounce ל-/api/search לחיפוש עמוק (הודעות/הערות-תקציר שיחות/משימות), שמתמזג
+// כ-OR עם ההתאמה המקומית ב-getFilteredLeads (ראו searchMatchSet).
+let searchDebounceTimer = null;
+document.getElementById("searchInput").addEventListener("input", () => {
+  renderTable();
+  clearTimeout(searchDebounceTimer);
+  const q = document.getElementById("searchInput").value.trim();
+  if (!q) { searchMatchSet = null; return; }
+  searchDebounceTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+      if (!res.ok) return;
+      const matches = await res.json();
+      if (document.getElementById("searchInput").value.trim() !== q) return; // המשתמש כבר המשיך להקליד - התוצאה מיושנת
+      searchMatchSet = new Set(matches.map(m => `${m.tenant_id}::${m.phone}`));
+      renderTable();
+    } catch (err) {
+      console.error("חיפוש עמוק נכשל:", err);
+    }
+  }, 300);
+});
 document.getElementById("statusFilter").addEventListener("change", renderTable);
+document.getElementById("scoreFilter").addEventListener("change", renderTable);
+document.getElementById("categoryFilter").addEventListener("change", renderTable);
 document.getElementById("tenantFilter").addEventListener("change", renderTable);
 
 // ---- Unified Inbox: רשימת שיחות + חלון צ'אט קבוע (לא slide-over) ----
@@ -1388,6 +1479,31 @@ document.addEventListener("change", async (e) => {
   } catch (err) {
     alert("עדכון סטטוס נכשל: " + err.message);
     await loadLeads(); // משחזר את הבחירה הקודמת מהשרת
+  }
+});
+
+// עדכון קטגוריה ליד - שדה טקסט חופשי בטבלה, נשמר ב-blur/Enter (change, לא input)
+document.addEventListener("change", async (e) => {
+  const input = e.target.closest(".category-input");
+  if (!input) return;
+
+  const phone = input.dataset.phone;
+  const tenantId = input.dataset.tenant;
+  const category = input.value.trim();
+  input.disabled = true;
+
+  try {
+    const res = await fetch("/api/leads/category", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, tenant_id: tenantId, category }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    await loadLeads(); // מרענן כדי שגם populateCategoryFilter יכלול קטגוריה חדשה אם נוספה
+  } catch (err) {
+    alert("עדכון קטגוריה נכשל: " + err.message);
+    await loadLeads();
   }
 });
 
