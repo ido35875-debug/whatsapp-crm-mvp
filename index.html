@@ -394,6 +394,17 @@
     border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
     font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; background: var(--surface-3);
   }
+  .call-quick-links { display: flex; gap: 8px; margin-bottom: 14px; }
+  .call-quick-links a.btn-link { font-size: 12.5px; padding: 6px 12px; }
+  .dial-queue-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px;
+    padding: 8px 12px; margin-bottom: 14px; font-size: 12.5px; font-weight: 600;
+  }
+  .dial-queue-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .dial-queue-actions button { font-size: 12px; padding: 5px 10px; }
+  .call-notes-upload { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-secondary); }
+  .call-notes-upload input[type="file"] { font-size: 12px; max-width: 200px; }
   /* טפסים קטנים משותפים - הערות שיחה / הוספת משימה / הוספת משוב */
   .mini-form { display: flex; flex-direction: column; gap: 10px; }
   .mini-form textarea, .mini-form input[type="text"], .mini-form input[type="date"],
@@ -540,6 +551,7 @@
             <option value="not_relevant">לא רלוונטי</option>
           </select>
           <button type="button" id="bulkApplyBtn">עדכן סטטוס לנבחרים</button>
+          <button type="button" class="primary" id="bulkDialBtn">📞 התחל חיוג רציף</button>
           <button type="button" id="bulkClearBtn">בטל בחירה</button>
         </div>
 
@@ -1182,37 +1194,112 @@ const inboxChat = createChatController({
   },
 });
 
-// ---- Click-to-Call: פאנל שיחה + הערות → תקציר AI ----
+// ---- Click-to-Call: פאנל שיחה + הערות (הקלדה או תמלול אודיו) → תקציר AI ----
+// + חיוג רציף (dial queue): בוחרים כמה לידים בטבלה (checkbox), "📞 התחל חיוג
+// רציף" פותח את הראשון; בסיום כל שיחה (תקציר נשמר) מוצג כפתור שמקפיץ ישירות
+// לליד הבא בתור, בלי לחזור לטבלה - ראו startDialQueue/advanceDialQueue למטה.
 let activeCall = null; // { phone, tenantId, name, callId, simulated }
+let dialQueue = null;  // { items: [{phone, tenantId, name}], index: 0 } - null = לא בתור
+
+// מראה את whatsapp_send.py's _to_e164 בצד הלקוח - wa.me/tel: דורשים קידומת מדינה
+// מלאה; מספר בפורמט מקומי ("0501234567") בלי זה יוצר קישור וואטסאפ לא תקין.
+function toE164ish(phone) {
+  const trimmed = (phone || "").trim();
+  if (trimmed.startsWith("+")) return trimmed;
+  if (trimmed.startsWith("0")) return "+972" + trimmed.slice(1);
+  return "+" + trimmed;
+}
+
+function quickLinksHtml() {
+  if (!activeCall) return "";
+  // tel:/wa.me עובדים תמיד (פותחים את חייגן/וואטסאפ המקומי) - בניגוד לגישור
+  // Twilio Voice שדורש AGENT_PHONE_NUMBER/TWILIO_VOICE_FROM שעדיין לא מוגדרים
+  const digits = toE164ish(activeCall.phone).replace(/[^\d+]/g, "");
+  const waDigits = digits.replace(/^\+/, "");
+  return `
+    <div class="call-quick-links">
+      <a class="btn-link" href="tel:${digits}">📱 חייג</a>
+      <a class="btn-link" href="https://wa.me/${waDigits}" target="_blank" rel="noopener">💬 וואטסאפ</a>
+    </div>
+  `;
+}
+
+function queueBarHtml() {
+  if (!dialQueue) return "";
+  return `
+    <div class="dial-queue-bar">
+      <span>📋 חיוג רציף: ליד ${dialQueue.index + 1} מתוך ${dialQueue.items.length}</span>
+      <div class="dial-queue-actions">
+        <button type="button" id="queueSkipBtn">⏭ דלג</button>
+        <button type="button" id="queueStopBtn">⏹ עצור תור</button>
+      </div>
+    </div>
+  `;
+}
+
+// כל מצבי הפאנל עוברים דרך הפונקציה הזו - כך שסרגל התור וקישורי החיוג המהירים
+// תמיד מוצגים, בלי לשכפל אותם בכל renderCallXxx בנפרד.
+function renderCallBody(stateHtml) {
+  document.getElementById("callPanelBody").innerHTML = queueBarHtml() + quickLinksHtml() + stateHtml;
+  const skipBtn = document.getElementById("queueSkipBtn");
+  if (skipBtn) skipBtn.addEventListener("click", skipDialQueueItem);
+  const stopBtn = document.getElementById("queueStopBtn");
+  if (stopBtn) stopBtn.addEventListener("click", stopDialQueue);
+}
 
 function renderCallPanelCalling() {
-  document.getElementById("callPanelBody").innerHTML =
-    '<div class="call-status-line">📞 מתקשר לנציג...</div>';
+  renderCallBody('<div class="call-status-line">📞 מתקשר לנציג...</div>');
 }
 
 function renderCallPanelInProgress(data) {
-  const body = document.getElementById("callPanelBody");
   if (data.simulated) {
-    body.innerHTML = `
-      <div class="call-status-line">⚠️ ${escapeHtml(data.warning || "שיחה לא בוצעה בפועל - מצב סימולציה")}</div>
-    `;
+    renderCallBody(`<div class="call-status-line">⚠️ ${escapeHtml(data.warning || "שיחה לא בוצעה בפועל - מצב סימולציה")}</div>`);
     renderCallNotesForm();
     return;
   }
-  body.innerHTML = `
+  renderCallBody(`
     <div class="call-status-line">📞 השיחה בעיצומה...</div>
     <button type="button" class="primary" id="callEndedBtn">השיחה הסתיימה - הזן הערות</button>
-  `;
+  `);
   document.getElementById("callEndedBtn").addEventListener("click", renderCallNotesForm);
 }
 
 function renderCallNotesForm() {
-  document.getElementById("callPanelBody").innerHTML = `
+  renderCallBody(`
     <form class="mini-form" id="callNotesForm">
       <textarea id="callNotesInput" placeholder="מה עלה בשיחה? הקלד הערות חופשיות..." required></textarea>
+      <div class="call-notes-upload">
+        <span>🎙️ או העלה הקלטה לתמלול אוטומטי:</span>
+        <input type="file" id="callNotesAudioInput" accept="audio/*">
+      </div>
+      <div class="composer-error" id="callNotesError"></div>
       <button type="submit" class="primary" id="callNotesSubmit">ייצר תקציר</button>
     </form>
-  `;
+  `);
+  document.getElementById("callNotesAudioInput").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const errEl = document.getElementById("callNotesError");
+    errEl.classList.remove("show");
+    const textarea = document.getElementById("callNotesInput");
+    const originalPlaceholder = textarea.placeholder;
+    textarea.disabled = true;
+    textarea.placeholder = "מתמלל...";
+    try {
+      const formData = new FormData();
+      formData.append("audio", file);
+      const res = await fetch(`/api/calls/${activeCall.callId}/transcribe`, { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      textarea.value = data.text;
+    } catch (err) {
+      errEl.textContent = "תמלול נכשל: " + err.message + " - אפשר להקליד את ההערות ידנית במקום.";
+      errEl.classList.add("show");
+    } finally {
+      textarea.disabled = false;
+      textarea.placeholder = originalPlaceholder;
+    }
+  });
   document.getElementById("callNotesForm").addEventListener("submit", (e) => {
     e.preventDefault();
     const notes = document.getElementById("callNotesInput").value.trim();
@@ -1221,15 +1308,20 @@ function renderCallNotesForm() {
 }
 
 function renderCallSummarizing() {
-  document.getElementById("callPanelBody").innerHTML =
-    '<div class="call-status-line">✍️ Claude מייצר תקציר...</div>';
+  renderCallBody('<div class="call-status-line">✍️ Claude מייצר תקציר...</div>');
 }
 
 function renderCallDone(summary) {
-  document.getElementById("callPanelBody").innerHTML = `
+  const nextBtn = dialQueue
+    ? '<button type="button" class="primary" id="queueNextBtn">✅ סיום שיחה - לליד הבא בתור</button>'
+    : "";
+  renderCallBody(`
     <div class="call-status-line">✅ התקציר נשמר בכרטיס הלקוח</div>
     <div class="call-summary-box">${escapeHtml(summary)}</div>
-  `;
+    ${nextBtn}
+  `);
+  const btn = document.getElementById("queueNextBtn");
+  if (btn) btn.addEventListener("click", advanceDialQueue);
 }
 
 async function openCallPanel(phone, tenantId, name) {
@@ -1253,8 +1345,7 @@ async function openCallPanel(phone, tenantId, name) {
     renderCallPanelInProgress(data);
   } catch (err) {
     if (!activeCall) return;
-    document.getElementById("callPanelBody").innerHTML =
-      '<div class="error">שגיאה ביזום השיחה: ' + escapeHtml(err.message) + "</div>";
+    renderCallBody('<div class="error">שגיאה ביזום השיחה: ' + escapeHtml(err.message) + "</div>");
   }
 }
 
@@ -1273,9 +1364,39 @@ async function submitCallNotes(notesText) {
     // אוטומטית אם פאנל הצ'אט עדיין פתוח, בדיוק כמו כל הודעה יוצאת אחרת.
   } catch (err) {
     if (!activeCall) return;
-    document.getElementById("callPanelBody").innerHTML =
-      '<div class="error">שגיאה בייצור התקציר: ' + escapeHtml(err.message) + "</div>";
+    renderCallBody('<div class="error">שגיאה בייצור התקציר: ' + escapeHtml(err.message) + "</div>");
   }
+}
+
+// ---- חיוג רציף (dial queue) ----
+function startDialQueue(items) {
+  if (items.length === 0) return;
+  dialQueue = { items, index: 0 };
+  openCallPanel(items[0].phone, items[0].tenantId, items[0].name);
+}
+
+function advanceDialQueue() {
+  if (!dialQueue) return;
+  dialQueue.index += 1;
+  if (dialQueue.index >= dialQueue.items.length) {
+    const finishedCount = dialQueue.items.length;
+    dialQueue = null;
+    activeCall = null;
+    document.getElementById("callPanelBody").innerHTML =
+      `<div class="call-status-line">🎉 סיימת את התור (${finishedCount} לידים)</div>`;
+    return;
+  }
+  const next = dialQueue.items[dialQueue.index];
+  openCallPanel(next.phone, next.tenantId, next.name);
+}
+
+function skipDialQueueItem() {
+  advanceDialQueue();
+}
+
+function stopDialQueue() {
+  dialQueue = null;
+  closeCallPanel();
 }
 
 // פאנלים נוספים (שיחה/משימות/יומן/משוב) נפתחים מעל #panel/#inboxView באותו overlay
@@ -1291,6 +1412,7 @@ function closeSubPanel(id) {
 function closeCallPanel() {
   closeSubPanel("callPanel");
   activeCall = null;
+  dialQueue = null; // סגירת הפאנל ידנית עוצרת גם תור פעיל - לא ממשיכים "ברקע"
 }
 
 document.getElementById("panelCallBtn").addEventListener("click", () => {
@@ -1807,6 +1929,17 @@ document.getElementById("bulkApplyBtn").addEventListener("click", async () => {
 document.getElementById("bulkClearBtn").addEventListener("click", () => {
   selectedLeads.clear();
   renderTable();
+});
+
+document.getElementById("bulkDialBtn").addEventListener("click", () => {
+  const items = [...selectedLeads].map(key => {
+    const sep = key.indexOf("::");
+    const tenantId = key.slice(0, sep);
+    const phone = key.slice(sep + 2);
+    const lead = findLead(phone, tenantId);
+    return { phone, tenantId, name: lead ? (lead.customer_name || phone) : phone };
+  });
+  startDialQueue(items);
 });
 
 // ---- הוספת ליד חדש ----

@@ -64,6 +64,7 @@ try:
     import reactivate
     import scheduler
     import voice_call
+    from transcription import transcribe_audio
     from extract import (
         DEFAULT_TENANT_ID,
         generate_call_summary,
@@ -631,6 +632,32 @@ def api_call_notes(call_id):
     db.log_message(phone, summary, direction="out", tenant_id=tenant_id, channel="voice", simulated=simulated)
 
     return jsonify({"ok": True, "call": updated_call, "summary": summary})
+
+
+@app.route("/api/calls/<int:call_id>/transcribe", methods=["POST"])
+def api_call_transcribe(call_id):
+    """מתמלל קובץ אודיו שהועלה (transcription.transcribe_audio, OpenAI Whisper API)
+    ומחזיר את הטקסט - **לא** שומר כלום בעצמו. ה-UI ממלא את טקסט התמלול לתוך אותה
+    תיבת הערות שממנה ייצור התקציר (POST /api/calls/<id>/notes) - כך שהתמלול הוא
+    רק דרך חלופית למלא את ההערות, וכל שאר הצינור (שמירה בכרטיס + חותמת זמן +
+    היסטוריה) זהה לגמרי לזרימת ההקלדה הידנית הקיימת, בלי קוד כפול. אם
+    OPENAI_API_KEY לא מוגדר - מחזיר 400 עם הודעה ברורה, וה-UI חוזר להקלדה ידנית."""
+    if not db.get_call(call_id):
+        return jsonify({"error": "שיחה לא נמצאה"}), 404
+
+    if "audio" not in request.files:
+        return jsonify({"error": "לא צורף קובץ אודיו (שדה 'audio')"}), 400
+
+    upload = request.files["audio"]
+    try:
+        text = transcribe_audio(upload.read(), upload.filename or "recording.webm")
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.error("תמלול אודיו נכשל (call_id=%s): %s", call_id, exc, exc_info=True)
+        return jsonify({"error": f"תמלול נכשל: {exc}"}), 502
+
+    return jsonify({"ok": True, "text": text})
 
 
 @app.route("/api/calls")
