@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from twilio.base.exceptions import TwilioRestException
 from twilio.rest import Client as TwilioClient
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
@@ -33,6 +34,23 @@ def _to_e164(phone: str) -> str:
     if digits.startswith("0"):
         return "+972" + digits[1:]  # הנחת מספר ישראלי מקומי - תואם לנתוני הפרויקט
     return "+" + digits
+
+
+TRIAL_RESTRICTION_STATUSES = {400, 422}
+
+
+def is_trial_restriction(exc: Exception) -> bool:
+    """מזהה שגיאת חסימה אופיינית לחשבון Twilio מסוג Trial (למשל נמען לא מאומת -
+    "Please add the 'to' number as a verified recipient", גם אחרי הצטרפות ל-WhatsApp
+    Sandbox - אלו שתי דרישות נפרדות של Trial) - בניגוד לשגיאה אמיתית אחרת (פרטי
+    חיבור שגויים וכו'). משותף בין server.py (/api/messages/send, /api/calls/start)
+    ל-reactivate.py (--send) - כדי שכל נקודות השליחה יתייחסו לחסימת Trial באותה
+    צורה בדיוק, בלי לשכפל את הזיהוי."""
+    return (
+        isinstance(exc, TwilioRestException)
+        and exc.status in TRIAL_RESTRICTION_STATUSES
+        and "trial" in str(exc).lower()
+    )
 
 
 def send_whatsapp_message(to_phone: str, body: str) -> str:

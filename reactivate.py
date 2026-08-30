@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 import db
 import prompts
 from extract import DEFAULT_TENANT_ID, _customer_key, last_contact_at, load_customers, update_lead_status
-from whatsapp_send import send_whatsapp_message
+from whatsapp_send import is_trial_restriction, send_whatsapp_message
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
 
@@ -139,6 +139,7 @@ def run_reactivation_campaign(
             "business": contact.get("business"),
             "message": message,
             "sent": False,
+            "simulated": False,
             "error": None,
             "sid": None,
             "task_id": None,
@@ -148,17 +149,36 @@ def run_reactivation_campaign(
             try:
                 entry["sid"] = send_whatsapp_message(contact["phone"], message)
                 entry["sent"] = True
+            except Exception as exc:
+                if is_trial_restriction(exc):
+                    # חשבון Twilio מסוג Trial חסם את השליחה בפועל (ראו whatsapp_send.
+                    # is_trial_restriction - נמען לא מאומת, גם אחרי הצטרפות ל-Sandbox) -
+                    # זו לא שגיאת קוד; ממשיכים לעדכן סטטוס/היסטוריה/משימת מעקב בדיוק
+                    # כמו שליחה מוצלחת (מסומן simulated=True בכל מקום), כדי לאפשר לבדוק
+                    # שכל שאר הצינור - שליפת נתונים מה-CRM, ניסוח ההודעה, עדכון הסטטוס,
+                    # המשימה האוטומטית - מתפקד באופן מלא גם בלי לצאת מ-Trial.
+                    entry["simulated"] = True
+                else:
+                    entry["error"] = str(exc)
+
+            if entry["sent"] or entry["simulated"]:
+                note = (
+                    f"הודעת חימום נשלחה: {message}" if entry["sent"]
+                    else f"הודעת חימום (סימולציה - חשבון Twilio Trial חסם שליחה בפועל): {message}"
+                )
                 update_lead_status(
                     contact["phone"],
                     status="contacted",
                     extra={"customer_name": contact["name"], "business_name": contact.get("business")},
                     tenant_id=tenant_id,
-                    note=f"הודעת חימום נשלחה: {message}",
+                    note=note,
                     direction="out",
+                    simulated=entry["simulated"],
                 )
-                db.log_message(contact["phone"], message, direction="out", tenant_id=tenant_id, channel="whatsapp")
-            except Exception as exc:
-                entry["error"] = str(exc)
+                db.log_message(
+                    contact["phone"], message, direction="out", tenant_id=tenant_id,
+                    channel="whatsapp", simulated=entry["simulated"],
+                )
 
             # פעילות מעקב מהירה (calendar_tasks) - נוצרת בכל הרצת send=True, גם אם
             # השליחה בפועל מול Twilio נכשלה (למשל חשבון Trial) - כי ההחלטה "לפנות
@@ -191,6 +211,8 @@ def _print_campaign_results(results: list[dict], send: bool) -> None:
             continue
         if r["sent"]:
             print(f"  ✅ נשלח בפועל (Twilio SID: {r['sid']})")
+        elif r["simulated"]:
+            print("  🧪 סימולציה (Trial) - Twilio חסם שליחה אמיתית, אך הסטטוס/היסטוריה/משימת המעקב עודכנו ב-CRM בדיוק כמו בשליחה מוצלחת")
         else:
             print(f"  ❌ שליחה נכשלה: {r['error']}")
 

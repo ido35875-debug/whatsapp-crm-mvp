@@ -47,7 +47,6 @@ from xml.sax.saxutils import escape
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory
 from openpyxl import load_workbook
-from twilio.base.exceptions import TwilioRestException
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import Dial, VoiceResponse
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -81,7 +80,7 @@ try:
         update_lead_status,
         update_lead_voice_extraction,
     )
-    from whatsapp_send import TWILIO_AUTH_TOKEN, _to_e164, send_whatsapp_message
+    from whatsapp_send import TWILIO_AUTH_TOKEN, _to_e164, is_trial_restriction, send_whatsapp_message
 except KeyError as exc:
     # משתנה סביבה קריטי חסר (כרגע רק ANTHROPIC_API_KEY נדרש קשיח - os.environ[...] ולא
     # os.environ.get(...)) - נכשלים מיד עם הודעה ברורה, לא עם traceback גולמי שקשה
@@ -115,19 +114,6 @@ _file_handler = RotatingFileHandler(
 _file_handler.setLevel(logging.WARNING)  # קובץ הלוג מתמקד בשגיאות/אזהרות - לא רעש כללי
 _file_handler.setFormatter(_log_formatter)
 logger.addHandler(_file_handler)
-
-TRIAL_RESTRICTION_STATUSES = {400, 422}
-
-
-def _is_trial_restriction(exc: Exception) -> bool:
-    """מזהה שגיאת חסימה אופיינית לחשבון Twilio מסוג Trial (למשל נמען לא מאומת, או
-    פרמטרים חסומים ל-Trial) - בניגוד לשגיאה אמיתית אחרת (פרטי חיבור שגויים וכו')."""
-    return (
-        isinstance(exc, TwilioRestException)
-        and exc.status in TRIAL_RESTRICTION_STATUSES
-        and "trial" in str(exc).lower()
-    )
-
 
 app = Flask(__name__)
 # מאחורי ngrok/reverse-proxy: משקף את ה-scheme/host/port הציבוריים האמיתיים מתוך
@@ -558,7 +544,7 @@ def api_send_message():
     try:
         sid = send_whatsapp_message(phone, message)
     except Exception as exc:
-        if not _is_trial_restriction(exc):
+        if not is_trial_restriction(exc):
             return jsonify({"error": str(exc)}), 502
         # חשבון Twilio מסוג Trial חסם את השליחה בפועל (למשל נמען לא מאומת) - זו לא
         # שגיאת קוד; רושמים את ההודעה כ"מדומה" (simulated) כדי לאפשר לבדוק את חלון
@@ -581,7 +567,7 @@ def api_send_message():
 def api_calls_start():
     """יוזם Click-to-Call (גישור נציג→לקוח). אישור אנושי = הקליק על '📞 שיחה' בדשבורד.
     כרגע (סביבת פיתוח) אין מספר Twilio Voice/PUBLIC_BASE_URL מוגדרים - זה ייתפס כאן
-    ויתנהג בדיוק כמו _is_trial_restriction ב-/api/messages/send: נרשם כ-simulated,
+    ויתנהג בדיוק כמו is_trial_restriction ב-/api/messages/send: נרשם כ-simulated,
     מוחזר 200 (לא 502), כדי לאפשר להמשיך ולבדוק את שאר הזרימה (הערות → תקציר → כרטיס)."""
     data = request.get_json(silent=True) or {}
     phone = (data.get("phone") or "").strip()
@@ -596,7 +582,7 @@ def api_calls_start():
         logger.warning("שיחת Voice לא הופעלה (תצורה חסרה): %s", exc)
         simulated, status = True, "simulated_no_config"
     except Exception as exc:
-        if not _is_trial_restriction(exc):
+        if not is_trial_restriction(exc):
             return jsonify({"error": str(exc)}), 502
         simulated, status = True, "simulated_trial_restriction"
 

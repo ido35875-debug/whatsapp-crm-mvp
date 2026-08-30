@@ -261,6 +261,47 @@ audio/ogg`+`Body` ריק - **ההודעה נרשמה** (לא נדחתה ב-400),
 מדיה) - עדיין עובד זהה לגמרי, אין שינוי התנהגות. כל נתוני הבדיקה נוקו. **עדיין
 לא נבדק**: תמלול *מוצלח* בפועל (דורש מפתח OpenAI תקין שטרם סופק).
 
+### מצב סימולציה ל-`reactivate.py --send` בחשבון Trial (2026-08-30/31)
+
+**הקשר:** בניסיון שליחת אמת (`reactivate.py --send`) התגלה שחשבון ה-Twilio עדיין
+ב-Trial, וכל שליחה ללקוח שלא אומת (`Verified Caller ID` בקונסולת Twilio - **דרישה
+נפרדת לגמרי מהצטרפות ל-WhatsApp Sandbox עם `join <קוד>`**) נדחית עם `422` וקוד
+Twilio `572002` ("No Twilio trial phone number is assigned for messaging to
+this destination number. Please add the 'to' number as a verified recipient").
+**נבדק ונשלל לחלוטין ניסיון לעקוף את זה
+דרך ה-API** (`client.validation_requests.create` - הפונקציה הרשמית של Twilio
+להוספת Verified Caller ID) - נכשל עם קוד Twilio **20003** ("This feature is
+not available on a Trial account") - **אותה מדיניות אנטי-ספאם בדיוק, אכופה
+זהה גם ב-API וגם באתר** - אין עקיפה טכנית, רק שדרוג חשבון אמיתי (הוספת אמצעי
+תשלום) מסיר את המגבלה.
+
+**מה נוסף (בהסכמת המשתמש - "נשאר ב-Trial", מצב סימולציה מפורש לבדיקת הצינור
+המלא בלי לצאת מ-Trial):** `whatsapp_send.is_trial_restriction(exc)` (חדש,
+**רופרקטור** - הועבר מ-`server.py`'s `_is_trial_restriction` הפרטית ל-מודול
+המשותף `whatsapp_send.py`, כדי ש-`reactivate.py` יוכל להשתמש באותה זיהוי בדיוק
+בלי לשכפל קוד/לייבא מ-`server.py` - server.py מייבא אותה עכשיו במקום להגדיר
+מקומית). `reactivate.run_reactivation_campaign` (בתוך `if send:`) עכשיו תופס
+`is_trial_restriction(exc)` בנפרד משגיאה אמיתית אחרת: `entry["simulated"] = True`
+(שדה חדש ב-entry, לצד `sent`/`error` הקיימים) - ו**ממשיך** לעדכן סטטוס ל-
+`contacted`, לרשום הודעה ב-`messages`/היסטוריה (עם `simulated=True` בשניהם -
+`extract.update_lead_status` קיבל פרמטר `simulated` חדש שמעביר הלאה ל-
+`_append_history`, מראה בדיוק את `log_manual_reply` הקיים), וליצור משימת מעקב -
+**בדיוק כמו שליחה מוצלחת אמיתית**, כדי לאמת שכל שאר הצינור (שליפת ליד מה-CRM,
+ניסוח הודעה עם Claude, עדכון סטטוס, יצירת משימה) מתפקד במלואו. שגיאה אמיתית
+לא-קשורה-ל-Trial עדיין מדווחת כ`error` רגיל, בלי לשנות כלום ב-CRM (**לא**
+"בולעת" כשל אמיתי). ה-CLI (`_print_campaign_results`) מציג שלוש תוצאות אפשריות
+בבירור: `✅ נשלח בפועל` / `🧪 סימולציה (Trial)` / `❌ שליחה נכשלה`.
+
+**נבדק בפועל:** `--send` על ליד בודד (עידו, המספר האישי של המשתמש, שכבר הצטרף
+ל-Sandbox אך לא אומת כ-Verified Caller ID) - הודעה נדחתה ע"י Twilio בדיוק כצפוי,
+נתפסה כ-`simulated`, ואומת מול ה-API/`customers.json`/`messages` ש-`lead_status`
+עודכן ל-`contacted`, ההיסטוריה מכילה את ההודעה עם `simulated: true` ותחילית
+ברורה ("סימולציה - חשבון Twilio Trial חסם..."), ושורת `messages` המתאימה עם
+`simulated: True`. כל נתוני הבדיקה (כולל 3 משימות מעקב כפולות שהצטברו מניסיונות
+קודמים באותה שיחה, לפני התיקון) נוקו ואומתו מול ה-API חזרה ל-11 לידים בסיס,
+עידו ל-`lead_status: null`. **`/api/reactivate` (הדשבורד) נהנה מאותה התנהגות
+אוטומטית** - זו אותה פונקציה בדיוק, בלי קוד נפרד.
+
 ### הצגת סוג נכס/תקציב בממשק (2026-08-30)
 
 **מה נוסף:** `property_type`/`budget` (החולצים אוטומטית מהודעה קולית - ראו למטה)

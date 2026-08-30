@@ -375,7 +375,11 @@ def update_lead_status(
     source_channel: str = "whatsapp",
     note: str | None = None,
     direction: str = "out",
+    simulated: bool = False,
 ) -> dict:
+    """simulated=True: ה-note (אם יש) מסומן בהיסטוריה כסימולציה (ראו _append_history) -
+    לשימוש כשחסימת Twilio Trial מנעה שליחה אמיתית (whatsapp_send.is_trial_restriction),
+    אבל עדיין רוצים לתעד את הכוונה ולעדכן סטטוס לצורך בדיקה (ראו reactivate.py)."""
     customers = load_customers()
     key = _customer_key(tenant_id, phone)
     card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
@@ -385,7 +389,7 @@ def update_lead_status(
         if value:
             card[k] = value
     if note:
-        _append_history(card, source_channel, note, direction=direction)
+        _append_history(card, source_channel, note, direction=direction, simulated=simulated)
     customers[key] = card
     save_customers(customers)
     return card
