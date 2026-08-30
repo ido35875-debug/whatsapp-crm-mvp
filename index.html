@@ -83,7 +83,84 @@
     min-height: 100vh;
   }
 
-  .page { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
+  .page { max-width: 1680px; margin: 0 auto; padding: 28px 20px 60px; }
+
+  /* פריסת עמוד ראשית: טבלה + מרכז בקרה בצד (רק בתצוגת הטבלה - לא ב-Inbox) */
+  .dashboard-layout { display: flex; gap: 20px; align-items: flex-start; }
+  .dashboard-main { flex: 1; min-width: 0; }
+  .control-center { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; }
+  @media (max-width: 1100px) {
+    .dashboard-layout { flex-direction: column; }
+    .control-center { width: 100%; }
+  }
+
+  .cc-card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px; box-shadow: var(--shadow);
+  }
+  .cc-card h3 { margin: 0 0 12px; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+  .cc-stat-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 9px 0; border-bottom: 1px solid var(--gridline); font-size: 13px;
+    cursor: pointer; background: none; border-inline: none; border-top: none; width: 100%;
+    font-family: inherit; color: inherit; text-align: start;
+  }
+  .cc-stat-row:last-of-type { border-bottom: none; }
+  .cc-stat-row:hover { color: var(--accent); }
+  .cc-stat-row .cc-count { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .cc-mini-item {
+    display: block; width: 100%; text-align: start; padding: 8px 0; border-bottom: 1px solid var(--gridline);
+    font-size: 12.5px; cursor: pointer; background: none; border-inline: none; border-top: none;
+    font-family: inherit; color: inherit;
+  }
+  .cc-mini-item:last-of-type { border-bottom: none; }
+  .cc-mini-item:hover { color: var(--accent); }
+  .cc-mini-item .cc-mini-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cc-mini-item .cc-mini-sub { color: var(--text-muted); font-size: 11.5px; margin-top: 2px; }
+  .cc-empty { color: var(--text-muted); font-size: 12.5px; padding: 4px 0; }
+  .cc-card-footer { margin-top: 10px; text-align: center; }
+  .cc-card-footer button { width: 100%; font-size: 12.5px; padding: 6px; }
+
+  /* אווטאר עגול עם ראשי תיבות - צבע נגזר דטרמיניסטית משם הליד */
+  .avatar {
+    width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; color: #fff;
+  }
+  .name-cell { display: flex; align-items: center; gap: 10px; }
+  .name-cell-text { min-width: 0; }
+  .name-cell-primary { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .name-cell-secondary {
+    font-size: 12px; color: var(--text-muted); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; max-width: 220px;
+  }
+
+  /* בחירת שורות מרובות (checkbox) + פס פעולות בצע-בצוותא */
+  input.row-checkbox { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
+  .bulk-bar {
+    display: none; align-items: center; gap: 12px; padding: 10px 16px;
+    background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px;
+    margin-bottom: 12px; font-size: 13.5px;
+  }
+  .bulk-bar.show { display: flex; }
+  .bulk-bar select { font-family: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); }
+  .bulk-bar .bulk-spacer { flex: 1; }
+
+  .serial-cell { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  input.agent-input {
+    width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12.5px;
+    padding: 5px 8px; border-radius: 8px; border: 1px solid transparent;
+    background: transparent; color: var(--text-secondary);
+  }
+  input.agent-input:hover, input.agent-input:focus {
+    border-color: var(--border); background: var(--surface-2); outline: none;
+  }
+  .last-activity-cell { font-size: 12px; }
+  .last-activity-cell .la-time { color: var(--text-secondary); font-weight: 600; }
+  .last-activity-cell .la-snippet {
+    color: var(--text-muted); margin-top: 2px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; max-width: 180px;
+  }
 
   header.top {
     display: flex; align-items: center; justify-content: space-between;
@@ -135,7 +212,10 @@
     background: var(--surface-1); border: 1px solid var(--border);
     border-radius: 14px; overflow: hidden; box-shadow: var(--shadow);
   }
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  /* עמודות רבות (עם סרגל הצד) עלולות לחרוג מהרוחב הזמין - גלילה אופקית פנימית
+     על #tableWrap עצמו, כדי ש-.table-card ישמור על הפינות המעוגלות בלי לגזור */
+  #tableWrap { overflow-x: auto; }
+  table { width: 100%; min-width: 1080px; border-collapse: collapse; font-size: 13.5px; }
   thead th {
     text-align: start; padding: 12px 16px; font-weight: 600;
     color: var(--text-secondary); font-size: 12px;
@@ -394,13 +474,14 @@
       <p>כל הפניות שהתקבלו, הסטטוס שלהן, והיסטוריית ההודעות המלאה</p>
     </div>
     <div class="top-actions">
+      <button id="addLeadBtn" class="primary">➕ הוסף ליד</button>
       <button id="importBtn">📥 ייבוא לידים</button>
       <input type="file" id="importFileInput" accept=".csv,.xlsx" style="display:none">
       <button id="reactivateBtn">🔥 החייאת לידים קרים</button>
       <button id="calendarBtn">📅 יומן</button>
       <button id="feedbackBtn">💡 משוב</button>
       <button id="themeToggle" title="החלף מצב תצוגה">🌓 מצב תצוגה</button>
-      <button id="refreshBtn" class="primary">↻ רענון</button>
+      <button id="refreshBtn">↻ רענון</button>
     </div>
   </header>
   <div class="import-status" id="importStatus"></div>
@@ -413,31 +494,65 @@
   <div id="tableView">
     <div class="stat-grid" id="statGrid"></div>
 
-    <div class="toolbar">
-      <input id="searchInput" type="text" placeholder="חיפוש בשם, טלפון, עסק, מיקום, הערות והיסטוריה...">
-      <select id="statusFilter">
-        <option value="">כל הסטטוסים</option>
-        <option value="__new">חדש</option>
-        <option value="contacted">נוצר קשר</option>
-        <option value="hot">חם</option>
-        <option value="not_relevant">לא רלוונטי</option>
-      </select>
-      <select id="scoreFilter">
-        <option value="">כל ציוני החום</option>
-        <option value="hot">🔴 חם (70-100)</option>
-        <option value="warm">🟠 פושר (40-69)</option>
-        <option value="cold">🔵 קר (1-39)</option>
-      </select>
-      <select id="categoryFilter">
-        <option value="">כל הקטגוריות</option>
-      </select>
-      <select id="tenantFilter">
-        <option value="">כל העסקים (tenants)</option>
-      </select>
-    </div>
+    <div class="dashboard-layout">
+      <div class="dashboard-main">
+        <div class="toolbar">
+          <input id="searchInput" type="text" placeholder="חיפוש בשם, טלפון, עסק, מיקום, הערות והיסטוריה...">
+          <select id="statusFilter">
+            <option value="">כל הסטטוסים</option>
+            <option value="__new">חדש</option>
+            <option value="contacted">נוצר קשר</option>
+            <option value="hot">חם</option>
+            <option value="not_relevant">לא רלוונטי</option>
+          </select>
+          <select id="scoreFilter">
+            <option value="">כל ציוני החום</option>
+            <option value="hot">🔴 חם (70-100)</option>
+            <option value="warm">🟠 פושר (40-69)</option>
+            <option value="cold">🔵 קר (1-39)</option>
+          </select>
+          <select id="categoryFilter">
+            <option value="">כל הקטגוריות</option>
+          </select>
+          <select id="tenantFilter">
+            <option value="">כל העסקים (tenants)</option>
+          </select>
+        </div>
 
-    <div class="table-card">
-      <div id="tableWrap"></div>
+        <div class="bulk-bar" id="bulkBar">
+          <span id="bulkCount"></span>
+          <div class="bulk-spacer"></div>
+          <select id="bulkStatusSelect">
+            <option value="new">חדש</option>
+            <option value="contacted">נוצר קשר</option>
+            <option value="hot">חם</option>
+            <option value="not_relevant">לא רלוונטי</option>
+          </select>
+          <button type="button" id="bulkApplyBtn">עדכן סטטוס לנבחרים</button>
+          <button type="button" id="bulkClearBtn">בטל בחירה</button>
+        </div>
+
+        <div class="table-card">
+          <div id="tableWrap"></div>
+        </div>
+      </div>
+
+      <aside class="control-center">
+        <div class="cc-card">
+          <h3>🎯 מרכז בקרה</h3>
+          <div id="ccStats"></div>
+        </div>
+        <div class="cc-card">
+          <h3>📅 היום ביומן</h3>
+          <div id="ccTasks"></div>
+          <div class="cc-card-footer"><button type="button" id="ccTasksMore">לכל היומן</button></div>
+        </div>
+        <div class="cc-card">
+          <h3>💡 משוב אחרון</h3>
+          <div id="ccFeedback"></div>
+          <div class="cc-card-footer"><button type="button" id="ccFeedbackMore">לכל המשוב</button></div>
+        </div>
+      </aside>
     </div>
   </div>
 
@@ -541,6 +656,33 @@
   <div class="panel-body" id="feedbackPanelBody"></div>
 </aside>
 
+<aside class="panel" id="addLeadPanel">
+  <div class="panel-header">
+    <div>
+      <h2>➕ הוספת ליד חדש</h2>
+      <p>ליד בודד - לייבוא קובץ שלם יש את "📥 ייבוא לידים"</p>
+    </div>
+    <button class="panel-close" id="addLeadPanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body">
+    <form class="mini-form" id="addLeadForm">
+      <input type="text" id="addLeadName" placeholder="שם מלא">
+      <input type="text" id="addLeadPhone" placeholder="טלפון (חובה)" required>
+      <input type="text" id="addLeadBusiness" placeholder="עסק">
+      <input type="text" id="addLeadLocation" placeholder="מיקום">
+      <input type="text" id="addLeadCategory" placeholder="קטגוריה (למשל: נדל&quot;ן, פרטי, משפחה)">
+      <input type="text" id="addLeadAgent" placeholder="סוכן מטפל">
+      <select id="addLeadStatus">
+        <option value="new">חדש</option>
+        <option value="contacted">נוצר קשר</option>
+        <option value="hot">חם</option>
+        <option value="not_relevant">לא רלוונטי</option>
+      </select>
+      <button type="submit" class="primary">➕ הוסף ליד</button>
+    </form>
+  </div>
+</aside>
+
 <aside class="panel" id="reactivatePanel">
   <div class="panel-header">
     <div>
@@ -593,6 +735,48 @@ function scoreBadgeHtml(score) {
   if (score == null) return '<span class="muted">—</span>';
   return `<span class="score-badge ${scoreBand(score)}">${score}</span>`;
 }
+
+// אווטאר עגול: ראשי תיבות (משם, או שתי הספרות האחרונות בטלפון אם אין שם) + צבע
+// דטרמיניסטי (hash של הטלפון) - כך שלאותו ליד תמיד יהיה אותו צבע בין רענונים.
+function avatarInitials(lead) {
+  const name = (lead.customer_name || "").trim();
+  if (name) {
+    const parts = name.split(/\s+/).filter(Boolean);
+    const letters = parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : parts[0].slice(0, 2);
+    return letters.toUpperCase();
+  }
+  return (lead.phone || "").replace(/\D/g, "").slice(-2) || "?";
+}
+function avatarColorHsl(seed) {
+  let hash = 0;
+  for (const ch of seed) hash = (hash * 31 + ch.charCodeAt(0)) % 360;
+  return `hsl(${hash}, 55%, 42%)`;
+}
+function avatarHtml(lead) {
+  const seed = lead.phone || lead.customer_name || "?";
+  return `<div class="avatar" style="background:${avatarColorHsl(seed)}">${escapeHtml(avatarInitials(lead))}</div>`;
+}
+
+// "פעילות אחרונה": תווית יחסית (היום/אתמול/לפני X ימים/תאריך) - לעמודת הטבלה
+function relativeTimeLabel(iso) {
+  if (!iso) return null;
+  const diffDays = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (diffDays <= 0) return "היום";
+  if (diffDays === 1) return "אתמול";
+  if (diffDays < 7) return `לפני ${diffDays} ימים`;
+  return new Date(iso).toLocaleDateString("he-IL", { day: "numeric", month: "short" });
+}
+function lastActivityCellHtml(lead) {
+  if (!lead.last_message_at) return '<span class="muted">—</span>';
+  const prefix = lead.last_message_direction === "out" ? "את/ה: " : "";
+  return `
+    <div class="last-activity-cell">
+      <div class="la-time">${escapeHtml(relativeTimeLabel(lead.last_message_at))}</div>
+      <div class="la-snippet">${escapeHtml(prefix + (lead.last_message || ""))}</div>
+    </div>
+  `;
+}
+
 const CHANNEL_LABELS = { whatsapp: "וואטסאפ", instagram: "אינסטגרם", facebook: "פייסבוק" };
 function channelLabel(ch) { return CHANNEL_LABELS[ch] || ch || "—"; }
 
@@ -604,18 +788,20 @@ function escapeHtml(str) {
 
 let allLeads = [];
 let searchMatchSet = null; // Set של "tenant::phone" מ-/api/search - null = אין חיפוש טקסט חופשי פעיל
+let selectedLeads = new Set(); // Set של "tenant::phone" - בחירה מרובה (checkbox) לפעולות בצע-בצוותא
 
 async function loadLeads() {
   const wrap = document.getElementById("tableWrap");
   wrap.innerHTML = '<div class="loading">טוען לידים...</div>';
   try {
-    const res = await fetch("/api/leads?include_score=1");
+    const res = await fetch("/api/leads?include_score=1&include_last_message=1");
     if (!res.ok) throw new Error("HTTP " + res.status);
     allLeads = await res.json();
     populateTenantFilter();
     populateCategoryFilter();
     renderStats();
     renderTable();
+    loadControlCenter();
   } catch (err) {
     wrap.innerHTML = '<div class="error">שגיאה בטעינת הלידים: ' + escapeHtml(err.message) + "</div>";
   }
@@ -680,7 +866,7 @@ function getFilteredLeads() {
       // חיפוש מקומי (מיידי) בשדות שכבר טעונים בזיכרון - שם/טלפון/עסק/מיקום/קטגוריה.
       // חיפוש עמוק יותר (הודעות/הערות שיחה/משימות) מגיע מ-/api/search דרך searchMatchSet
       // (ראו scheduleSearch למטה) - אם הוא פעיל, מספיקה התאמה באחד מהשניים (OR).
-      const haystack = [lead.customer_name, lead.phone, lead.business_name, lead.location, lead.category]
+      const haystack = [lead.customer_name, lead.phone, lead.business_name, lead.location, lead.category, lead.agent]
         .filter(Boolean).join(" ").toLowerCase();
       const localMatch = haystack.includes(q);
       const deepMatch = searchMatchSet && searchMatchSet.has(`${lead.tenant_id || "default"}::${lead.phone}`);
@@ -703,30 +889,46 @@ function renderTable() {
     return;
   }
 
-  const rows = leads.map(lead => {
+  const rows = leads.map((lead, i) => {
     const tenantId = lead.tenant_id || "default";
+    const key = `${tenantId}::${lead.phone}`;
+    const secondary = [lead.business_name, lead.location].filter(Boolean).join(" · ");
     return `
       <tr>
-        <td class="name">${escapeHtml(lead.customer_name || "ללא שם")}</td>
+        <td><input type="checkbox" class="row-checkbox" data-key="${escapeHtml(key)}" ${selectedLeads.has(key) ? "checked" : ""}></td>
+        <td class="serial-cell">${i + 1}</td>
+        <td>
+          <div class="name-cell">
+            ${avatarHtml(lead)}
+            <div class="name-cell-text">
+              <div class="name-cell-primary">${escapeHtml(lead.customer_name || "ללא שם")}</div>
+              ${secondary ? `<div class="name-cell-secondary">${escapeHtml(secondary)}</div>` : ""}
+            </div>
+          </div>
+        </td>
         <td class="phone">${escapeHtml(lead.phone)}</td>
-        <td class="${lead.business_name ? "" : "muted"}">${escapeHtml(lead.business_name || "—")}</td>
-        <td class="${lead.location ? "" : "muted"}">${escapeHtml(lead.location || "—")}</td>
-        <td>${scoreBadgeHtml(lead.score)}</td>
-        <td><input type="text" class="category-input" placeholder="קטגוריה..." value="${escapeHtml(lead.category || "")}" data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}"></td>
+        <td><input type="text" class="agent-input" placeholder="סוכן מטפל..." value="${escapeHtml(lead.agent || "")}" data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}"></td>
         <td><span class="tag">${escapeHtml(channelLabel(lead.source_channel))}</span></td>
-        <td class="${lead.import_source ? "" : "muted"}">${escapeHtml(lead.import_source || "—")}</td>
-        <td><span class="tag">${escapeHtml(tenantId)}</span></td>
         <td>${statusSelectHtml(lead.phone, tenantId, lead.lead_status)}</td>
+        <td>${scoreBadgeHtml(lead.score)}</td>
+        <td>${lastActivityCellHtml(lead)}</td>
+        <td><input type="text" class="category-input" placeholder="קטגוריה..." value="${escapeHtml(lead.category || "")}" data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}"></td>
+        <td><span class="tag">${escapeHtml(tenantId)}</span></td>
         <td><button data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}" data-name="${escapeHtml(lead.customer_name || lead.phone)}" class="history-btn">💬 היסטוריה</button></td>
       </tr>
     `;
   }).join("");
 
+  const visibleKeys = new Set(leads.map(l => `${l.tenant_id || "default"}::${l.phone}`));
+  const allVisibleSelected = leads.length > 0 && [...visibleKeys].every(k => selectedLeads.has(k));
+
   wrap.innerHTML = `
     <table>
       <thead>
         <tr>
-          <th>שם</th><th>טלפון</th><th>עסק</th><th>מיקום</th><th>ציון חום</th><th>קטגוריה</th><th>ערוץ</th><th>מקור</th><th>Tenant</th><th>סטטוס</th><th></th>
+          <th><input type="checkbox" class="row-checkbox" id="selectAllCheckbox" ${allVisibleSelected ? "checked" : ""}></th>
+          <th>#</th><th>שם</th><th>טלפון</th><th>סוכן מטפל</th><th>ערוץ</th><th>סטטוס</th>
+          <th>ציון חום</th><th>פעילות אחרונה</th><th>קטגוריה</th><th>Tenant</th><th></th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -736,6 +938,32 @@ function renderTable() {
   wrap.querySelectorAll(".history-btn").forEach(btn => {
     btn.addEventListener("click", () => openHistory(btn.dataset.phone, btn.dataset.tenant, btn.dataset.name));
   });
+
+  wrap.querySelectorAll("tbody .row-checkbox").forEach(cb => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) selectedLeads.add(cb.dataset.key);
+      else selectedLeads.delete(cb.dataset.key);
+      updateBulkBar();
+      const allBox = document.getElementById("selectAllCheckbox");
+      if (allBox) allBox.checked = [...visibleKeys].every(k => selectedLeads.has(k));
+    });
+  });
+  const selectAllBox = document.getElementById("selectAllCheckbox");
+  if (selectAllBox) {
+    selectAllBox.addEventListener("change", () => {
+      if (selectAllBox.checked) visibleKeys.forEach(k => selectedLeads.add(k));
+      else visibleKeys.forEach(k => selectedLeads.delete(k));
+      renderTable();
+    });
+  }
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const bar = document.getElementById("bulkBar");
+  const count = selectedLeads.size;
+  bar.classList.toggle("show", count > 0);
+  document.getElementById("bulkCount").textContent = `${count} לידים נבחרו`;
 }
 
 const LIVE_POLL_INTERVAL_MS = 3000;
@@ -1037,7 +1265,7 @@ async function submitCallNotes(notesText) {
 // פאנלים נוספים (שיחה/משימות/יומן/משוב) נפתחים מעל #panel/#inboxView באותו overlay
 // המשותף - כשסוגרים אחד מהם, מסירים את ה-overlay רק אם אף פאנל אחר לא עדיין open
 // (למשל #panel, אם הפאנל השני נפתח מעליו ולא מה-Inbox).
-const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "calendarPanel", "feedbackPanel"];
+const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "calendarPanel", "feedbackPanel", "addLeadPanel"];
 function closeSubPanel(id) {
   document.getElementById(id).classList.remove("open");
   const anyOpen = OVERLAY_PANEL_IDS.some(pid => document.getElementById(pid).classList.contains("open"));
@@ -1118,6 +1346,7 @@ async function loadTasksPanel() {
         body: JSON.stringify({ phone, tenant_id: tenantId, title, due_date: dueDate, due_time: dueTime, notes }),
       });
       loadTasksPanel();
+      loadControlCenter();
     });
   } catch (err) {
     body.innerHTML = '<div class="error">שגיאה בטעינת משימות: ' + escapeHtml(err.message) + "</div>";
@@ -1161,9 +1390,11 @@ document.getElementById("tasksPanelBody").addEventListener("click", async (e) =>
   if (e.target.classList.contains("task-done-btn")) {
     await setTaskStatus(row.dataset.taskId, "done");
     loadTasksPanel();
+    loadControlCenter();
   } else if (e.target.classList.contains("task-cancel-btn")) {
     await setTaskStatus(row.dataset.taskId, "cancelled");
     loadTasksPanel();
+    loadControlCenter();
   }
 });
 
@@ -1202,11 +1433,13 @@ document.getElementById("calendarPanelBody").addEventListener("click", async (e)
   if (e.target.classList.contains("task-done-btn")) {
     await setTaskStatus(row.dataset.taskId, "done");
     loadCalendarPanel();
+    loadControlCenter();
     return;
   }
   if (e.target.classList.contains("task-cancel-btn")) {
     await setTaskStatus(row.dataset.taskId, "cancelled");
     loadCalendarPanel();
+    loadControlCenter();
     return;
   }
   // קליק על השורה עצמה (לא על אחד הכפתורים) - פותח את הצ'אט של הליד
@@ -1264,6 +1497,7 @@ async function loadFeedbackPanel() {
         body: JSON.stringify({ feedback_type: feedbackType, description }),
       });
       loadFeedbackPanel();
+      loadControlCenter();
     });
   } catch (err) {
     body.innerHTML = '<div class="error">שגיאה בטעינת משוב: ' + escapeHtml(err.message) + "</div>";
@@ -1289,6 +1523,7 @@ document.getElementById("feedbackPanelBody").addEventListener("change", async (e
     body: JSON.stringify({ status: select.value }),
   });
   select.disabled = false;
+  loadControlCenter();
 });
 
 function openHistory(phone, tenantId, name) {
@@ -1304,6 +1539,7 @@ function closeAllPanels() {
   document.getElementById("tasksPanel").classList.remove("open");
   document.getElementById("calendarPanel").classList.remove("open");
   document.getElementById("feedbackPanel").classList.remove("open");
+  document.getElementById("addLeadPanel").classList.remove("open");
   document.getElementById("reactivatePanel").classList.remove("open");
   activeCall = null;
   panelChat.close();
@@ -1506,6 +1742,160 @@ document.addEventListener("change", async (e) => {
     await loadLeads();
   }
 });
+
+// עדכון "סוכן מטפל" ליד - בדיוק כמו קטגוריה, שדה טקסט חופשי נשמר ב-change
+document.addEventListener("change", async (e) => {
+  const input = e.target.closest(".agent-input");
+  if (!input) return;
+
+  const phone = input.dataset.phone;
+  const tenantId = input.dataset.tenant;
+  const agent = input.value.trim();
+  input.disabled = true;
+
+  try {
+    const res = await fetch("/api/leads/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, tenant_id: tenantId, agent }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    await loadLeads();
+  } catch (err) {
+    alert("עדכון סוכן מטפל נכשל: " + err.message);
+    await loadLeads();
+  }
+});
+
+// ---- פעולות בצע-בצוותא (בחירת שורות מרובה) ----
+document.getElementById("bulkApplyBtn").addEventListener("click", async () => {
+  const status = document.getElementById("bulkStatusSelect").value;
+  const keys = [...selectedLeads];
+  for (const key of keys) {
+    const sep = key.indexOf("::");
+    const tenantId = key.slice(0, sep);
+    const phone = key.slice(sep + 2);
+    try {
+      await fetch("/api/leads/status", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, tenant_id: tenantId, status }),
+      });
+    } catch (err) {
+      console.error("עדכון בצע-בצוותא נכשל עבור", key, err);
+    }
+  }
+  selectedLeads.clear();
+  await loadLeads();
+});
+document.getElementById("bulkClearBtn").addEventListener("click", () => {
+  selectedLeads.clear();
+  renderTable();
+});
+
+// ---- הוספת ליד חדש ----
+function openAddLeadPanel() {
+  document.getElementById("addLeadForm").reset();
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("addLeadPanel").classList.add("open");
+}
+document.getElementById("addLeadBtn").addEventListener("click", openAddLeadPanel);
+document.getElementById("addLeadPanelClose").addEventListener("click", () => closeSubPanel("addLeadPanel"));
+
+document.getElementById("addLeadForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const phone = document.getElementById("addLeadPhone").value.trim();
+  if (!phone) return;
+
+  const payload = {
+    phone,
+    customer_name: document.getElementById("addLeadName").value.trim(),
+    business_name: document.getElementById("addLeadBusiness").value.trim(),
+    location: document.getElementById("addLeadLocation").value.trim(),
+    category: document.getElementById("addLeadCategory").value.trim(),
+    agent: document.getElementById("addLeadAgent").value.trim(),
+    lead_status: document.getElementById("addLeadStatus").value,
+  };
+
+  try {
+    const res = await fetch("/api/leads", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    closeSubPanel("addLeadPanel");
+    await loadLeads();
+  } catch (err) {
+    alert("הוספת ליד נכשלה: " + err.message);
+  }
+});
+
+// ---- מרכז בקרה (סרגל צד): לידים חמים, משימות פתוחות, משוב פתוח ----
+let ccTasksCache = [];
+let ccFeedbackCache = [];
+
+async function loadControlCenter() {
+  try {
+    const [tasksRes, feedbackRes] = await Promise.all([
+      fetch("/api/tasks?status=pending"),
+      fetch("/api/feedback"),
+    ]);
+    ccTasksCache = tasksRes.ok ? await tasksRes.json() : [];
+    ccFeedbackCache = feedbackRes.ok ? await feedbackRes.json() : [];
+  } catch (err) {
+    console.error("טעינת מרכז הבקרה נכשלה:", err);
+    ccTasksCache = [];
+    ccFeedbackCache = [];
+  }
+  renderControlCenter();
+}
+
+function renderControlCenter() {
+  const hotCount = allLeads.filter(l => scoreBand(l.score) === "hot").length;
+  const openFeedbackCount = ccFeedbackCache.filter(f => f.status === "new" || f.status === "in_progress").length;
+
+  document.getElementById("ccStats").innerHTML = `
+    <button type="button" class="cc-stat-row" id="ccHotStat"><span>🔴 לידים חמים</span><span class="cc-count">${hotCount}</span></button>
+    <button type="button" class="cc-stat-row" id="ccTasksStat"><span>📅 משימות פתוחות</span><span class="cc-count">${ccTasksCache.length}</span></button>
+    <button type="button" class="cc-stat-row" id="ccFeedbackStat"><span>💡 משוב פתוח</span><span class="cc-count">${openFeedbackCount}</span></button>
+  `;
+  document.getElementById("ccHotStat").addEventListener("click", () => {
+    document.getElementById("scoreFilter").value = "hot";
+    renderTable();
+  });
+  document.getElementById("ccTasksStat").addEventListener("click", openCalendarPanel);
+  document.getElementById("ccFeedbackStat").addEventListener("click", openFeedbackPanel);
+
+  const tasksHtml = ccTasksCache.slice(0, 3).map(t => {
+    const lead = findLead(t.phone, t.tenant_id);
+    return `
+      <button type="button" class="cc-mini-item" data-phone="${escapeHtml(t.phone)}" data-tenant="${escapeHtml(t.tenant_id)}">
+        <div class="cc-mini-title">${escapeHtml(t.title)}</div>
+        <div class="cc-mini-sub">📅 ${escapeHtml(taskDueLabel(t))} · ${escapeHtml(lead ? (lead.customer_name || t.phone) : t.phone)}</div>
+      </button>
+    `;
+  }).join("");
+  document.getElementById("ccTasks").innerHTML = tasksHtml || '<div class="cc-empty">אין משימות פתוחות ✅</div>';
+  document.querySelectorAll("#ccTasks .cc-mini-item").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const lead = findLead(btn.dataset.phone, btn.dataset.tenant);
+      openHistory(btn.dataset.phone, btn.dataset.tenant, lead ? (lead.customer_name || btn.dataset.phone) : btn.dataset.phone);
+    });
+  });
+
+  const feedbackHtml = ccFeedbackCache.slice(0, 3).map(f => `
+    <button type="button" class="cc-mini-item">
+      <div class="cc-mini-title">${FEEDBACK_TYPE_META[f.feedback_type] || f.feedback_type} ${escapeHtml(f.description)}</div>
+      <div class="cc-mini-sub">${escapeHtml(FEEDBACK_STATUS_META[f.status] || f.status)}</div>
+    </button>
+  `).join("");
+  document.getElementById("ccFeedback").innerHTML = feedbackHtml || '<div class="cc-empty">אין משוב עדיין</div>';
+  document.querySelectorAll("#ccFeedback .cc-mini-item").forEach(btn => btn.addEventListener("click", openFeedbackPanel));
+}
+
+document.getElementById("ccTasksMore").addEventListener("click", openCalendarPanel);
+document.getElementById("ccFeedbackMore").addEventListener("click", openFeedbackPanel);
 
 let lastReactivateResults = [];
 

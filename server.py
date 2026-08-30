@@ -73,6 +73,7 @@ try:
         log_manual_reply,
         process_message,
         process_message_with_reply,
+        update_lead_agent,
         update_lead_category,
         update_lead_status,
     )
@@ -214,6 +215,7 @@ def api_leads():
             "import_source": card.get("import_source"),
             "lead_status": card.get("lead_status"),
             "category": card.get("category"),
+            "agent": card.get("agent"),
         }
         if include_last_message:
             last = db.get_last_message(phone, tenant_id=resolved_tenant_id)
@@ -224,6 +226,34 @@ def api_leads():
             lead["score"] = db.compute_lead_score(phone, tenant_id=resolved_tenant_id)
         leads.append(lead)
     return jsonify(leads)
+
+
+@app.route("/api/leads", methods=["POST"])
+def api_create_lead():
+    """הוספת ליד בודד ידנית מהדשבורד ("➕ הוסף ליד") - בניגוד ל-/api/leads/import
+    (קובץ שלם), כאן שורה אחת. עוטף את import_lead בדיוק כמו הייבוא - אותה לוגיקת
+    upsert, בלי כפילות קוד. טלפון מנורמל ל-E.164 (כמו בייבוא) כדי לא ליצור כרטיס
+    כפול לליד קיים שכבר שמור בפורמט E.164."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+
+    status = data.get("lead_status")
+    if status not in VALID_LEAD_STATUSES:
+        status = None
+
+    card, is_new = import_lead(
+        _to_e164(phone),
+        tenant_id=data.get("tenant_id") or DEFAULT_TENANT_ID,
+        customer_name=(data.get("customer_name") or "").strip() or None,
+        business_name=(data.get("business_name") or "").strip() or None,
+        location=(data.get("location") or "").strip() or None,
+        lead_status=status,
+        category=(data.get("category") or "").strip() or None,
+        agent=(data.get("agent") or "").strip() or None,
+    )
+    return jsonify({"ok": True, "card": card, "is_new": is_new})
 
 
 @app.route("/api/search")
@@ -244,7 +274,7 @@ def api_search():
         phone = card.get("phone", key_phone)
         resolved_tenant_id = card.get("tenant_id", tenant_id)
         haystack = " ".join(str(card.get(f) or "") for f in
-                             ("customer_name", "business_name", "location", "phone", "category")).lower()
+                             ("customer_name", "business_name", "location", "phone", "category", "agent")).lower()
         if q_lower in haystack:
             matches.add((phone, resolved_tenant_id))
 
@@ -288,6 +318,21 @@ def api_update_lead_category():
     return jsonify({"ok": True, "card": card})
 
 
+@app.route("/api/leads/agent", methods=["POST"])
+def api_update_lead_agent():
+    """מעדכן "סוכן מטפל" - שדה טקסט חופשי, מטא-דאטה בלבד (כמו /api/leads/category)."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    agent = (data.get("agent") or "").strip()
+
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+
+    card = update_lead_agent(phone, agent, tenant_id=tenant_id)
+    return jsonify({"ok": True, "card": card})
+
+
 # ייבוא לידים מ-CSV/Excel - מיפוי אוטומטי של עמודות (בעברית או באנגלית) לשדות הסטנדרטיים
 ALLOWED_IMPORT_EXTENSIONS = {".csv", ".xlsx"}
 IMPORT_FIELD_ALIASES = {
@@ -297,6 +342,7 @@ IMPORT_FIELD_ALIASES = {
     "import_source": {"source", "lead_source", "מקור", "מקור ליד", "ערוץ מקור"},
     "lead_status": {"status", "lead_status", "סטטוס"},
     "category": {"category", "vertical", "קטגוריה", "סיווג"},
+    "agent": {"agent", "assigned_agent", "owner", "סוכן", "סוכן מטפל", "נציג"},
 }
 
 
@@ -379,6 +425,7 @@ def api_import_leads():
             lead_status=status,
             import_source=mapped.get("import_source"),
             category=mapped.get("category"),
+            agent=mapped.get("agent"),
         )
         if is_new:
             imported += 1
