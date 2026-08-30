@@ -304,6 +304,7 @@
   }
   [dir="rtl"] .panel { transform: translateX(-100%); }
   .panel.open { transform: translateX(0); }
+  .panel.panel-wide { width: min(640px, 100vw); }
 
   .panel-header {
     padding: 18px 20px; border-bottom: 1px solid var(--gridline);
@@ -435,6 +436,35 @@
     background: var(--surface-3); color: var(--text-secondary);
   }
 
+  /* תבניות/פרומפטים של סוכני ה-AI */
+  .prompt-card {
+    border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px;
+  }
+  .prompt-card h3 { margin: 0 0 4px; font-size: 14px; }
+  .prompt-desc { margin: 0 0 10px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+  .prompt-textarea {
+    width: 100%; box-sizing: border-box; min-height: 140px; resize: vertical;
+    font-family: inherit; font-size: 12.5px; line-height: 1.5; padding: 10px 12px;
+    border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--text-primary); direction: rtl;
+  }
+  .prompt-save-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .prompt-save-row button { font-size: 12.5px; padding: 6px 14px; }
+  .prompt-saved-msg { font-size: 12px; color: var(--status-good); display: none; }
+  .prompt-saved-msg.show { display: inline; }
+  .prompt-vertical-section {
+    margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--gridline);
+  }
+  .prompt-vertical-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 600; }
+  .prompt-vertical-row { display: block; margin-bottom: 10px; }
+  .prompt-vertical-row > span { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+  .prompt-vertical-textarea {
+    width: 100%; box-sizing: border-box; min-height: 70px; resize: vertical;
+    font-family: inherit; font-size: 12px; line-height: 1.45; padding: 8px 10px;
+    border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--text-primary); direction: rtl;
+  }
+
   @media (max-width: 720px) {
     .table-card { overflow-x: auto; }
     table { min-width: 760px; }
@@ -502,6 +532,7 @@
       <button id="reactivateBtn">🔥 החייאת לידים קרים</button>
       <button id="calendarBtn">📅 יומן</button>
       <button id="feedbackBtn">💡 משוב</button>
+      <button id="promptsBtn">🤖 תבניות וסוכנים</button>
       <button id="themeToggle" title="החלף מצב תצוגה">🌓 מצב תצוגה</button>
       <button id="refreshBtn">↻ רענון</button>
     </div>
@@ -704,6 +735,17 @@
       <button type="submit" class="primary">➕ הוסף ליד</button>
     </form>
   </div>
+</aside>
+
+<aside class="panel panel-wide" id="promptsPanel">
+  <div class="panel-header">
+    <div>
+      <h2>🤖 תבניות וסוכנים</h2>
+      <p>הפרומפטים שמניעים את סוכני ה-AI - עריכה כאן חלה מיד, בלי לערוך קוד ולפרוס מחדש</p>
+    </div>
+    <button class="panel-close" id="promptsPanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body" id="promptsPanelBody"></div>
 </aside>
 
 <aside class="panel" id="reactivatePanel">
@@ -1402,7 +1444,7 @@ function stopDialQueue() {
 // פאנלים נוספים (שיחה/משימות/יומן/משוב) נפתחים מעל #panel/#inboxView באותו overlay
 // המשותף - כשסוגרים אחד מהם, מסירים את ה-overlay רק אם אף פאנל אחר לא עדיין open
 // (למשל #panel, אם הפאנל השני נפתח מעליו ולא מה-Inbox).
-const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "calendarPanel", "feedbackPanel", "addLeadPanel"];
+const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "calendarPanel", "feedbackPanel", "addLeadPanel", "promptsPanel"];
 function closeSubPanel(id) {
   document.getElementById(id).classList.remove("open");
   const anyOpen = OVERLAY_PANEL_IDS.some(pid => document.getElementById(pid).classList.contains("open"));
@@ -1664,6 +1706,97 @@ document.getElementById("feedbackPanelBody").addEventListener("change", async (e
   loadControlCenter();
 });
 
+// ---- תבניות וסוכנים (ניהול פרומפטים) ----
+const VERTICAL_LABELS = { ecommerce: "איקומרס", services: "שירותים", real_estate: "נדל\"ן" };
+
+function renderPromptCard(key, entry) {
+  const verticalSection = key === "reactivation_outreach" ? `
+    <div class="prompt-vertical-section">
+      <div class="prompt-vertical-label">גרסאות מותאמות לענף (ריק = משתמש בתבנית הבסיסית למעלה)</div>
+      ${Object.entries(VERTICAL_LABELS).map(([v, label]) => `
+        <div class="prompt-vertical-row">
+          <span>${label}</span>
+          <textarea class="prompt-vertical-textarea" data-prompt-key="${key}" data-vertical="${v}"
+                    placeholder="ריק = ברירת מחדל">${escapeHtml((entry.vertical_overrides || {})[v] || "")}</textarea>
+          <div class="prompt-save-row">
+            <button type="button" class="prompt-save-btn" data-prompt-key="${key}" data-vertical="${v}">שמור</button>
+            <span class="prompt-saved-msg">✓ נשמר</span>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  ` : "";
+  return `
+    <div class="prompt-card">
+      <h3>${escapeHtml(entry.label)}</h3>
+      <p class="prompt-desc">${escapeHtml(entry.description || "")}</p>
+      <textarea class="prompt-textarea" data-prompt-key="${key}">${escapeHtml(entry.template)}</textarea>
+      <div class="prompt-save-row">
+        <button type="button" class="primary prompt-save-btn" data-prompt-key="${key}">💾 שמור</button>
+        <span class="prompt-saved-msg">✓ נשמר</span>
+      </div>
+      ${verticalSection}
+    </div>
+  `;
+}
+
+async function loadPromptsPanel() {
+  const body = document.getElementById("promptsPanelBody");
+  body.innerHTML = '<div class="loading">טוען תבניות...</div>';
+  try {
+    const res = await fetch("/api/prompts");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const allPrompts = await res.json();
+    const keys = Object.keys(allPrompts);
+    body.innerHTML = keys.length
+      ? keys.map(key => renderPromptCard(key, allPrompts[key])).join("")
+      : '<div class="empty">אין עדיין תבניות (prompts.json לא נמצא)</div>';
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה בטעינת תבניות: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function openPromptsPanel() {
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("promptsPanel").classList.add("open");
+  loadPromptsPanel();
+}
+function closePromptsPanel() { closeSubPanel("promptsPanel"); }
+
+document.getElementById("promptsBtn").addEventListener("click", openPromptsPanel);
+document.getElementById("promptsPanelClose").addEventListener("click", closePromptsPanel);
+
+document.getElementById("promptsPanelBody").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".prompt-save-btn");
+  if (!btn) return;
+
+  const key = btn.dataset.promptKey;
+  const vertical = btn.dataset.vertical || null;
+  const textarea = vertical
+    ? btn.closest(".prompt-vertical-row").querySelector(".prompt-vertical-textarea")
+    : btn.closest(".prompt-card").querySelector(".prompt-textarea");
+  const template = textarea.value;
+  const savedMsg = btn.closest(".prompt-save-row").querySelector(".prompt-saved-msg");
+
+  btn.disabled = true;
+  try {
+    const payload = { template };
+    if (vertical) payload.vertical = vertical;
+    const res = await fetch(`/api/prompts/${encodeURIComponent(key)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    savedMsg.classList.add("show");
+    setTimeout(() => savedMsg.classList.remove("show"), 2000);
+  } catch (err) {
+    alert("שמירת התבנית נכשלה: " + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 function openHistory(phone, tenantId, name) {
   document.getElementById("overlay").classList.add("open");
   document.getElementById("panel").classList.add("open");
@@ -1678,8 +1811,10 @@ function closeAllPanels() {
   document.getElementById("calendarPanel").classList.remove("open");
   document.getElementById("feedbackPanel").classList.remove("open");
   document.getElementById("addLeadPanel").classList.remove("open");
+  document.getElementById("promptsPanel").classList.remove("open");
   document.getElementById("reactivatePanel").classList.remove("open");
   activeCall = null;
+  dialQueue = null;
   panelChat.close();
 }
 

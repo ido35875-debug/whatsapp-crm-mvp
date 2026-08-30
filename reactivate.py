@@ -21,6 +21,7 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 import db
+import prompts
 from extract import DEFAULT_TENANT_ID, _customer_key, last_contact_at, load_customers, update_lead_status
 from whatsapp_send import send_whatsapp_message
 
@@ -52,8 +53,12 @@ not_relevant (לא מעוניין, מבקש הסרה, לא רלוונטי).
 """
 
 
-def generate_outreach_message(name: str, business: str) -> str:
-    prompt = OUTREACH_PROMPT.format(name=name, business=business or "לא ידוע")
+def generate_outreach_message(name: str, business: str, vertical: str | None = None) -> str:
+    """vertical (אופציונלי, למשל contact["vertical"] מ-contacts.csv): אם יש
+    override מותאם-ענף מוגדר ל-vertical הזה ב-prompts.json, הוא ינוצח את
+    התבנית הבסיסית - ראו prompts.get_prompt."""
+    prompt_template = prompts.get_prompt("reactivation_outreach", OUTREACH_PROMPT, vertical=vertical)
+    prompt = prompt_template.format(name=name, business=business or "לא ידוע")
     response = client.messages.create(
         model="claude-opus-5",
         max_tokens=300,
@@ -65,12 +70,13 @@ def generate_outreach_message(name: str, business: str) -> str:
 
 
 def classify_reply(message_text: str) -> str:
+    prompt_template = prompts.get_prompt("reactivation_classify", CLASSIFY_PROMPT)
     response = client.messages.create(
         model="claude-opus-5",
         max_tokens=10,
         thinking={"type": "disabled"},
         output_config={"effort": "low"},
-        messages=[{"role": "user", "content": CLASSIFY_PROMPT + message_text}],
+        messages=[{"role": "user", "content": prompt_template + message_text}],
     )
     label = next(block.text for block in response.content if block.type == "text").strip()
     return label if label in ("hot", "not_relevant") else "not_relevant"
@@ -126,7 +132,7 @@ def run_reactivation_campaign(
 
     results = []
     for contact in cold_leads:
-        message = generate_outreach_message(contact["name"], contact.get("business", ""))
+        message = generate_outreach_message(contact["name"], contact.get("business", ""), vertical=contact.get("vertical"))
         entry = {
             "name": contact["name"],
             "phone": contact["phone"],

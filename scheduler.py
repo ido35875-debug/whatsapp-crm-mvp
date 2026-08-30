@@ -34,10 +34,12 @@ SCAN_INTERVAL_SECONDS = int(os.environ.get("SCHEDULER_INTERVAL_SECONDS", "3600")
 AUTO_SEND = os.environ.get("SCHEDULER_AUTO_SEND", "false").strip().lower() == "true"
 
 # ורטיקל -> כמה ימים בלי שום קשר (נכנס/יוצא) בהיסטוריית הכרטיס, לפני שליד קר נחשב
-# "בשל" להחייאה חוזרת. איקומרס: מחזור מכירה קצר - חימום מהיר. נדל"ן: מחזור מכירה
-# ארוך יותר, ליד צריך יותר זמן להבשיל לפני פנייה חוזרת.
+# "בשל" להחייאה חוזרת. שלושת הענפים ממסמך האפיון (חזון המוצר ב-CLAUDE.md): איקומרס -
+# מחזור מכירה קצר, חימום מהיר; שירותים - ביניים; נדל"ן - מחזור מכירה ארוך, ליד צריך
+# יותר זמן להבשיל לפני פנייה חוזרת.
 VERTICAL_COLD_THRESHOLDS_DAYS = {
     "ecommerce": 3,
+    "services": 7,
     "real_estate": 14,
 }
 DEFAULT_VERTICAL = "ecommerce"

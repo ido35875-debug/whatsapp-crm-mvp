@@ -20,6 +20,7 @@ client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 from paths import DATA_DIR  # noqa: E402 - חייב אחרי load_dotenv (DATA_DIR עצמו נקרא מ-os.environ)
 from whatsapp_send import _to_e164  # noqa: E402 - לשימוש resolve_existing_phone
+import prompts  # noqa: E402 - הקבועים *_PROMPT למטה משמשים כברירת מחדל ל-prompts.get_prompt
 
 CUSTOMERS_FILE = DATA_DIR / "customers.json"
 DEFAULT_TENANT_ID = "default"  # מזהה העסק כשאין tenant_id מפורש (תאימות לאחור)
@@ -36,12 +37,13 @@ EXTRACTION_PROMPT = """\
 
 
 def extract_customer_info(message_text: str) -> dict:
+    prompt_template = prompts.get_prompt("customer_extraction", EXTRACTION_PROMPT)
     response = client.messages.create(
         model="claude-opus-5",
         max_tokens=500,
         thinking={"type": "disabled"},
         output_config={"effort": "low"},
-        messages=[{"role": "user", "content": EXTRACTION_PROMPT + message_text}],
+        messages=[{"role": "user", "content": prompt_template + message_text}],
     )
     raw_text = next(block.text for block in response.content if block.type == "text").strip()
     return json.loads(raw_text)
@@ -160,7 +162,8 @@ REPLY_PROMPT = """\
 
 
 def generate_reply(message_text: str, card: dict) -> str:
-    prompt = REPLY_PROMPT.format(
+    prompt_template = prompts.get_prompt("speed_to_lead_reply", REPLY_PROMPT)
+    prompt = prompt_template.format(
         message=message_text,
         customer_name=card.get("customer_name") or "לא ידוע",
         business_name=card.get("business_name") or "לא ידוע",
@@ -191,7 +194,8 @@ CALL_SUMMARY_PROMPT = """\
 
 
 def generate_call_summary(notes: str, card: dict) -> str:
-    prompt = CALL_SUMMARY_PROMPT.format(
+    prompt_template = prompts.get_prompt("call_summary", CALL_SUMMARY_PROMPT)
+    prompt = prompt_template.format(
         customer_name=card.get("customer_name") or "לא ידוע",
         business_name=card.get("business_name") or "לא ידוע",
         location=card.get("location") or "לא ידוע",

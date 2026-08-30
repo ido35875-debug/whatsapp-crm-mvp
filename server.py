@@ -63,6 +63,7 @@ try:
     import db
     import reactivate
     import scheduler
+    import prompts
     import voice_call
     from transcription import transcribe_audio
     from extract import (
@@ -658,6 +659,37 @@ def api_call_transcribe(call_id):
         return jsonify({"error": f"תמלול נכשל: {exc}"}), 502
 
     return jsonify({"ok": True, "text": text})
+
+
+VALID_PROMPT_VERTICALS = {"ecommerce", "services", "real_estate"}
+
+
+@app.route("/api/prompts")
+def api_get_prompts():
+    """כל תבניות/פרומפטים הסוכנים (Speed-to-Lead, החייאה מותאם-ענף, תיאום פולו-אפ,
+    חילוץ פרטים) - לתצוגה/עריכה מה-CRM ("🤖 תבניות וסוכנים"). ראו prompts.py."""
+    return jsonify(prompts.get_all_prompts())
+
+
+@app.route("/api/prompts/<key>", methods=["POST"])
+def api_update_prompt(key):
+    """מעדכן תבנית פרומפט. vertical (אופציונלי, רק ל-reactivation_outreach -
+    ecommerce/services/real_estate): עורך override מותאם-ענף במקום התבנית
+    הבסיסית - template ריק עם vertical מוחק את ה-override (חזרה לברירת המחדל)."""
+    data = request.get_json(silent=True) or {}
+    template = (data.get("template") or "").strip()
+    vertical = data.get("vertical") or None
+    if vertical and vertical not in VALID_PROMPT_VERTICALS:
+        return jsonify({"error": "ורטיקל לא תקין"}), 400
+    if not template and not vertical:
+        return jsonify({"error": "חסרה תבנית"}), 400
+
+    try:
+        entry = prompts.update_prompt(key, template, vertical=vertical)
+    except KeyError:
+        return jsonify({"error": "תבנית לא נמצאה"}), 404
+
+    return jsonify({"ok": True, "prompt": entry})
 
 
 @app.route("/api/calls")
