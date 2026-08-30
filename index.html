@@ -172,6 +172,11 @@
     color: var(--text-muted); margin-top: 2px; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; max-width: 180px;
   }
+  /* פעילות אחרונה שנרשמה כסימולציה (חשבון Twilio Trial חסם שליחה בפועל - ראו
+     whatsapp_send.is_trial_restriction) - אותה שפה חזותית כמו בועת ה-simulated
+     בצ'אט (status-warning), כדי שלא ייראה כאילו ההודעה באמת הגיעה ללקוח */
+  .last-activity-cell .la-snippet.simulated { color: var(--status-warning); font-weight: 600; }
+  .inbox-contact-preview.simulated { color: var(--status-warning); font-weight: 600; }
 
   header.top {
     display: flex; align-items: center; justify-content: space-between;
@@ -870,10 +875,12 @@ function relativeTimeLabel(iso) {
 function lastActivityCellHtml(lead) {
   if (!lead.last_message_at) return '<span class="muted">—</span>';
   const prefix = lead.last_message_direction === "out" ? "את/ה: " : "";
+  const simulated = !!lead.last_message_simulated;
+  const snippetText = (simulated ? "🧪 " : "") + prefix + (lead.last_message || "");
   return `
     <div class="last-activity-cell">
       <div class="la-time">${escapeHtml(relativeTimeLabel(lead.last_message_at))}</div>
-      <div class="la-snippet">${escapeHtml(prefix + (lead.last_message || ""))}</div>
+      <div class="la-snippet${simulated ? " simulated" : ""}" title="${simulated ? "סימולציה - חשבון Twilio Trial חסם שליחה בפועל, ההודעה לא הגיעה ללקוח" : ""}">${escapeHtml(snippetText)}</div>
     </div>
   `;
 }
@@ -1915,7 +1922,8 @@ function renderInboxList() {
     const active = inboxChat.currentLead && inboxChat.currentLead.phone === lead.phone && inboxChat.currentLead.tenantId === tenantId;
     const meta = statusMeta(lead.lead_status);
     const previewPrefix = lead.last_message_direction === "out" ? "את/ה: " : "";
-    const preview = lead.last_message ? (previewPrefix + lead.last_message) : "אין הודעות עדיין";
+    const simulated = !!lead.last_message_simulated;
+    const preview = lead.last_message ? ((simulated ? "🧪 " : "") + previewPrefix + lead.last_message) : "אין הודעות עדיין";
     const time = lead.last_message_at
       ? new Date(lead.last_message_at).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" })
       : "";
@@ -1927,7 +1935,7 @@ function renderInboxList() {
           <span class="inbox-contact-name">${escapeHtml(lead.customer_name || lead.phone)}</span>
           <span class="inbox-contact-time">${escapeHtml(time)}</span>
         </div>
-        <div class="inbox-contact-preview ${lead.last_message ? "" : "muted"}">${escapeHtml(preview)}</div>
+        <div class="inbox-contact-preview ${lead.last_message ? "" : "muted"}${simulated ? " simulated" : ""}" title="${simulated ? "סימולציה - חשבון Twilio Trial חסם שליחה בפועל, ההודעה לא הגיעה ללקוח" : ""}">${escapeHtml(preview)}</div>
         <span class="badge ${meta.cls}">${meta.label}</span>
       </button>
     `;

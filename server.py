@@ -214,6 +214,7 @@ def api_leads():
             lead["last_message"] = last["message"] if last else None
             lead["last_message_at"] = last["timestamp"] if last else None
             lead["last_message_direction"] = last["direction"] if last else None
+            lead["last_message_simulated"] = bool(last["simulated"]) if last else False
         if include_score:
             lead["score"] = db.compute_lead_score(phone, tenant_id=resolved_tenant_id)
         leads.append(lead)
