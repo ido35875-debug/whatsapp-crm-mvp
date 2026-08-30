@@ -340,6 +340,33 @@ def update_lead_agent(phone: str, agent: str, tenant_id: str = DEFAULT_TENANT_ID
     return card
 
 
+def update_lead_voice_extraction(
+    phone: str,
+    tenant_id: str = DEFAULT_TENANT_ID,
+    customer_name: str | None = None,
+    property_type: str | None = None,
+    budget: str | None = None,
+) -> dict:
+    """מעדכן כרטיס לקוח משדות שחולצו אוטומטית מהודעה קולית נכנסת
+    (transcription.extract_voice_message_fields, gpt-4o-mini) - property_type/
+    budget (שדות ממוקדי נדל"ן) תמיד מתעדכנים לערך האחרון שנאמר (לא מצטברים);
+    customer_name מתעדכן **רק אם עדיין לא ידוע** - לא דורס שם שכבר קיים בכרטיס
+    בגלל חילוץ פחות אמין מתמלול. מטא-דאטה בלבד - לא נרשם ב-history בנפרד (התמלול
+    עצמו כבר נרשם כהודעה רגילה דרך db.log_message) ולא נוגע ב-lead_status."""
+    customers = load_customers()
+    key = _customer_key(tenant_id, phone)
+    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+    if customer_name and not card.get("customer_name"):
+        card["customer_name"] = customer_name
+    if property_type:
+        card["property_type"] = property_type
+    if budget:
+        card["budget"] = budget
+    customers[key] = card
+    save_customers(customers)
+    return card
+
+
 def update_lead_status(
     phone: str,
     status: str,

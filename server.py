@@ -79,6 +79,7 @@ try:
         update_lead_agent,
         update_lead_category,
         update_lead_status,
+        update_lead_voice_extraction,
     )
     from whatsapp_send import TWILIO_AUTH_TOKEN, _to_e164, send_whatsapp_message
 except KeyError as exc:
@@ -219,6 +220,8 @@ def api_leads():
             "lead_status": card.get("lead_status"),
             "category": card.get("category"),
             "agent": card.get("agent"),
+            "property_type": card.get("property_type"),
+            "budget": card.get("budget"),
         }
         if include_last_message:
             last = db.get_last_message(phone, tenant_id=resolved_tenant_id)
@@ -857,13 +860,34 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
     # מה-Inbox). מתמלל אוטומטית (transcription.transcribe_incoming_voice_message,
     # OpenAI Whisper) ומשתמש בטקסט המתומלל בדיוק כמו הודעת טקסט רגילה מכאן והלאה -
     # אותו צינור process_message_with_reply/db.log_message, בלי קוד כפול. אם
-    # התמלול עצמו נכשל (OPENAI_API_KEY לא מוגדר, שגיאת רשת/API) - עדיין מקבלים
-    # טקסט placeholder ברור (⚠️) במקום None, כדי שההודעה עדיין תירשם ותופיע
-    # ב-Inbox עם סימון שקרה כשל, לא תיעלם בשקט.
+    # התמלול עצמו נכשל (OPENAI_API_KEY לא מוגדר/לא תקין, שגיאת רשת/API) - עדיין
+    # מקבלים טקסט placeholder ברור (⚠️) במקום None, כדי שההודעה עדיין תירשם
+    # ותופיע ב-Inbox עם סימון שקרה כשל, לא תיעלם בשקט.
     if not message_text and source == "whatsapp" and not request.is_json:
-        voice_text = transcription.transcribe_incoming_voice_message(request.form)
-        if voice_text:
-            message_text = voice_text
+        voice_result = transcription.transcribe_incoming_voice_message(request.form)
+        if voice_result:
+            if voice_result["success"]:
+                message_text = f"🎙️ {voice_result['text']}"
+                # חילוץ שדות אוטומטי (שם/סוג נכס/תקציב - ממוקד נדל"ן, ראו "חזון
+                # המוצר" ב-CLAUDE.md) מהתמלול, עם gpt-4o-mini - רק אחרי תמלול
+                # מוצלח (אין טעם לנתח טקסט placeholder של כישלון). כשל בשלב הזה
+                # לא אמור להפיל את כל הטיפול בהודעה - היא כבר תירשם כרגיל בהמשך
+                # גם אם חילוץ השדות נכשל.
+                if contact_id:
+                    try:
+                        fields = transcription.extract_voice_message_fields(voice_result["text"])
+                        update_lead_voice_extraction(
+                            contact_id, tenant_id=tenant_id,
+                            customer_name=fields.get("customer_name"),
+                            property_type=fields.get("property_type"),
+                            budget=fields.get("budget"),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "חילוץ שדות אוטומטי מהודעה קולית נכשל (התמלול עצמו הצליח): %s", exc,
+                        )
+            else:
+                message_text = voice_result["text"]
 
     if not contact_id or not message_text:
         return Response(status=400)
