@@ -25,7 +25,7 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # מפורש - לא ת�
 
 import db
 import reactivate
-from extract import DEFAULT_TENANT_ID, _customer_key, load_customers
+from extract import DEFAULT_TENANT_ID, _customer_key, last_contact_at, load_customers
 from paths import DATA_DIR
 
 CHAT_HISTORY_FILE = DATA_DIR / "chat_history.txt"
@@ -55,23 +55,13 @@ def _log(line: str) -> None:
     print(f"[scheduler] {line}")
 
 
-def _last_contact_at(card: dict | None) -> datetime | None:
-    """זמן ההודעה האחרונה (נכנסת או יוצאת) בהיסטוריית הכרטיס, אם יש בכלל היסטוריה."""
-    if not card or not card.get("history"):
-        return None
-    try:
-        return max(datetime.fromisoformat(h["timestamp"]) for h in card["history"])
-    except (KeyError, ValueError):
-        return None
-
-
 def _is_due(contact: dict, customers: dict, tenant_id: str, now: datetime) -> bool:
     """בודק אם ליד קר עבר את סף הזמן להחייאה, לפי הוורטיקל שלו (contact['vertical'])."""
     vertical = (contact.get("vertical") or DEFAULT_VERTICAL).strip().lower()
     threshold_days = VERTICAL_COLD_THRESHOLDS_DAYS.get(vertical, VERTICAL_COLD_THRESHOLDS_DAYS[DEFAULT_VERTICAL])
 
     card = customers.get(_customer_key(tenant_id, contact["phone"]))
-    last_contact = _last_contact_at(card)
+    last_contact = last_contact_at(card)  # פונקציה משותפת ב-extract.py - ראו שם
     if last_contact is None:
         return True  # אין היסטוריה בכלל - בשל מיד
 

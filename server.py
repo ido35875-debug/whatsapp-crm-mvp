@@ -73,6 +73,7 @@ try:
         log_manual_reply,
         process_message,
         process_message_with_reply,
+        resolve_existing_phone,
         update_lead_agent,
         update_lead_category,
         update_lead_status,
@@ -232,20 +233,21 @@ def api_leads():
 def api_create_lead():
     """הוספת ליד בודד ידנית מהדשבורד ("➕ הוסף ליד") - בניגוד ל-/api/leads/import
     (קובץ שלם), כאן שורה אחת. עוטף את import_lead בדיוק כמו הייבוא - אותה לוגיקת
-    upsert, בלי כפילות קוד. טלפון מנורמל ל-E.164 (כמו בייבוא) כדי לא ליצור כרטיס
-    כפול לליד קיים שכבר שמור בפורמט E.164."""
+    upsert, בלי כפילות קוד. הטלפון עובר resolve_existing_phone (לא _to_e164 ישירות)
+    כדי לא ליצור כרטיס כפול אם הליד כבר קיים בפורמט מקומי - ראו התיעוד שם."""
     data = request.get_json(silent=True) or {}
     phone = (data.get("phone") or "").strip()
     if not phone:
         return jsonify({"error": "חסר טלפון"}), 400
 
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
     status = data.get("lead_status")
     if status not in VALID_LEAD_STATUSES:
         status = None
 
     card, is_new = import_lead(
-        _to_e164(phone),
-        tenant_id=data.get("tenant_id") or DEFAULT_TENANT_ID,
+        resolve_existing_phone(phone, tenant_id=tenant_id),
+        tenant_id=tenant_id,
         customer_name=(data.get("customer_name") or "").strip() or None,
         business_name=(data.get("business_name") or "").strip() or None,
         location=(data.get("location") or "").strip() or None,
@@ -339,6 +341,7 @@ IMPORT_FIELD_ALIASES = {
     "customer_name": {"name", "customer_name", "full name", "שם", "שם לקוח", "שם מלא"},
     "phone": {"phone", "phone_number", "mobile", "טלפון", "מספר טלפון", "נייד", "מס' טלפון"},
     "business_name": {"business", "business_name", "company", "עסק", "שם עסק", "חברה"},
+    "location": {"location", "city", "מיקום", "עיר", "אזור"},
     "import_source": {"source", "lead_source", "מקור", "מקור ליד", "ערוץ מקור"},
     "lead_status": {"status", "lead_status", "סטטוס"},
     "category": {"category", "vertical", "קטגוריה", "סיווג"},
@@ -418,10 +421,11 @@ def api_import_leads():
             status = None  # סטטוס לא מוכר - מתעלמים ממנו, לא נכשלים על כל השורה
 
         _card, is_new = import_lead(
-            _to_e164(phone),
+            resolve_existing_phone(phone, tenant_id=tenant_id),
             tenant_id=tenant_id,
             customer_name=mapped.get("customer_name"),
             business_name=mapped.get("business_name"),
+            location=mapped.get("location"),
             lead_status=status,
             import_source=mapped.get("import_source"),
             category=mapped.get("category"),
@@ -439,6 +443,38 @@ def api_import_leads():
         "updated": updated,
         "skipped": skipped,
     })
+
+
+EXPORT_COLUMNS = [
+    "customer_name", "phone", "business_name", "location", "agent", "category",
+    "lead_status", "score", "source_channel", "import_source", "tenant_id",
+]
+
+
+@app.route("/api/leads/export")
+def api_export_leads():
+    """מייצא את כל הלידים (כולל ציון חום מחושב) ל-CSV נקי - "📤 ייצוא לידים" בדשבורד.
+    העמודות תואמות בכוונה למה שנתמך גם בייבוא חזרה (IMPORT_FIELD_ALIASES) - חוץ
+    מ-score, שהוא שדה מחושב-נגזר (db.compute_lead_score) ולעולם לא נשמר/מיובא."""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(EXPORT_COLUMNS)
+    for key, card in load_customers().items():
+        tenant_id, _, key_phone = key.partition("::")
+        phone = card.get("phone", key_phone)
+        resolved_tenant_id = card.get("tenant_id", tenant_id)
+        score = db.compute_lead_score(phone, tenant_id=resolved_tenant_id)
+        writer.writerow([
+            card.get("customer_name") or "", phone, card.get("business_name") or "",
+            card.get("location") or "", card.get("agent") or "", card.get("category") or "",
+            card.get("lead_status") or "", score, card.get("source_channel") or "",
+            card.get("import_source") or "", resolved_tenant_id,
+        ])
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM כדי ש-Excel יפתח עברית נכון
+    return Response(
+        csv_bytes, mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=leads_export.csv"},
+    )
 
 
 @app.route("/api/messages")
@@ -459,13 +495,19 @@ def api_reactivate():
     """מפעיל את קמפיין חימום הלידים הקרים (reactivate.py) מתוך הדשבורד. ברירת המחדל
     היא preview בלבד (send=False, כברירת המחדל של reactivate.py) - לא נשלח שום דבר.
     שליחה בפועל דורשת send:true מפורש בגוף הבקשה; זה האישור האנושי הנדרש (קליק מפורש
-    בממשק אחרי צפייה בתצוגה המקדימה) - ראו מדיניות הבטיחות ב-CLAUDE.md."""
+    בממשק אחרי צפייה בתצוגה המקדימה) - ראו מדיניות הבטיחות ב-CLAUDE.md.
+    days (אופציונלי, ברירת מחדל DEFAULT_COLD_DAYS=30): סף "לא נוצר קשר מעל X ימים" -
+    ראו reactivate.get_cold_leads למה זה לא ברירת המחדל הגלובלית של reactivate.py."""
     data = request.get_json(silent=True) or {}
     tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
     send = bool(data.get("send", False))
+    try:
+        days = int(data.get("days", reactivate.DEFAULT_COLD_DAYS))
+    except (TypeError, ValueError):
+        days = reactivate.DEFAULT_COLD_DAYS
 
-    results = reactivate.run_reactivation_campaign(tenant_id=tenant_id, send=send)
-    return jsonify({"send": send, "count": len(results), "results": results})
+    results = reactivate.run_reactivation_campaign(tenant_id=tenant_id, send=send, days=days)
+    return jsonify({"send": send, "days": days, "count": len(results), "results": results})
 
 
 @app.route("/api/scheduler/status")

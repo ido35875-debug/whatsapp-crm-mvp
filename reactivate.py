@@ -14,13 +14,14 @@
 import csv
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
 import db
-from extract import DEFAULT_TENANT_ID, _customer_key, load_customers, update_lead_status
+from extract import DEFAULT_TENANT_ID, _customer_key, last_contact_at, load_customers, update_lead_status
 from whatsapp_send import send_whatsapp_message
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
@@ -29,6 +30,8 @@ client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 CONTACTS_FILE = Path(__file__).parent / "contacts.csv"
 ALREADY_HANDLED_STATUSES = {"contacted", "hot", "not_relevant"}
+DEFAULT_COLD_DAYS = 30  # סף ברירת המחדל להחייאה ידנית מהדשבורד - "לא נוצר קשר מעל 30 יום"
+FOLLOW_UP_DAYS_AHEAD = 3  # בעוד כמה ימים תיקבע משימת המעקב שנוצרת אוטומטית אחרי שליחה
 
 OUTREACH_PROMPT = """\
 אתה כותב הודעת וואטסאפ קצרה, חמה וטבעית (לא שיווקית מדי) לפנייה מחודשת ללקוח פוטנציאלי
@@ -78,30 +81,48 @@ def load_contacts() -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def get_cold_leads(contacts: list[dict], tenant_id: str = DEFAULT_TENANT_ID) -> list[dict]:
+def get_cold_leads(
+    contacts: list[dict], tenant_id: str = DEFAULT_TENANT_ID, days: int | None = None
+) -> list[dict]:
     """מסנן מתוך רשימת אנשי הקשר רק את מי שעדיין לא טופל (אין לו כרטיס, או שהכרטיס
-    לא מסומן contacted/hot/not_relevant) - כלומר ליד קר שטרם בוצעה אליו פנייה."""
+    לא מסומן contacted/hot/not_relevant) - כלומר ליד קר שטרם בוצעה אליו פנייה.
+    days=None (ברירת מחדל): מסנן לפי סטטוס בלבד - זו ההתנהגות המקורית, ונשמרת
+    בכוונה כברירת מחדל כי scheduler.py כבר עושה בדיקת-זמן משלו פר-ורטיקל (_is_due)
+    *אחרי* הקריאה הזו - הוספת סף ימים כללי כאן היה שובר את הסף המהיר (3 ימים)
+    של ורטיקל ecommerce. days=<מספר>: מוסיף גם סינון "לא נוצר קשר מעל X ימים" -
+    ליד עם היסטוריה עדכנית (גם אם הסטטוס עדיין 'new') לא ייחשב קר מספיק - לשימוש
+    ההחייאה הידנית מהדשבורד (/api/reactivate, ברירת מחדל DEFAULT_COLD_DAYS)."""
     customers = load_customers()
+    now = datetime.now(timezone.utc)
     cold = []
     for contact in contacts:
         card = customers.get(_customer_key(tenant_id, contact["phone"]))
         status = card.get("lead_status") if card else None
         if status in ALREADY_HANDLED_STATUSES:
             continue
+        if days is not None:
+            last_contact = last_contact_at(card)
+            if last_contact is not None and (now - last_contact).days < days:
+                continue  # יצר קשר לאחרונה - עדיין לא "קר" מספיק לפי הסף שנבחר
         cold.append(contact)
     return cold
 
 
 def run_reactivation_campaign(
-    tenant_id: str = DEFAULT_TENANT_ID, send: bool = False, contacts: list[dict] | None = None
+    tenant_id: str = DEFAULT_TENANT_ID,
+    send: bool = False,
+    contacts: list[dict] | None = None,
+    days: int | None = None,
 ) -> list[dict]:
     """מריץ את קמפיין החימום ומחזיר תוצאה מובנית לכל ליד קר (לשימוש ב-CLI, ב-API של
     הדשבורד - /api/reactivate, וגם ב-scheduler.py לסריקה אוטומטית). לא שולח כלום אם
     send=False (ברירת מחדל). contacts מאפשר להעביר רשימה מסוננת מראש (למשל ע"י
-    scheduler.py לפי ורטיקל+זמן) במקום לקרוא את כל contacts.csv."""
+    scheduler.py לפי ורטיקל+זמן) במקום לקרוא את כל contacts.csv. days מועבר ל-
+    get_cold_leads (ראו שם למה ברירת המחדל היא None ולא DEFAULT_COLD_DAYS - זה
+    מונע מ-scheduler.py הקיים "לרשת" סף כללי בטעות)."""
     if contacts is None:
         contacts = load_contacts()
-    cold_leads = get_cold_leads(contacts, tenant_id=tenant_id)
+    cold_leads = get_cold_leads(contacts, tenant_id=tenant_id, days=days)
 
     results = []
     for contact in cold_leads:
@@ -114,6 +135,7 @@ def run_reactivation_campaign(
             "sent": False,
             "error": None,
             "sid": None,
+            "task_id": None,
         }
 
         if send:
@@ -131,6 +153,20 @@ def run_reactivation_campaign(
                 db.log_message(contact["phone"], message, direction="out", tenant_id=tenant_id, channel="whatsapp")
             except Exception as exc:
                 entry["error"] = str(exc)
+
+            # פעילות מעקב מהירה (calendar_tasks) - נוצרת בכל הרצת send=True, גם אם
+            # השליחה בפועל מול Twilio נכשלה (למשל חשבון Trial) - כי ההחלטה "לפנות
+            # מחדש לליד הזה" כבר התקבלה ע"י הנציג ברגע שהריץ עם send=True, ולא
+            # אמורה להיעלם רק כי הערוץ הטכני נכשל; הנציג עדיין עשוי לרצות לעקוב
+            # (למשל להתקשר ידנית) גם אם הוואטסאפ לא יצא.
+            due_date = (datetime.now(timezone.utc) + timedelta(days=FOLLOW_UP_DAYS_AHEAD)).date().isoformat()
+            entry["task_id"] = db.create_task(
+                contact["phone"],
+                tenant_id=tenant_id,
+                title=f"מעקב אחרי חימום: {contact['name']}",
+                due_date=due_date,
+                notes=f"נוצר אוטומטית ע\"י מנוע החייאת לידים קרים. הודעה שנוסחה: {message}",
+            )
 
         results.append(entry)
 

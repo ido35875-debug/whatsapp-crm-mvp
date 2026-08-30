@@ -19,6 +19,7 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 from paths import DATA_DIR  # noqa: E402 - חייב אחרי load_dotenv (DATA_DIR עצמו נקרא מ-os.environ)
+from whatsapp_send import _to_e164  # noqa: E402 - לשימוש resolve_existing_phone
 
 CUSTOMERS_FILE = DATA_DIR / "customers.json"
 DEFAULT_TENANT_ID = "default"  # מזהה העסק כשאין tenant_id מפורש (תאימות לאחור)
@@ -77,6 +78,39 @@ def _customer_key(tenant_id: str, phone: str) -> str:
     # מפתח מורכב tenant::phone - מונע התנגשות בין לקוחות של עסקים (tenants) שונים
     # שבמקרה יש להם אותו מספר טלפון/מזהה
     return f"{tenant_id}::{phone}"
+
+
+def resolve_existing_phone(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> str:
+    """מחזיר את מחרוזת הטלפון שתחתיה כבר קיים כרטיס לליד הזה, אם יש - בודק גם את
+    הפורמט הגולמי שהתקבל וגם את הפורמט המנורמל (E.164). נועד למנוע כרטיס כפול
+    בייבוא CSV/הוספת ליד ידנית: אם כרטיס קיים כבר נשמר בעבר בפורמט מקומי
+    (למשל "0501234567") ומייבאים קובץ שבו הטלפון באותו פורמט מקומי בדיוק (למשל
+    את אותו קובץ שיוצא מ-/api/leads/export), נרמול אוטומטי ל-E.164 היה יוצר מפתח
+    *שונה* ("default::+972501234567") ומכפיל את הליד במקום לעדכן אותו - זה בדיוק
+    מה שהפונקציה הזו מונעת. **לא** מתקן/ממזג כרטיסים כפולים שכבר קיימים משתי
+    הצורות בעבר (ראו המגבלה הידועה ב-CLAUDE.md) - רק מונע יצירת כפילות *חדשה*.
+    אם אין כרטיס קיים בשום פורמט, מחזיר את הפורמט המנורמל (E.164) - ברירת המחדל
+    לליד חדש לגמרי."""
+    customers = load_customers()
+    normalized = _to_e164(phone)
+    if _customer_key(tenant_id, phone) in customers:
+        return phone
+    if _customer_key(tenant_id, normalized) in customers:
+        return normalized
+    return normalized
+
+
+def last_contact_at(card: dict | None) -> datetime | None:
+    """זמן ההודעה האחרונה (נכנסת או יוצאת) בהיסטוריית הכרטיס, אם יש היסטוריה כלשהי -
+    None אם אין כרטיס/היסטוריה בכלל. משותף בין reactivate.py (סף ימים כללי להחייאה
+    ידנית) ל-scheduler.py (סף ימים פר-ורטיקל להחייאה אוטומטית) - כדי לא לשכפל את
+    לוגיקת ה-parsing פעמיים."""
+    if not card or not card.get("history"):
+        return None
+    try:
+        return max(datetime.fromisoformat(h["timestamp"]) for h in card["history"])
+    except (KeyError, ValueError):
+        return None
 
 
 def upsert_customer(

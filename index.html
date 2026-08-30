@@ -170,13 +170,14 @@
   header.top p { margin: 0; color: var(--text-secondary); font-size: 14px; }
   .top-actions { display: flex; gap: 8px; }
 
-  button {
+  button, a.btn-link {
     font-family: inherit; font-size: 13px; cursor: pointer;
     border-radius: 8px; border: 1px solid var(--border);
     background: var(--surface-1); color: var(--text-primary);
     padding: 8px 14px; transition: background .15s;
+    display: inline-block; text-decoration: none; line-height: 1.4;
   }
-  button:hover { background: var(--surface-3); }
+  button:hover, a.btn-link:hover { background: var(--surface-3); }
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   button.primary:hover { filter: brightness(1.08); }
 
@@ -344,6 +345,15 @@
     display: flex; gap: 8px;
   }
   .reactivate-actions button { flex: 1; }
+  .reactivate-days-row {
+    display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12.5px;
+    color: var(--text-secondary);
+  }
+  .reactivate-days-row input {
+    width: 56px; font-family: inherit; font-size: 13px; padding: 5px 8px;
+    border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--text-primary); text-align: center;
+  }
   .reactivate-actions button:disabled { opacity: .5; cursor: default; }
 
   .lead-card {
@@ -477,6 +487,7 @@
       <button id="addLeadBtn" class="primary">➕ הוסף ליד</button>
       <button id="importBtn">📥 ייבוא לידים</button>
       <input type="file" id="importFileInput" accept=".csv,.xlsx" style="display:none">
+      <a href="/api/leads/export" class="btn-link" id="exportBtn">📤 ייצוא לידים</a>
       <button id="reactivateBtn">🔥 החייאת לידים קרים</button>
       <button id="calendarBtn">📅 יומן</button>
       <button id="feedbackBtn">💡 משוב</button>
@@ -688,6 +699,11 @@
     <div>
       <h2>החייאת לידים קרים</h2>
       <p>קמפיין חימום מתוך contacts.csv - תצוגה מקדימה חובה לפני שליחה בפועל</p>
+      <div class="reactivate-days-row">
+        <label for="reactivateDaysInput">לא נוצר קשר מעל</label>
+        <input type="number" id="reactivateDaysInput" min="0" value="30">
+        <label for="reactivateDaysInput">ימים</label>
+      </div>
     </div>
     <button class="panel-close" id="reactivatePanelClose" aria-label="סגור">✕</button>
   </div>
@@ -1926,11 +1942,16 @@ function renderReactivateSendResults(results) {
     const card = body.querySelector(`.lead-card[data-phone="${CSS.escape(r.phone)}"]`);
     if (!card) return;
     const slot = card.querySelector(".lead-card-result-slot");
-    slot.innerHTML = r.sent
+    const sendLine = r.sent
       ? `<div class="lead-card-result ok">✅ נשלח בהצלחה (SID: ${escapeHtml(r.sid)})</div>`
       : `<div class="lead-card-result fail">❌ נכשל: ${escapeHtml(r.error || "")}</div>`;
+    const taskLine = r.task_id
+      ? `<div class="lead-card-result ok">📅 נוצרה משימת מעקב ליומן</div>`
+      : "";
+    slot.innerHTML = sendLine + taskLine;
   });
   document.getElementById("reactivateSendBtn").disabled = true;
+  loadControlCenter(); // מרענן את ספירת "משימות פתוחות" במרכז הבקרה עם המשימות החדשות
 }
 
 document.getElementById("reactivateBtn").addEventListener("click", () => {
@@ -1944,10 +1965,11 @@ document.getElementById("reactivatePreviewBtn").addEventListener("click", async 
   body.innerHTML = '<div class="loading">מייצר תצוגה מקדימה...</div>';
   document.getElementById("reactivateSendBtn").disabled = true;
   try {
+    const days = parseInt(document.getElementById("reactivateDaysInput").value, 10) || 0;
     const res = await fetch("/api/reactivate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ send: false }),
+      body: JSON.stringify({ send: false, days }),
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
@@ -1968,10 +1990,11 @@ document.getElementById("reactivateSendBtn").addEventListener("click", async () 
   const originalLabel = sendBtn.textContent;
   sendBtn.textContent = "שולח...";
   try {
+    const days = parseInt(document.getElementById("reactivateDaysInput").value, 10) || 0;
     const res = await fetch("/api/reactivate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ send: true }),
+      body: JSON.stringify({ send: true, days }),
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
