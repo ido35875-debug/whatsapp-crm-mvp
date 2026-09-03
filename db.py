@@ -489,3 +489,34 @@ def search_activity(query: str) -> list[tuple[str, str]]:
         return [(row[0], row[1]) for row in rows]
     finally:
         conn.close()
+
+
+def rekey_phone(old_phone: str, new_phone: str, tenant_id: str = "default") -> None:
+    """מעדכן את עמודת phone בכל שלוש הטבלאות (messages/calls/calendar_tasks) בבת
+    אחת (חיבור/commit יחיד) - חלק מ-extract.rekey_lead (עריכת מספר טלפון לליד
+    קיים). אין מזהה ליד מספרי בשום מקום במערכת - phone+tenant_id הוא המפתח
+    היחיד, גם כאן וגם ב-customers.json - ולכן שינוי טלפון חייב "לרדוף" אחרי כל
+    שלוש הטבלאות, לא רק אחרי הכרטיס."""
+    conn = _get_connection()
+    try:
+        for table in ("messages", "calls", "calendar_tasks"):
+            conn.execute(
+                f"UPDATE {table} SET phone = ? WHERE phone = ? AND tenant_id = ?",
+                (new_phone, old_phone, tenant_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_lead_activity(phone: str, tenant_id: str = "default") -> None:
+    """מוחק את כל שורות הפעילות (messages/calls/calendar_tasks) של ליד - חלק מ-
+    extract.delete_lead. לא מוחק את הכרטיס עצמו (זה ב-customers.json, מטופל
+    בנפרד ב-extract.py) - רק את הלוג הטכני הנלווה."""
+    conn = _get_connection()
+    try:
+        for table in ("messages", "calls", "calendar_tasks"):
+            conn.execute(f"DELETE FROM {table} WHERE phone = ? AND tenant_id = ?", (phone, tenant_id))
+        conn.commit()
+    finally:
+        conn.close()

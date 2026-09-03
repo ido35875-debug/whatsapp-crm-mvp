@@ -67,6 +67,7 @@ try:
     import voice_call
     from extract import (
         DEFAULT_TENANT_ID,
+        delete_lead,
         generate_call_summary,
         import_lead,
         load_customers,
@@ -74,9 +75,11 @@ try:
         log_manual_reply,
         process_message,
         process_message_with_reply,
+        rekey_lead,
         resolve_existing_phone,
         update_lead_agent,
         update_lead_category,
+        update_lead_fields,
         update_lead_status,
         update_lead_voice_extraction,
     )
@@ -208,6 +211,7 @@ def api_leads():
             "agent": card.get("agent"),
             "property_type": card.get("property_type"),
             "budget": card.get("budget"),
+            "notes": card.get("notes"),
         }
         if include_last_message:
             last = db.get_last_message(phone, tenant_id=resolved_tenant_id)
@@ -248,6 +252,62 @@ def api_create_lead():
         agent=(data.get("agent") or "").strip() or None,
     )
     return jsonify({"ok": True, "card": card, "is_new": is_new})
+
+
+@app.route("/api/leads/update", methods=["POST"])
+def api_update_lead():
+    """עריכה מלאה של ליד קיים מפאנל #editLeadPanel - כל השדות בבקשה אחת (בניגוד
+    ל-/api/leads/status,/category,/agent הקיימים, ששומרים שדה בודד ב-inline edit).
+    תומך גם בשינוי מספר טלפון (new_phone, אופציונלי - ראו extract.rekey_lead) -
+    זו הפעולה היחידה שמשנה את מפתח הזיהוי של הליד, ולכן מתבצעת קודם, לפני עדכון
+    שאר השדות (שיישמרו תחת המפתח החדש)."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+
+    new_phone = (data.get("new_phone") or "").strip()
+    if new_phone and new_phone != phone:
+        try:
+            rekey_lead(phone, new_phone, tenant_id=tenant_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        phone = new_phone
+
+    lead_status = data.get("lead_status")
+    if lead_status is not None and lead_status not in VALID_LEAD_STATUSES:
+        return jsonify({"error": "סטטוס לא תקין"}), 400
+
+    card = update_lead_fields(
+        phone,
+        tenant_id=tenant_id,
+        customer_name=data.get("customer_name"),
+        business_name=data.get("business_name"),
+        location=data.get("location"),
+        lead_status=lead_status,
+        agent=data.get("agent"),
+        category=data.get("category"),
+        notes=data.get("notes"),
+    )
+    return jsonify({"ok": True, "card": card, "phone": phone})
+
+
+@app.route("/api/leads/delete", methods=["POST"])
+def api_delete_lead():
+    """מחיקת ליד לצמיתות (extract.delete_lead) - כולל כל ההיסטוריה/הודעות/שיחות/
+    משימות. פעולה הרסנית ובלתי הפיכה - אישור אנושי (מודאל) הוא באחריות ה-UI
+    (index.html) לפני הקריאה לנתיב הזה."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+
+    found = delete_lead(phone, tenant_id=tenant_id)
+    if not found:
+        return jsonify({"error": "ליד לא נמצא"}), 404
+    return jsonify({"ok": True})
 
 
 @app.route("/api/search")
@@ -338,6 +398,7 @@ IMPORT_FIELD_ALIASES = {
     "lead_status": {"status", "lead_status", "סטטוס"},
     "category": {"category", "vertical", "קטגוריה", "סיווג"},
     "agent": {"agent", "assigned_agent", "owner", "סוכן", "סוכן מטפל", "נציג"},
+    "notes": {"notes", "note", "comments", "הערות", "הערה"},
 }
 
 
@@ -422,6 +483,7 @@ def api_import_leads():
             import_source=mapped.get("import_source"),
             category=mapped.get("category"),
             agent=mapped.get("agent"),
+            notes=mapped.get("notes"),
         )
         if is_new:
             imported += 1
@@ -439,7 +501,7 @@ def api_import_leads():
 
 EXPORT_COLUMNS = [
     "customer_name", "phone", "business_name", "location", "agent", "category",
-    "lead_status", "score", "source_channel", "import_source", "tenant_id",
+    "lead_status", "score", "source_channel", "import_source", "tenant_id", "notes",
 ]
 
 
@@ -460,7 +522,7 @@ def api_export_leads():
             card.get("customer_name") or "", phone, card.get("business_name") or "",
             card.get("location") or "", card.get("agent") or "", card.get("category") or "",
             card.get("lead_status") or "", score, card.get("source_channel") or "",
-            card.get("import_source") or "", resolved_tenant_id,
+            card.get("import_source") or "", resolved_tenant_id, card.get("notes") or "",
         ])
     csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM כדי ש-Excel יפתח עברית נכון
     return Response(

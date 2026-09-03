@@ -21,6 +21,7 @@ client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 from paths import DATA_DIR  # noqa: E402 - חייב אחרי load_dotenv (DATA_DIR עצמו נקרא מ-os.environ)
 from whatsapp_send import _to_e164  # noqa: E402 - לשימוש resolve_existing_phone
 import prompts  # noqa: E402 - הקבועים *_PROMPT למטה משמשים כברירת מחדל ל-prompts.get_prompt
+import db  # noqa: E402 - לשימוש rekey_lead/delete_lead (rekey/מחיקה של messages/calls/calendar_tasks) - db.py לא תלוי ב-extract.py, אין circular import
 
 CUSTOMERS_FILE = DATA_DIR / "customers.json"
 DEFAULT_TENANT_ID = "default"  # מזהה העסק כשאין tenant_id מפורש (תאימות לאחור)
@@ -280,6 +281,7 @@ def import_lead(
     import_source: str | None = None,
     category: str | None = None,
     agent: str | None = None,
+    notes: str | None = None,
 ) -> tuple[dict, bool]:
     """יוצר/מעדכן כרטיס לקוח - מייבוא CSV/Excel (ראו /api/leads/import) או מהוספת
     ליד בודד ידנית (POST /api/leads) ב-server.py. לא הודעה - אין רישום ב-history.
@@ -303,6 +305,8 @@ def import_lead(
         card["category"] = category
     if agent:
         card["agent"] = agent
+    if notes:
+        card["notes"] = notes
     customers[key] = card
     save_customers(customers)
     return card, is_new
@@ -393,6 +397,97 @@ def update_lead_status(
     customers[key] = card
     save_customers(customers)
     return card
+
+
+def update_lead_fields(
+    phone: str,
+    tenant_id: str = DEFAULT_TENANT_ID,
+    customer_name: str | None = None,
+    business_name: str | None = None,
+    location: str | None = None,
+    lead_status: str | None = None,
+    agent: str | None = None,
+    category: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """שמירה מלאה מפאנל עריכת ליד (#editLeadPanel ב-index.html) - בניגוד ל-
+    import_lead/upsert_customer (שאף פעם לא מוחקים שדה, רק מוסיפים/דורסים ערך
+    לא-ריק), זו פונקציית טופס-עריכה מפורש: None = השדה לא נשלח בכלל (לא נוגעים
+    בו), "" = המשתמש ניקה את השדה בפועל בטופס - השדה נמחק מהכרטיס (מראה
+    update_lead_category/update_lead_agent). לא נוגעת ב-phone עצמו - לשינוי
+    מספר טלפון ראו rekey_lead (rekey מלא, לא רק דריסת ערך)."""
+    customers = load_customers()
+    key = _customer_key(tenant_id, phone)
+    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+
+    def _set(field: str, value: str | None) -> None:
+        if value is None:
+            return
+        value = value.strip()
+        if value:
+            card[field] = value
+        else:
+            card.pop(field, None)
+
+    _set("customer_name", customer_name)
+    _set("business_name", business_name)
+    _set("location", location)
+    _set("agent", agent)
+    _set("category", category)
+    _set("notes", notes)
+    if lead_status:
+        card["lead_status"] = lead_status
+
+    customers[key] = card
+    save_customers(customers)
+    return card
+
+
+def rekey_lead(old_phone: str, new_phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
+    """עורך את מספר הטלפון של ליד קיים - הפעולה היחידה במערכת שמשנה בפועל את
+    המפתח הראשי של הליד (_customer_key), ולכן חייבת "לרדוף" אחרי כל מקום ש-
+    phone משמש בו כמזהה: מפתח הכרטיס ב-customers.json, וגם עמודת phone בכל
+    שלוש טבלאות ה-SQLite (messages/calls/calendar_tasks - ראו db.rekey_phone) -
+    אין מזהה ליד מספרי חלופי בשום מקום. דוחה (ValueError) אם new_phone כבר
+    שייך לליד *אחר* קיים תחת אותו tenant - מניעת מיזוג-בטעות של שני לידים
+    שונים; מיזוג מכוון אינו נתמך כאן."""
+    old_phone = old_phone.strip()
+    new_phone = new_phone.strip()
+    if not new_phone:
+        raise ValueError("מספר טלפון חדש לא יכול להיות ריק")
+
+    customers = load_customers()
+    old_key = _customer_key(tenant_id, old_phone)
+    if old_key not in customers:
+        raise ValueError("הליד המקורי לא נמצא")
+    if new_phone == old_phone:
+        return customers[old_key]
+
+    new_key = _customer_key(tenant_id, new_phone)
+    if new_key in customers:
+        raise ValueError(f"המספר {new_phone} כבר שייך לליד אחר קיים - לא ניתן למזג לידים כאן")
+
+    card = customers.pop(old_key)
+    card["phone"] = new_phone
+    customers[new_key] = card
+    save_customers(customers)
+    db.rekey_phone(old_phone, new_phone, tenant_id=tenant_id)
+    return card
+
+
+def delete_lead(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> bool:
+    """מוחק ליד לחלוטין - הכרטיס מ-customers.json וגם כל הפעילות הטכנית הנלווית
+    (messages/calls/calendar_tasks, ראו db.delete_lead_activity). פעולה הרסנית
+    ובלתי הפיכה - האישור האנושי (מודאל אישור) הוא באחריות ה-UI (index.html),
+    לא כאן. מחזיר True אם הליד נמצא ונמחק, False אם לא היה קיים מלכתחילה."""
+    customers = load_customers()
+    key = _customer_key(tenant_id, phone)
+    if key not in customers:
+        return False
+    del customers[key]
+    save_customers(customers)
+    db.delete_lead_activity(phone, tenant_id=tenant_id)
+    return True
 
 
 if __name__ == "__main__":

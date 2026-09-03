@@ -4,74 +4,62 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CRM לידים</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;600;700&family=Heebo:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  /* זהות עיצובית: "כהה-פחם + זהב עמוק" (luxury מודגש, לבקשת המשתמש) - זו זהות
+     המותג המכוונת של המערכת, לא "מצב כהה" מותנה-מערכת-הפעלה כמו קודם: ה-:root
+     הבסיסי *הוא* עכשיו הפלטה הכהה-זהובה (ללא תלות ב-prefers-color-scheme),
+     ו-[data-theme="light"] הוא הגרסה הבהירה-החמה (שנהב+זהב) לבחירה מפורשת -
+     ראו toggleTheme(). אותם תפקידי-צבע סמנטיים (good/warning/serious/critical)
+     כמו קודם, רק גוונים מכוילים לקריאות על משטח כהה. */
   :root {
-    color-scheme: light;
-    --surface-1: #ffffff;
-    --surface-2: #f9f9f7;
-    --surface-3: #f2f1ee;
-    --text-primary: #0b0b0b;
-    --text-secondary: #52514e;
-    --text-muted: #898781;
-    --border: rgba(11,11,11,0.10);
-    --gridline: #e1e0d9;
-    --accent: #2a78d6;
-    --accent-soft: #e8f0fb;
-    --status-good: #0ca30c;
-    --status-good-soft: #e4f6e4;
-    --status-warning: #b5790a;
-    --status-warning-soft: #fdf1da;
-    --status-serious: #ec835a;
-    --status-serious-soft: #fdeae2;
-    --status-critical: #d03b3b;
-    --status-critical-soft: #fbe7e7;
-    --shadow: 0 8px 24px rgba(11,11,11,0.08);
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      color-scheme: dark;
-      --surface-1: #1a1a19;
-      --surface-2: #0d0d0d;
-      --surface-3: #232322;
-      --text-primary: #ffffff;
-      --text-secondary: #c3c2b7;
-      --text-muted: #898781;
-      --border: rgba(255,255,255,0.10);
-      --gridline: #2c2c2a;
-      --accent: #3987e5;
-      --accent-soft: #1c2c40;
-      --status-good: #0ca30c;
-      --status-good-soft: #133313;
-      --status-warning: #fab219;
-      --status-warning-soft: #3a2c0d;
-      --status-serious: #ec835a;
-      --status-serious-soft: #3a2419;
-      --status-critical: #e66767;
-      --status-critical-soft: #3a1a1a;
-      --shadow: 0 8px 24px rgba(0,0,0,0.4);
-    }
-  }
-  [data-theme="dark"] {
     color-scheme: dark;
-    --surface-1: #1a1a19;
-    --surface-2: #0d0d0d;
-    --surface-3: #232322;
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted: #898781;
-    --border: rgba(255,255,255,0.10);
-    --gridline: #2c2c2a;
-    --accent: #3987e5;
-    --accent-soft: #1c2c40;
-    --status-good: #0ca30c;
-    --status-good-soft: #133313;
-    --status-warning: #fab219;
-    --status-warning-soft: #3a2c0d;
-    --status-serious: #ec835a;
-    --status-serious-soft: #3a2419;
-    --status-critical: #e66767;
-    --status-critical-soft: #3a1a1a;
-    --shadow: 0 8px 24px rgba(0,0,0,0.4);
+    --surface-1: #211d17;
+    --surface-2: #16130f;
+    --surface-3: #2c2620;
+    --text-primary: #f4ecdb;
+    --text-secondary: #cab999;
+    --text-muted: #8c8069;
+    --border: rgba(205,164,94,0.20);
+    --gridline: rgba(205,164,94,0.12);
+    --accent: #cda45e;
+    --accent-soft: rgba(205,164,94,0.16);
+    --status-good: #6cbf85;
+    --status-good-soft: rgba(108,191,133,0.14);
+    /* status-warning נשמר מרוחק בכוונה מ-accent (זהב) על גלגל הצבעים - כתום-אש
+       מובהק, לא זהב בהיר נוסף - כדי שתג "נוצר קשר" וסימון "🧪 סימולציה" (ראו
+       last-activity-cell) יישארו ברורים על רקע שכולו זהוב-מותגי עכשיו */
+    --status-warning: #e08a3c;
+    --status-warning-soft: rgba(224,138,60,0.16);
+    --status-serious: #e58f61;
+    --status-serious-soft: rgba(229,143,97,0.14);
+    --status-critical: #e2695f;
+    --status-critical-soft: rgba(226,105,95,0.16);
+    --shadow: 0 14px 34px rgba(0,0,0,0.45);
+  }
+  [data-theme="light"] {
+    color-scheme: light;
+    --surface-1: #fffdf8;
+    --surface-2: #f7f0e2;
+    --surface-3: #efe3cb;
+    --text-primary: #241f18;
+    --text-secondary: #5b5140;
+    --text-muted: #8c8270;
+    --border: rgba(36,31,24,0.12);
+    --gridline: #e8dcc4;
+    --accent: #a9782f;
+    --accent-soft: #f3e6cc;
+    --status-good: #2e8b4f;
+    --status-good-soft: #e3f3e6;
+    --status-warning: #b5590f;
+    --status-warning-soft: #fbe8d6;
+    --status-serious: #c05a30;
+    --status-serious-soft: #fbe6da;
+    --status-critical: #b23a34;
+    --status-critical-soft: #fae2e0;
+    --shadow: 0 8px 24px rgba(36,31,24,0.10);
   }
 
   * { box-sizing: border-box; }
@@ -79,11 +67,14 @@
     margin: 0;
     background: var(--surface-2);
     color: var(--text-primary);
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-family: "Heebo", system-ui, -apple-system, "Segoe UI", sans-serif;
     min-height: 100vh;
   }
+  /* כותרות - Frank Ruhl Libre (serif עברי איכותי, נקרא ב-Haaretz ופרסומים
+     מובילים אחרים) - נותן תחושת יוקרה/עריכתיות, בניגוד לגוף הטקסט הצפוף (Heebo) */
+  h1, h2, h3, .cc-card h3 { font-family: "Frank Ruhl Libre", serif; font-weight: 600; letter-spacing: 0.2px; }
 
-  .page { max-width: 1680px; margin: 0 auto; padding: 28px 20px 60px; }
+  .page { max-width: 1680px; margin: 0 auto; padding: 32px 24px 64px; }
 
   /* פריסת עמוד ראשית: טבלה + מרכז בקרה בצד (רק בתצוגת הטבלה - לא ב-Inbox) */
   .dashboard-layout { display: flex; gap: 20px; align-items: flex-start; }
@@ -96,7 +87,7 @@
 
   .cc-card {
     background: var(--surface-1); border: 1px solid var(--border);
-    border-radius: 14px; padding: 16px; box-shadow: var(--shadow);
+    border-radius: 18px; padding: 18px; box-shadow: var(--shadow);
   }
   .cc-card h3 { margin: 0 0 12px; font-size: 14px; display: flex; align-items: center; gap: 6px; }
   .cc-stat-row {
@@ -180,33 +171,42 @@
 
   header.top {
     display: flex; align-items: center; justify-content: space-between;
-    gap: 16px; margin-bottom: 24px; flex-wrap: wrap;
+    gap: 16px; margin-bottom: 28px; flex-wrap: wrap;
   }
-  header.top h1 { font-size: 22px; margin: 0 0 4px; }
+  header.top h1 { font-size: 27px; margin: 0 0 5px; letter-spacing: 0.3px; }
   header.top p { margin: 0; color: var(--text-secondary); font-size: 14px; }
   .top-actions { display: flex; gap: 8px; }
 
   button, a.btn-link {
     font-family: inherit; font-size: 13px; cursor: pointer;
-    border-radius: 8px; border: 1px solid var(--border);
+    border-radius: 10px; border: 1px solid var(--border);
     background: var(--surface-1); color: var(--text-primary);
-    padding: 8px 14px; transition: background .15s;
+    padding: 9px 16px; transition: background .15s, transform .12s, box-shadow .15s, border-color .15s;
     display: inline-block; text-decoration: none; line-height: 1.4;
   }
-  button:hover, a.btn-link:hover { background: var(--surface-3); }
-  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  button.primary:hover { filter: brightness(1.08); }
+  button:hover, a.btn-link:hover { background: var(--surface-3); border-color: var(--accent); transform: translateY(-1px); }
+  button:active, a.btn-link:active { transform: translateY(0); }
+  /* כפתור ראשי: מילוי זהב + טקסט כהה (ניגודיות טובה יותר מטקסט לבן על זהב) -
+     זה "הכפתור הבולט" המרכזי של העיצוב, עם הגבהה (lift) עדינה במעבר עכבר */
+  button.primary {
+    background: var(--accent); color: #1c1712; border-color: var(--accent); font-weight: 700;
+    box-shadow: 0 4px 14px rgba(205,164,94,0.28);
+  }
+  button.primary:hover { filter: brightness(1.08); box-shadow: 0 6px 18px rgba(205,164,94,0.4); transform: translateY(-1px); }
+  [data-theme="light"] button.primary { color: #fff; box-shadow: 0 4px 14px rgba(169,120,47,0.25); }
 
   .stat-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 12px; margin-bottom: 24px;
+    gap: 14px; margin-bottom: 28px;
   }
   .stat-tile {
     background: var(--surface-1); border: 1px solid var(--border);
-    border-radius: 12px; padding: 14px 16px; border-inline-start: 3px solid var(--tile-color, var(--accent));
+    border-radius: 16px; padding: 16px 18px; border-inline-start: 3px solid var(--tile-color, var(--accent));
+    box-shadow: var(--shadow); transition: transform .15s;
   }
-  .stat-tile .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .stat-tile .label { font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; }
+  .stat-tile:hover { transform: translateY(-2px); }
+  .stat-tile .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; font-family: "Frank Ruhl Libre", serif; }
+  .stat-tile .label { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; }
 
   .import-status {
     display: none; font-size: 13px; padding: 10px 14px; border-radius: 8px;
@@ -227,7 +227,7 @@
 
   .table-card {
     background: var(--surface-1); border: 1px solid var(--border);
-    border-radius: 14px; overflow: hidden; box-shadow: var(--shadow);
+    border-radius: 18px; overflow: hidden; box-shadow: var(--shadow);
   }
   /* עמודות רבות (עם סרגל הצד) עלולות לחרוג מהרוחב הזמין - גלילה אופקית פנימית
      על #tableWrap עצמו, כדי ש-.table-card ישמור על הפינות המעוגלות בלי לגזור */
@@ -434,6 +434,37 @@
     color: var(--text-primary); box-sizing: border-box;
   }
   .mini-form textarea { resize: vertical; min-height: 90px; }
+
+  /* פאנל עריכת ליד מלאה (Full CRUD) */
+  .edit-lead-label {
+    font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: -4px;
+  }
+  .edit-lead-hint { font-weight: 400; color: var(--status-warning); margin-inline-start: 6px; }
+  .edit-lead-score-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    font-size: 12.5px; color: var(--text-secondary); padding: 8px 2px;
+  }
+  .edit-lead-actions { display: flex; gap: 10px; margin-top: 6px; }
+  .edit-lead-actions button { flex: 1; }
+  button.danger { background: var(--status-critical-soft); color: var(--status-critical); border-color: transparent; }
+  button.danger:hover { background: var(--status-critical); color: #fff; }
+
+  /* שתי כפתורי פעולה בתא אחד בטבלה (היסטוריה + ערוך) */
+  .row-actions { display: flex; gap: 6px; white-space: nowrap; }
+
+  /* מודאל אישור כללי (כרגע: מחיקת ליד) */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    align-items: center; justify-content: center; z-index: 200;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal-box {
+    background: var(--surface-1); border-radius: 16px; padding: 24px;
+    max-width: 380px; width: calc(100% - 40px); box-shadow: var(--shadow);
+  }
+  .modal-box h3 { margin: 0 0 10px; font-size: 16px; }
+  .modal-box p { margin: 0 0 20px; color: var(--text-secondary); font-size: 13.5px; line-height: 1.5; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
 
   /* משימות מעקב (יומן) ומשוב מערכת */
   .mini-row-list { margin-bottom: 16px; }
@@ -758,6 +789,65 @@
   </div>
 </aside>
 
+<aside class="panel" id="editLeadPanel">
+  <div class="panel-header">
+    <div>
+      <h2>✏️ עריכת ליד</h2>
+      <p>עריכה מלאה של כל פרטי הליד - נשמר ישירות ב-CRM</p>
+    </div>
+    <button class="panel-close" id="editLeadPanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body">
+    <form class="mini-form" id="editLeadForm">
+      <input type="hidden" id="editLeadOriginalPhone">
+      <input type="hidden" id="editLeadTenant">
+      <label class="edit-lead-label" for="editLeadName">שם מלא</label>
+      <input type="text" id="editLeadName" placeholder="שם מלא">
+      <label class="edit-lead-label" for="editLeadPhone">
+        טלפון
+        <span class="edit-lead-hint">⚠️ שינוי מספר יעביר את כל ההיסטוריה/הודעות/שיחות/משימות למספר החדש</span>
+      </label>
+      <input type="text" id="editLeadPhone" placeholder="טלפון (חובה)" required>
+      <label class="edit-lead-label" for="editLeadBusiness">עסק</label>
+      <input type="text" id="editLeadBusiness" placeholder="עסק">
+      <label class="edit-lead-label" for="editLeadLocation">מיקום</label>
+      <input type="text" id="editLeadLocation" placeholder="מיקום">
+      <label class="edit-lead-label" for="editLeadCategory">קטגוריה / תגית</label>
+      <input type="text" id="editLeadCategory" placeholder="קטגוריה (למשל: נדל&quot;ן, פרטי, משפחה)">
+      <label class="edit-lead-label" for="editLeadAgent">סוכן מטפל</label>
+      <input type="text" id="editLeadAgent" placeholder="סוכן מטפל">
+      <label class="edit-lead-label" for="editLeadStatus">סטטוס</label>
+      <select id="editLeadStatus">
+        <option value="new">חדש</option>
+        <option value="contacted">נוצר קשר</option>
+        <option value="hot">חם</option>
+        <option value="not_relevant">לא רלוונטי</option>
+      </select>
+      <label class="edit-lead-label" for="editLeadNotes">הערות</label>
+      <textarea id="editLeadNotes" placeholder="הערות פנימיות על הליד..." rows="3"></textarea>
+      <div class="edit-lead-score-row">
+        <span>ציון חום (מחושב אוטומטית מפעילות בפועל, לא ניתן לעריכה ידנית)</span>
+        <span id="editLeadScoreWrap"></span>
+      </div>
+      <div class="edit-lead-actions">
+        <button type="button" id="editLeadDeleteBtn" class="danger">🗑️ מחק ליד</button>
+        <button type="submit" class="primary">💾 שמור שינויים</button>
+      </div>
+    </form>
+  </div>
+</aside>
+
+<div class="modal-overlay" id="confirmModalOverlay">
+  <div class="modal-box">
+    <h3 id="confirmModalTitle"></h3>
+    <p id="confirmModalBody"></p>
+    <div class="modal-actions">
+      <button type="button" id="confirmModalCancel">ביטול</button>
+      <button type="button" id="confirmModalConfirm" class="danger"></button>
+    </div>
+  </div>
+</div>
+
 <aside class="panel panel-wide" id="promptsPanel">
   <div class="panel-header">
     <div>
@@ -1023,7 +1113,10 @@ function renderTable() {
         <td>${lastActivityCellHtml(lead)}</td>
         <td><input type="text" class="category-input" placeholder="קטגוריה..." value="${escapeHtml(lead.category || "")}" data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}"></td>
         <td><span class="tag">${escapeHtml(tenantId)}</span></td>
-        <td><button data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}" data-name="${escapeHtml(lead.customer_name || lead.phone)}" class="history-btn">💬 היסטוריה</button></td>
+        <td class="row-actions">
+          <button data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}" data-name="${escapeHtml(lead.customer_name || lead.phone)}" class="history-btn">💬 היסטוריה</button>
+          <button data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}" class="edit-lead-btn">✏️ ערוך</button>
+        </td>
       </tr>
     `;
   }).join("");
@@ -1046,6 +1139,9 @@ function renderTable() {
 
   wrap.querySelectorAll(".history-btn").forEach(btn => {
     btn.addEventListener("click", () => openHistory(btn.dataset.phone, btn.dataset.tenant, btn.dataset.name));
+  });
+  wrap.querySelectorAll(".edit-lead-btn").forEach(btn => {
+    btn.addEventListener("click", () => openEditLeadPanel(btn.dataset.phone, btn.dataset.tenant));
   });
 
   wrap.querySelectorAll("tbody .row-checkbox").forEach(cb => {
@@ -1488,7 +1584,7 @@ function stopDialQueue() {
 // פאנלים נוספים (שיחה/משימות/יומן/משוב) נפתחים מעל #panel/#inboxView באותו overlay
 // המשותף - כשסוגרים אחד מהם, מסירים את ה-overlay רק אם אף פאנל אחר לא עדיין open
 // (למשל #panel, אם הפאנל השני נפתח מעליו ולא מה-Inbox).
-const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "calendarPanel", "feedbackPanel", "addLeadPanel", "promptsPanel"];
+const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "calendarPanel", "feedbackPanel", "addLeadPanel", "editLeadPanel", "promptsPanel"];
 function closeSubPanel(id) {
   document.getElementById(id).classList.remove("open");
   const anyOpen = OVERLAY_PANEL_IDS.some(pid => document.getElementById(pid).classList.contains("open"));
@@ -1855,6 +1951,7 @@ function closeAllPanels() {
   document.getElementById("calendarPanel").classList.remove("open");
   document.getElementById("feedbackPanel").classList.remove("open");
   document.getElementById("addLeadPanel").classList.remove("open");
+  document.getElementById("editLeadPanel").classList.remove("open");
   document.getElementById("promptsPanel").classList.remove("open");
   document.getElementById("reactivatePanel").classList.remove("open");
   activeCall = null;
@@ -2160,6 +2257,112 @@ document.getElementById("addLeadForm").addEventListener("submit", async (e) => {
   }
 });
 
+// ---- מודאל אישור כללי (משמש כרגע רק למחיקת ליד) - Promise<boolean>, מחליף
+// את ה-confirm() הדפדפני הגנרי בעיצוב עקבי לשאר האפליקציה ----
+function showConfirmModal({ title, body, confirmLabel = "אישור", danger = true }) {
+  const overlay = document.getElementById("confirmModalOverlay");
+  document.getElementById("confirmModalTitle").textContent = title;
+  document.getElementById("confirmModalBody").textContent = body;
+  const confirmBtn = document.getElementById("confirmModalConfirm");
+  confirmBtn.textContent = confirmLabel;
+  confirmBtn.classList.toggle("danger", danger);
+  overlay.classList.add("open");
+
+  return new Promise(resolve => {
+    const cancelBtn = document.getElementById("confirmModalCancel");
+    function cleanup(result) {
+      overlay.classList.remove("open");
+      confirmBtn.removeEventListener("click", onConfirm);
+      cancelBtn.removeEventListener("click", onCancel);
+      resolve(result);
+    }
+    function onConfirm() { cleanup(true); }
+    function onCancel() { cleanup(false); }
+    confirmBtn.addEventListener("click", onConfirm);
+    cancelBtn.addEventListener("click", onCancel);
+  });
+}
+
+// ---- עריכת ליד קיים (Full CRUD - Update/Delete) ----
+function openEditLeadPanel(phone, tenantId) {
+  const lead = findLead(phone, tenantId);
+  if (!lead) return;
+  document.getElementById("editLeadOriginalPhone").value = phone;
+  document.getElementById("editLeadTenant").value = tenantId;
+  document.getElementById("editLeadName").value = lead.customer_name || "";
+  document.getElementById("editLeadPhone").value = phone;
+  document.getElementById("editLeadBusiness").value = lead.business_name || "";
+  document.getElementById("editLeadLocation").value = lead.location || "";
+  document.getElementById("editLeadCategory").value = lead.category || "";
+  document.getElementById("editLeadAgent").value = lead.agent || "";
+  document.getElementById("editLeadStatus").value = lead.lead_status || "new";
+  document.getElementById("editLeadNotes").value = lead.notes || "";
+  document.getElementById("editLeadScoreWrap").innerHTML = scoreBadgeHtml(lead.score);
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("editLeadPanel").classList.add("open");
+}
+document.getElementById("editLeadPanelClose").addEventListener("click", () => closeSubPanel("editLeadPanel"));
+
+document.getElementById("editLeadForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const originalPhone = document.getElementById("editLeadOriginalPhone").value;
+  const tenantId = document.getElementById("editLeadTenant").value;
+  const newPhone = document.getElementById("editLeadPhone").value.trim();
+  if (!newPhone) return;
+
+  const payload = {
+    phone: originalPhone,
+    tenant_id: tenantId,
+    new_phone: newPhone,
+    customer_name: document.getElementById("editLeadName").value.trim(),
+    business_name: document.getElementById("editLeadBusiness").value.trim(),
+    location: document.getElementById("editLeadLocation").value.trim(),
+    category: document.getElementById("editLeadCategory").value.trim(),
+    agent: document.getElementById("editLeadAgent").value.trim(),
+    lead_status: document.getElementById("editLeadStatus").value,
+    notes: document.getElementById("editLeadNotes").value.trim(),
+  };
+
+  try {
+    const res = await fetch("/api/leads/update", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    closeSubPanel("editLeadPanel");
+    await loadLeads();
+  } catch (err) {
+    alert("שמירת השינויים נכשלה: " + err.message);
+  }
+});
+
+document.getElementById("editLeadDeleteBtn").addEventListener("click", async () => {
+  const phone = document.getElementById("editLeadOriginalPhone").value;
+  const tenantId = document.getElementById("editLeadTenant").value;
+  const name = document.getElementById("editLeadName").value || phone;
+
+  const confirmed = await showConfirmModal({
+    title: "מחיקת ליד",
+    body: `בטוח שברצונך למחוק את "${name}"? הפעולה תמחק גם את כל ההיסטוריה, ההודעות, השיחות והמשימות שלו - לא ניתן לשחזר.`,
+    confirmLabel: "🗑️ מחק לצמיתות",
+  });
+  if (!confirmed) return;
+
+  try {
+    const res = await fetch("/api/leads/delete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, tenant_id: tenantId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    closeSubPanel("editLeadPanel");
+    await loadLeads();
+  } catch (err) {
+    alert("מחיקת הליד נכשלה: " + err.message);
+  }
+});
+
 // ---- מרכז בקרה (סרגל צד): לידים חמים, משימות פתוחות, משוב פתוח ----
 let ccTasksCache = [];
 let ccFeedbackCache = [];
@@ -2322,10 +2525,11 @@ document.getElementById("reactivateSendBtn").addEventListener("click", async () 
   }
 });
 
+// שני מצבים בלבד עכשיו (לא שלושה): כהה-זהב (ברירת המחדל, זהות המותג - :root
+// בסיסי, לא תלוי ב-prefers-color-scheme) מול בהיר-שנהב מפורש ([data-theme="light"]).
 document.getElementById("themeToggle").addEventListener("click", () => {
   const root = document.documentElement;
-  const current = root.getAttribute("data-theme");
-  const next = current === "dark" ? "light" : current === "light" ? null : "dark";
+  const next = root.getAttribute("data-theme") === "light" ? null : "light";
   if (next) { root.setAttribute("data-theme", next); } else { root.removeAttribute("data-theme"); }
   try { localStorage.setItem("crm-theme", next || ""); } catch (e) {}
 });
