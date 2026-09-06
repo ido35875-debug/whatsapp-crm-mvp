@@ -473,6 +473,15 @@
   .lead-card-result { margin-top: 8px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
   .lead-card-result.ok { color: var(--status-good); }
   .lead-card-result.fail { color: var(--status-critical); }
+  .lead-card-result.simulated { color: var(--status-warning); }
+  /* מנוע השליחה המבוקר (rate limiting) - מצב חי של batch שרץ ברקע (polling) */
+  .reactivate-batch-status {
+    margin: 0 0 12px; padding: 10px 14px; border-radius: 10px; font-size: 13px; font-weight: 600;
+  }
+  .reactivate-batch-status:empty { display: none; }
+  .reactivate-batch-status.running { background: var(--accent-soft); color: var(--accent); }
+  .reactivate-batch-status.done { background: var(--status-good-soft); color: var(--status-good); }
+  .reactivate-batch-status.failed { background: var(--status-critical-soft); color: var(--status-critical); }
 
   .composer {
     border-top: 1px solid var(--gridline); padding: 12px 16px; flex-shrink: 0;
@@ -967,6 +976,7 @@
     </div>
     <button class="panel-close" id="reactivatePanelClose" aria-label="סגור">✕</button>
   </div>
+  <div class="reactivate-batch-status" id="reactivateBatchStatus"></div>
   <div class="panel-body" id="reactivateBody">
     <div class="empty">לחץ על "תצוגה מקדימה" כדי לראות אילו לידים קרים ימתינו לפנייה, ומה ההודעה שתיוצר לכל אחד מהם - לפני כל שליחה בפועל.</div>
   </div>
@@ -2549,22 +2559,72 @@ function renderReactivatePreview(results) {
   sendBtn.disabled = false;
 }
 
-function renderReactivateSendResults(results) {
+// מנוע השליחה המבוקר (rate limiting, 15-30 שניות בין הודעה להודעה - ראו
+// reactivate.RATE_LIMIT_*) רץ ברקע ב-thread נפרד ב-server.py, ויכול לארוך דקות
+// עבור כמה לידים - הדשבורד לא מחכה עם בקשה פתוחה, אלא עוקב (polling) אחרי
+// GET /api/reactivate/batches/<id> עד שה-status אינו "running" יותר.
+let reactivatePollTimer = null;
+function stopReactivatePolling() {
+  if (reactivatePollTimer) { clearTimeout(reactivatePollTimer); reactivatePollTimer = null; }
+}
+
+function reactivateResultLineHtml(item) {
+  if (item.result === "sent") return '<div class="lead-card-result ok">✅ נשלח בהצלחה</div>';
+  if (item.result === "simulated") return '<div class="lead-card-result simulated">🧪 סימולציה (Trial) - לא נשלח בפועל</div>';
+  return `<div class="lead-card-result fail">❌ נכשל: ${escapeHtml(item.error || "")}</div>`;
+}
+
+// ממלא רק תאים שעדיין ריקים (dataset.filled) - כל טיק polling מביא את כל
+// הפריטים שכבר טופלו עד כה, לא רק את החדש - אין טעם לכתוב מחדש את מה שכבר מוצג
+function applyReactivateBatchToCards(batch) {
   const body = document.getElementById("reactivateBody");
-  results.forEach(r => {
-    const card = body.querySelector(`.lead-card[data-phone="${CSS.escape(r.phone)}"]`);
-    if (!card) return;
-    const slot = card.querySelector(".lead-card-result-slot");
-    const sendLine = r.sent
-      ? `<div class="lead-card-result ok">✅ נשלח בהצלחה (SID: ${escapeHtml(r.sid)})</div>`
-      : `<div class="lead-card-result fail">❌ נכשל: ${escapeHtml(r.error || "")}</div>`;
-    const taskLine = r.task_id
-      ? `<div class="lead-card-result ok">📅 נוצרה משימת מעקב ליומן</div>`
-      : "";
-    slot.innerHTML = sendLine + taskLine;
+  batch.items.forEach(item => {
+    const card = body.querySelector(`.lead-card[data-phone="${CSS.escape(item.phone)}"]`);
+    const slot = card && card.querySelector(".lead-card-result-slot");
+    if (!slot || slot.dataset.filled) return;
+    slot.innerHTML = reactivateResultLineHtml(item);
+    slot.dataset.filled = "1";
   });
-  document.getElementById("reactivateSendBtn").disabled = true;
-  loadControlCenter(); // מרענן את ספירת "משימות פתוחות" במרכז הבקרה עם המשימות החדשות
+}
+
+function renderReactivateBatchStatus(batch) {
+  const el = document.getElementById("reactivateBatchStatus");
+  const sendBtn = document.getElementById("reactivateSendBtn");
+  const done = batch.sent_count + batch.simulated_count + batch.error_count;
+  if (batch.status === "running") {
+    el.className = "reactivate-batch-status running";
+    el.textContent = `⏳ שולח... ${done} מתוך ${batch.total_leads} (השהיה מבוקרת של 15-30 שניות בין הודעה להודעה, כדי לא להיראות כספאם)`;
+    sendBtn.textContent = `שולח... (${done}/${batch.total_leads})`;
+  } else {
+    const failed = batch.status === "failed";
+    el.className = "reactivate-batch-status " + (failed ? "failed" : "done");
+    el.textContent = failed
+      ? `❌ הקמפיין נכשל באמצע הריצה (${done} מתוך ${batch.total_leads} טופלו לפני הכשל) - ראו server_error.log`
+      : `✅ הסתיים - ${batch.sent_count} נשלחו, ${batch.simulated_count} סימולציה, ${batch.error_count} נכשלו`;
+    sendBtn.textContent = "🔥 שלח בפועל לכל הלידים";
+  }
+}
+
+async function pollReactivateBatch(batchId) {
+  stopReactivatePolling();
+  const tick = async () => {
+    try {
+      const res = await fetch(`/api/reactivate/batches/${batchId}`);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const batch = await res.json();
+      applyReactivateBatchToCards(batch);
+      renderReactivateBatchStatus(batch);
+      if (batch.status === "running") {
+        reactivatePollTimer = setTimeout(tick, 4000);
+      } else {
+        loadLeads();          // הסטטוסים/ההיסטוריה של הלידים השתנו
+        loadControlCenter();  // מרענן את ספירת "משימות פתוחות" עם המשימות החדשות
+      }
+    } catch (err) {
+      document.getElementById("reactivateBatchStatus").textContent = "שגיאה במעקב אחרי הקמפיין: " + err.message;
+    }
+  };
+  tick();
 }
 
 // tenant אפקטיבי לפעולות ההחייאה - אותו tenantFilter הראשי של הטבלה; "" (כל
@@ -2593,7 +2653,12 @@ document.getElementById("reactivateBtn").addEventListener("click", () => {
   document.getElementById("reactivatePanel").classList.add("open");
   loadReactivateDaysDefault();
 });
-document.getElementById("reactivatePanelClose").addEventListener("click", closeAllPanels);
+document.getElementById("reactivatePanelClose").addEventListener("click", () => {
+  // עצירת ה-polling רק מפסיקה את עדכון התצוגה - השליחה עצמה (thread נפרד
+  // ב-server.py) ממשיכה לרוץ ברקע גם אם הפאנל נסגר, בדיוק כמו שצריך
+  stopReactivatePolling();
+  closeAllPanels();
+});
 
 document.getElementById("reactivateSaveDaysBtn").addEventListener("click", async () => {
   const tenantId = reactivateTenantId();
@@ -2617,9 +2682,12 @@ document.getElementById("reactivateSaveDaysBtn").addEventListener("click", async
 });
 
 document.getElementById("reactivatePreviewBtn").addEventListener("click", async () => {
+  stopReactivatePolling();
+  document.getElementById("reactivateBatchStatus").textContent = "";
   const body = document.getElementById("reactivateBody");
   body.innerHTML = '<div class="loading">מייצר תצוגה מקדימה...</div>';
   document.getElementById("reactivateSendBtn").disabled = true;
+  document.getElementById("reactivateSendBtn").textContent = "🔥 שלח בפועל לכל הלידים";
   try {
     const days = parseInt(document.getElementById("reactivateDaysInput").value, 10) || 0;
     const res = await fetch("/api/reactivate", {
@@ -2638,13 +2706,15 @@ document.getElementById("reactivatePreviewBtn").addEventListener("click", async 
 
 document.getElementById("reactivateSendBtn").addEventListener("click", async () => {
   if (lastReactivateResults.length === 0) return;
-  const ok = confirm(`פעולה זו תשלח ${lastReactivateResults.length} הודעות WhatsApp אמיתיות ללידים קרים דרך Twilio. להמשיך?`);
+  const ok = confirm(
+    `פעולה זו תשלח ${lastReactivateResults.length} הודעות WhatsApp אמיתיות ללידים קרים דרך Twilio, ` +
+    `בהשהיה מבוקרת של 15-30 שניות רנדומליות בין הודעה להודעה (ריצה ברקע, יכולה לארוך כמה דקות). להמשיך?`
+  );
   if (!ok) return;
 
   const sendBtn = document.getElementById("reactivateSendBtn");
   sendBtn.disabled = true;
-  const originalLabel = sendBtn.textContent;
-  sendBtn.textContent = "שולח...";
+  sendBtn.textContent = "מתחיל...";
   try {
     const days = parseInt(document.getElementById("reactivateDaysInput").value, 10) || 0;
     const res = await fetch("/api/reactivate", {
@@ -2652,16 +2722,14 @@ document.getElementById("reactivateSendBtn").addEventListener("click", async () 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ send: true, days, tenant_id: reactivateTenantId() }),
     });
-    if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
-    renderReactivateSendResults(data.results);
-    loadLeads();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    pollReactivateBatch(data.batch_id);
   } catch (err) {
     document.getElementById("reactivateBody").insertAdjacentHTML(
       "afterbegin", '<div class="error">שגיאה בשליחה: ' + escapeHtml(err.message) + "</div>"
     );
-  } finally {
-    sendBtn.textContent = originalLabel;
+    sendBtn.textContent = "🔥 שלח בפועל לכל הלידים";
   }
 });
 

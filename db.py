@@ -83,6 +83,35 @@ def _get_connection() -> sqlite3.Connection:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS reactivation_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            finished_at DATETIME,
+            status TEXT NOT NULL DEFAULT 'running',
+            total_leads INTEGER NOT NULL DEFAULT 0,
+            sent_count INTEGER NOT NULL DEFAULT 0,
+            simulated_count INTEGER NOT NULL DEFAULT 0,
+            error_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reactivation_batch_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id INTEGER NOT NULL,
+            phone TEXT NOT NULL,
+            name TEXT,
+            message TEXT,
+            result TEXT NOT NULL DEFAULT 'pending',
+            error TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS calls (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -194,6 +223,100 @@ def get_scheduler_runs(limit: int = 20) -> list[dict]:
             (limit,),
         ).fetchall()
         return [dict(row) | {"auto_send": bool(row["auto_send"])} for row in rows]
+    finally:
+        conn.close()
+
+
+# ---- קמפיין החייאה ברקע (reactivate.py, שליחה בפועל דרך /api/reactivate) - מעקב
+# התקדמות חי לצורך תיעוד ברור בדשבורד: "batch" אחד = הרצת --send אחת (רשימת לידים
+# קרים שנשלחה אליהם הודעה, עם השהיה מבוקרת בין הודעה להודעה - ראו reactivate.py),
+# "item" אחד = תוצאת השליחה לליד בודד בתוך ה-batch (pending עד שמגיע תורו).
+
+def create_reactivation_batch(tenant_id: str, total_leads: int) -> int:
+    conn = _get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO reactivation_batches (tenant_id, started_at, status, total_leads) "
+            "VALUES (?, ?, 'running', ?)",
+            (tenant_id, datetime.now(timezone.utc).isoformat(), total_leads),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def add_batch_item(batch_id: int, phone: str, name: str | None, message: str,
+                    result: str, error: str | None = None) -> None:
+    """result: 'sent' / 'simulated' / 'error'. מעדכן גם את המונים המצטברים על
+    ה-batch עצמו (sent_count/simulated_count/error_count) - כדי שסטטוס חי
+    (GET /api/reactivate/batches/<id>) לא יצטרך לספור מחדש את כל השורות בכל בקשה."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO reactivation_batch_items (batch_id, phone, name, message, result, error, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (batch_id, phone, name, message, result, error, datetime.now(timezone.utc).isoformat()),
+        )
+        column = {"sent": "sent_count", "simulated": "simulated_count", "error": "error_count"}.get(result)
+        if column:
+            conn.execute(f"UPDATE reactivation_batches SET {column} = {column} + 1 WHERE id = ?", (batch_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def finish_reactivation_batch(batch_id: int, status: str = "completed") -> None:
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE reactivation_batches SET status = ?, finished_at = ? WHERE id = ?",
+            (status, datetime.now(timezone.utc).isoformat(), batch_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_reactivation_batch(batch_id: int) -> dict | None:
+    """מחזיר את ה-batch עצמו + כל הפריטים שכבר עובדו בו (החדש ביותר קודם) - לשימוש
+    ה-polling של הדשבורד בזמן שהשליחה עדיין רצה ברקע."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        batch_row = conn.execute(
+            "SELECT * FROM reactivation_batches WHERE id = ?", (batch_id,)
+        ).fetchone()
+        if not batch_row:
+            return None
+        items = conn.execute(
+            "SELECT phone, name, message, result, error, created_at FROM reactivation_batch_items "
+            "WHERE batch_id = ? ORDER BY id ASC",
+            (batch_id,),
+        ).fetchall()
+        batch = dict(batch_row)
+        batch["items"] = [dict(item) for item in items]
+        return batch
+    finally:
+        conn.close()
+
+
+def get_reactivation_batches(tenant_id: str | None = None, limit: int = 10) -> list[dict]:
+    """רשימת ה-batches האחרונים (החדש ביותר קודם), בלי הפריטים המלאים - לתצוגת
+    היסטוריה קצרה בדשבורד."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        if tenant_id:
+            rows = conn.execute(
+                "SELECT * FROM reactivation_batches WHERE tenant_id = ? ORDER BY id DESC LIMIT ?",
+                (tenant_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM reactivation_batches ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         conn.close()
 

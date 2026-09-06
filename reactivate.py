@@ -13,7 +13,9 @@
 
 import csv
 import os
+import random
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -42,6 +44,13 @@ ALREADY_HANDLED_STATUSES = {"contacted", "hot", "not_relevant", "reactivation"}
 # (alias) כדי לא לשבור קוד/תיעוד קיים שמתייחס אליו.
 DEFAULT_COLD_DAYS = tenant_settings.DEFAULT_REACTIVATION_DAYS
 FOLLOW_UP_DAYS_AHEAD = 3  # בעוד כמה ימים תיקבע משימת המעקב שנוצרת אוטומטית אחרי שליחה
+
+# מנוע השליחה המבוקר (rate limiting) - השהיה רנדומלית בין הודעה להודעה בקמפיין batch
+# (לא בין הודעת webhook בודדת ל-reply האוטומטי - זה נשאר מיידי), כדי לא להישלח
+# ל-Twilio/WhatsApp בקצב שנראה כמו ספאם/בוט. חלה רק כש-send=True (אין טעם להשהות
+# בין הודעות תצוגה-מקדימה שלא שולחות כלום בפועל).
+RATE_LIMIT_MIN_SECONDS = 15
+RATE_LIMIT_MAX_SECONDS = 30
 
 OUTREACH_PROMPT = """\
 אתה כותב הודעת וואטסאפ קצרה, חמה וטבעית (לא שיווקית מדי) לפנייה מחודשת ללקוח פוטנציאלי
@@ -140,19 +149,48 @@ def run_reactivation_campaign(
     send: bool = False,
     contacts: list[dict] | None = None,
     days: int | None = None,
+    batch_id: int | None = None,
 ) -> list[dict]:
     """מריץ את קמפיין החימום ומחזיר תוצאה מובנית לכל ליד קר (לשימוש ב-CLI, ב-API של
     הדשבורד - /api/reactivate, וגם ב-scheduler.py לסריקה אוטומטית). לא שולח כלום אם
     send=False (ברירת מחדל). contacts מאפשר להעביר רשימה מסוננת מראש (למשל ע"י
     scheduler.py לפי ורטיקל+זמן) במקום לקרוא את כל contacts.csv. days מועבר ל-
     get_cold_leads (ראו שם למה ברירת המחדל היא None ולא DEFAULT_COLD_DAYS - זה
-    מונע מ-scheduler.py הקיים "לרשת" סף כללי בטעות)."""
+    מונע מ-scheduler.py הקיים "לרשת" סף כללי בטעות).
+
+    batch_id (אופציונלי): מזהה batch קיים (ראו db.create_reactivation_batch) לתעד
+    אליו את ההתקדמות בזמן אמת - server.py יוצר אותו מראש כשמריץ את הפונקציה הזו
+    ב-thread נפרד (כדי שהדשבורד יוכל לעקוב אחרי שליחה שנמשכת דקות ארוכות, ראו
+    RATE_LIMIT_*, בלי לחכות עם החיבור פתוח). אם לא סופק ו-send=True, נוצר batch
+    חדש אוטומטית (למשל להרצת --send מה-CLI) - כדי שכל שליחה בפועל, לא רק זו
+    שמופעלת מהדשבורד, תתועד ב-reactivation_batches."""
     if contacts is None:
         contacts = load_contacts()
     cold_leads = get_cold_leads(contacts, tenant_id=tenant_id, days=days)
 
+    if send and batch_id is None:
+        batch_id = db.create_reactivation_batch(tenant_id, total_leads=len(cold_leads))
+
     results = []
-    for contact in cold_leads:
+    try:
+        _run_campaign_loop(cold_leads, tenant_id, send, batch_id, results)
+    except Exception:
+        # יציבות: כשל בלתי-צפוי (לא is_trial_restriction/שגיאת Twilio רגילה, שכבר
+        # מטופלות בתוך הלולאה - זו חריגה אמיתית, כמו קריסת generate_outreach_message)
+        # לא אמור להשאיר batch "תקוע" על running לנצח בעיני הדשבורד; מסמנים failed
+        # ומזרקים הלאה כדי שהקורא (CLI/thread ב-server.py) עדיין יידע שמשהו נכשל.
+        if send and batch_id is not None:
+            db.finish_reactivation_batch(batch_id, status="failed")
+        raise
+
+    if send and batch_id is not None:
+        db.finish_reactivation_batch(batch_id, status="completed")
+
+    return results
+
+
+def _run_campaign_loop(cold_leads, tenant_id, send, batch_id, results):
+    for i, contact in enumerate(cold_leads):
         message = generate_outreach_message(contact["name"], contact.get("business", ""), vertical=contact.get("vertical"))
         entry = {
             "name": contact["name"],
@@ -181,6 +219,13 @@ def run_reactivation_campaign(
                     entry["simulated"] = True
                 else:
                     entry["error"] = str(exc)
+
+            if batch_id is not None:
+                db.add_batch_item(
+                    batch_id, contact["phone"], contact["name"], message,
+                    result="sent" if entry["sent"] else "simulated" if entry["simulated"] else "error",
+                    error=entry["error"],
+                )
 
             if entry["sent"] or entry["simulated"]:
                 note = (
@@ -214,6 +259,12 @@ def run_reactivation_campaign(
                 due_date=due_date,
                 notes=f"נוצר אוטומטית ע\"י מנוע החייאת לידים קרים. הודעה שנוסחה: {message}",
             )
+
+            # מנוע השליחה המבוקר: השהיה רנדומלית 15-30 שניות לפני ההודעה הבאה בבאטץ'
+            # (לא אחרי האחרונה - אין טעם להשהות כשאין עוד מה לשלוח). חל על כל תוצאה
+            # (נשלח/סימולציה/כשל) - הקצב נשמר קבוע בין ניסיונות, לא רק בין הצלחות.
+            if i < len(cold_leads) - 1:
+                time.sleep(random.uniform(RATE_LIMIT_MIN_SECONDS, RATE_LIMIT_MAX_SECONDS))
 
         results.append(entry)
 

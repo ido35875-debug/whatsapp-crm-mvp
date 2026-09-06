@@ -39,6 +39,7 @@ import io
 import logging
 import os
 import sys
+import threading
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -548,9 +549,15 @@ def api_messages():
 @app.route("/api/reactivate", methods=["POST"])
 def api_reactivate():
     """מפעיל את קמפיין חימום הלידים הקרים (reactivate.py) מתוך הדשבורד. ברירת המחדל
-    היא preview בלבד (send=False, כברירת המחדל של reactivate.py) - לא נשלח שום דבר.
-    שליחה בפועל דורשת send:true מפורש בגוף הבקשה; זה האישור האנושי הנדרש (קליק מפורש
-    בממשק אחרי צפייה בתצוגה המקדימה) - ראו מדיניות הבטיחות ב-CLAUDE.md.
+    היא preview בלבד (send=False, כברירת המחדל של reactivate.py) - לא נשלח שום דבר,
+    ומוחזר סינכרונית (מהיר - רק ניסוח הודעות, בלי קריאות Twilio/השהיות).
+    שליחה בפועל (send:true) היא האישור האנושי הנדרש (קליק מפורש בממשק אחרי צפייה
+    בתצוגה המקדימה) - ראו מדיניות הבטיחות ב-CLAUDE.md. **רצה ברקע (thread נפרד)**,
+    לא סינכרונית בתוך הבקשה עצמה: מנוע השליחה המבוקר (reactivate.RATE_LIMIT_*)
+    משהה 15-30 שניות רנדומליות בין הודעה להודעה כדי לא להיראות כספאם/בוט מול
+    Twilio/WhatsApp - עבור כמה לידים זה יכול לארוך דקות, יותר מדי זמן להחזיק
+    בקשת HTTP פתוחה. הנתיב מחזיר מיד `batch_id` - הדשבורד עוקב אחרי ההתקדמות
+    דרך GET /api/reactivate/batches/<id> (polling) עד שה-status אינו 'running'.
     days (אופציונלי): סף "לא נוצר קשר מעל X ימים" - אם לא סופק, נופל חזרה למרווח
     המוגדר ל-tenant הזה ב-tenant_settings (ברירת מחדל כללית 30 יום, אבל כל עסק
     יכול להגדיר לעצמו ערך שונה - ראו /api/tenant-settings) - ראו גם
@@ -564,8 +571,43 @@ def api_reactivate():
     except (TypeError, ValueError):
         days = tenant_default_days
 
-    results = reactivate.run_reactivation_campaign(tenant_id=tenant_id, send=send, days=days)
-    return jsonify({"send": send, "days": days, "count": len(results), "results": results})
+    if not send:
+        results = reactivate.run_reactivation_campaign(tenant_id=tenant_id, send=False, days=days)
+        return jsonify({"send": False, "days": days, "count": len(results), "results": results})
+
+    # send=True: קודם קובעים כמה לידים קרים יש בפועל (בלי לשלוח כלום עדיין) כדי
+    # שה-batch יידע מראש את total_leads, ואז מריצים את השליחה עצמה ב-thread נפרד.
+    contacts = reactivate.load_contacts()
+    cold_leads = reactivate.get_cold_leads(contacts, tenant_id=tenant_id, days=days)
+    batch_id = db.create_reactivation_batch(tenant_id, total_leads=len(cold_leads))
+
+    def _run_in_background():
+        try:
+            reactivate.run_reactivation_campaign(
+                tenant_id=tenant_id, send=True, contacts=contacts, days=days, batch_id=batch_id,
+            )
+        except Exception:
+            logger.exception("קמפיין החייאה (batch_id=%s) נכשל ברקע", batch_id)
+
+    threading.Thread(target=_run_in_background, daemon=True, name=f"reactivate-batch-{batch_id}").start()
+    return jsonify({"send": True, "days": days, "batch_id": batch_id, "total_leads": len(cold_leads), "status": "started"})
+
+
+@app.route("/api/reactivate/batches/<int:batch_id>")
+def api_get_reactivate_batch(batch_id):
+    """מצב חי (polling) של batch שליחה שרץ/רץ ברקע - כולל כל הפריטים שכבר עובדו
+    (result: sent/simulated/error) - ראו api_reactivate למעלה."""
+    batch = db.get_reactivation_batch(batch_id)
+    if not batch:
+        return jsonify({"error": "batch לא נמצא"}), 404
+    return jsonify(batch)
+
+
+@app.route("/api/reactivate/batches")
+def api_get_reactivate_batches():
+    """היסטוריית ה-batches האחרונים (בלי הפריטים המלאים) - לתצוגת "הרצות קודמות"."""
+    tenant_id = request.args.get("tenant_id") or None
+    return jsonify(db.get_reactivation_batches(tenant_id=tenant_id))
 
 
 @app.route("/api/tenant-settings")
