@@ -83,6 +83,42 @@ def _customer_key(tenant_id: str, phone: str) -> str:
     return f"{tenant_id}::{phone}"
 
 
+# קידומות ידועות לשמות פרטיים מרובי-מילים בעברית - אם המילה הראשונה היא אחת
+# מאלה, השם הפרטי "האמיתי" הוא שתי המילים הראשונות יחד (למשל "בת שבע", לא רק "בת")
+_COMPOUND_FIRST_NAME_PREFIXES = {"בן", "בת", "אבי", "אבו"}
+
+# מילות-מפתח גנריות שמעידות שזה לא שם אמיתי אלא placeholder/תיאור-תפקיד - בדיקת
+# "מכיל" (substring) ולא התאמה מדויקת, כדי לתפוס גם "לקוח פוטנציאלי"/"מתעניין חדש" וכו'
+_GENERIC_NAME_KEYWORDS = {
+    "לקוח", "לקוחה", "מתעניין", "מתעניינת", "ליד", "אורח", "אורחת", "לא ידוע",
+    "customer", "lead", "guest", "unknown", "test", "בדיקה",
+}
+
+
+def extract_safe_first_name(full_name: str | None) -> str | None:
+    """מנקה רווחים מיותרים ומחלץ שם פרטי "בטוח" מתוך שדה שם חופשי - לשימוש בהודעות
+    מנוסחות אוטומטית (ראו reactivate.generate_outreach_message). מגן מפני הודעות
+    רובוטיות/מביכות: מחזיר None (לא ממציא/מנחש שם) אם השדה ריק, מכיל ספרה, או
+    מכיל מילת-מפתח גנרית ("לקוח"/"מתעניין" וכו', ראו _GENERIC_NAME_KEYWORDS) -
+    הקורא אמור להשתמש בברכה ניטרלית בלי שם במקרה הזה, לא להטמיע ערך גרוע בהודעה.
+    תומך בשמות פרטיים מרובי-מילים נפוצים (למשל "בת שבע") - ראו _COMPOUND_FIRST_NAME_PREFIXES."""
+    if not full_name:
+        return None
+    cleaned = " ".join(full_name.strip().split())  # מכווץ רווחים כפולים/טאבים/שורות חדשות
+    if not cleaned:
+        return None
+    if any(ch.isdigit() for ch in cleaned):
+        return None
+    if any(keyword in cleaned.lower() for keyword in _GENERIC_NAME_KEYWORDS):
+        return None
+
+    tokens = cleaned.split(" ")
+    first_name = tokens[0]
+    if first_name in _COMPOUND_FIRST_NAME_PREFIXES and len(tokens) > 1:
+        first_name = f"{tokens[0]} {tokens[1]}"
+    return first_name
+
+
 def resolve_existing_phone(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> str:
     """מחזיר את מחרוזת הטלפון שתחתיה כבר קיים כרטיס לליד הזה, אם יש - בודק גם את
     הפורמט הגולמי שהתקבל וגם את הפורמט המנורמל (E.164). נועד למנוע כרטיס כפול

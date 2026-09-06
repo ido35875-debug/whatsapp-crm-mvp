@@ -63,6 +63,7 @@ try:
     import reactivate
     import scheduler
     import prompts
+    import tenant_settings
     import transcription
     import voice_call
     from extract import (
@@ -337,7 +338,7 @@ def api_search():
     return jsonify([{"phone": phone, "tenant_id": tenant_id} for phone, tenant_id in matches])
 
 
-VALID_LEAD_STATUSES = {"new", "contacted", "hot", "not_relevant"}
+VALID_LEAD_STATUSES = {"new", "contacted", "hot", "not_relevant", "reactivation"}
 
 
 @app.route("/api/leads/status", methods=["POST"])
@@ -550,18 +551,47 @@ def api_reactivate():
     היא preview בלבד (send=False, כברירת המחדל של reactivate.py) - לא נשלח שום דבר.
     שליחה בפועל דורשת send:true מפורש בגוף הבקשה; זה האישור האנושי הנדרש (קליק מפורש
     בממשק אחרי צפייה בתצוגה המקדימה) - ראו מדיניות הבטיחות ב-CLAUDE.md.
-    days (אופציונלי, ברירת מחדל DEFAULT_COLD_DAYS=30): סף "לא נוצר קשר מעל X ימים" -
-    ראו reactivate.get_cold_leads למה זה לא ברירת המחדל הגלובלית של reactivate.py."""
+    days (אופציונלי): סף "לא נוצר קשר מעל X ימים" - אם לא סופק, נופל חזרה למרווח
+    המוגדר ל-tenant הזה ב-tenant_settings (ברירת מחדל כללית 30 יום, אבל כל עסק
+    יכול להגדיר לעצמו ערך שונה - ראו /api/tenant-settings) - ראו גם
+    reactivate.get_cold_leads למה זה לא ברירת המחדל הגלובלית של reactivate.py."""
     data = request.get_json(silent=True) or {}
     tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
     send = bool(data.get("send", False))
+    tenant_default_days = tenant_settings.get_reactivation_days(tenant_id)
     try:
-        days = int(data.get("days", reactivate.DEFAULT_COLD_DAYS))
+        days = int(data.get("days", tenant_default_days))
     except (TypeError, ValueError):
-        days = reactivate.DEFAULT_COLD_DAYS
+        days = tenant_default_days
 
     results = reactivate.run_reactivation_campaign(tenant_id=tenant_id, send=send, days=days)
     return jsonify({"send": send, "days": days, "count": len(results), "results": results})
+
+
+@app.route("/api/tenant-settings")
+def api_get_tenant_settings():
+    """הגדרות פר-tenant (כרגע רק reactivation_days) - קריאה בלבד, לשימוש פאנל
+    ההחייאה בדשבורד (טעינת הערך השמור כברירת מחדל בתיבת "לא נוצר קשר מעל __ ימים")."""
+    tenant_id = request.args.get("tenant_id") or DEFAULT_TENANT_ID
+    return jsonify({"tenant_id": tenant_id, "reactivation_days": tenant_settings.get_reactivation_days(tenant_id)})
+
+
+@app.route("/api/tenant-settings", methods=["POST"])
+def api_set_tenant_settings():
+    """שומר מרווח החייאה מותאם ל-tenant נתון - "כל עסק דורש חוקיות עסקית שונה
+    (קמעונאות מול נדל\"ן)": קמעונאות עשוי לרצות סף קצר (למשל 7 ימים), נדל"ן סף
+    ארוך יותר (למשל 30-60 יום). לא משפיע על scheduler.py (הסף האוטומטי הקיים
+    שם הוא פר-ורטיקל, לא פר-tenant - נשאר נפרד במכוון)."""
+    data = request.get_json(silent=True) or {}
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    try:
+        days = int(data.get("reactivation_days"))
+        if days < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({"error": "reactivation_days חייב להיות מספר שלם לא-שלילי"}), 400
+    tenant_settings.set_reactivation_days(tenant_id, days)
+    return jsonify({"ok": True, "tenant_id": tenant_id, "reactivation_days": days})
 
 
 @app.route("/api/scheduler/status")

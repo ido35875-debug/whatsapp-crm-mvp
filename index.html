@@ -339,6 +339,9 @@
   .badge.contacted { background: var(--status-warning-soft); color: var(--status-warning); }
   .badge.hot { background: var(--status-good-soft); color: var(--status-good); }
   .badge.not_relevant { background: var(--status-critical-soft); color: var(--status-critical); }
+  /* "החייאת לידים" - ליד שנשלחה אליו הודעת החייאה (reactivate.py) - זהב-מותגי
+     (accent), נבדל בכוונה מ-good/warning/critical הקיימים (ראו CLAUDE.md) */
+  .badge.reactivation { background: var(--accent-soft); color: var(--accent); }
 
   select.status-select {
     border: none; border-radius: 999px; padding: 3px 10px;
@@ -349,6 +352,7 @@
   select.status-select.contacted { background: var(--status-warning-soft); color: var(--status-warning); }
   select.status-select.hot { background: var(--status-good-soft); color: var(--status-good); }
   select.status-select.not_relevant { background: var(--status-critical-soft); color: var(--status-critical); }
+  select.status-select.reactivation { background: var(--accent-soft); color: var(--accent); }
   select.status-select:disabled { opacity: .6; cursor: default; }
   .panel-status-wrap { margin-top: 8px; }
 
@@ -453,6 +457,10 @@
     border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2);
     color: var(--text-primary); text-align: center;
   }
+  .reactivate-days-row button { font-size: 11.5px; padding: 5px 10px; }
+  /* "כל עסק דורש חוקיות עסקית שונה" - המרווח הוא פר-tenant (tenant_settings.py),
+     לא ערך גלובלי קבוע; ה-hint מבהיר איזה tenant בדיוק מושפע מ"שמור כברירת מחדל" */
+  .reactivate-days-hint { margin: 6px 0 0; font-size: 11.5px; color: var(--text-muted); }
   .reactivate-actions button:disabled { opacity: .5; cursor: default; }
 
   .lead-card {
@@ -686,6 +694,8 @@
             <option value="contacted">נוצר קשר</option>
             <option value="hot">חם</option>
             <option value="not_relevant">לא רלוונטי</option>
+        <option value="reactivation">החייאת לידים</option>
+            <option value="reactivation">החייאת לידים</option>
           </select>
           <select id="scoreFilter">
             <option value="">כל ציוני החום</option>
@@ -709,6 +719,8 @@
             <option value="contacted">נוצר קשר</option>
             <option value="hot">חם</option>
             <option value="not_relevant">לא רלוונטי</option>
+        <option value="reactivation">החייאת לידים</option>
+            <option value="reactivation">החייאת לידים</option>
           </select>
           <button type="button" id="bulkApplyBtn">עדכן סטטוס לנבחרים</button>
           <button type="button" class="primary" id="bulkDialBtn">📞 התחל חיוג רציף</button>
@@ -862,6 +874,7 @@
         <option value="contacted">נוצר קשר</option>
         <option value="hot">חם</option>
         <option value="not_relevant">לא רלוונטי</option>
+        <option value="reactivation">החייאת לידים</option>
       </select>
       <button type="submit" class="primary">➕ הוסף ליד</button>
     </form>
@@ -901,6 +914,7 @@
         <option value="contacted">נוצר קשר</option>
         <option value="hot">חם</option>
         <option value="not_relevant">לא רלוונטי</option>
+        <option value="reactivation">החייאת לידים</option>
       </select>
       <label class="edit-lead-label" for="editLeadNotes">הערות</label>
       <textarea id="editLeadNotes" placeholder="הערות פנימיות על הליד..." rows="3"></textarea>
@@ -947,7 +961,9 @@
         <label for="reactivateDaysInput">לא נוצר קשר מעל</label>
         <input type="number" id="reactivateDaysInput" min="0" value="30">
         <label for="reactivateDaysInput">ימים</label>
+        <button type="button" id="reactivateSaveDaysBtn" title="שמור כברירת מחדל ל-tenant הנוכחי">💾 שמור כברירת מחדל</button>
       </div>
+      <p class="reactivate-days-hint" id="reactivateDaysHint"></p>
     </div>
     <button class="panel-close" id="reactivatePanelClose" aria-label="סגור">✕</button>
   </div>
@@ -965,12 +981,14 @@ const STATUS_META = {
   hot:           { label: "חם",         cls: "hot" },
   contacted:     { label: "נוצר קשר",   cls: "contacted" },
   not_relevant:  { label: "לא רלוונטי", cls: "not_relevant" },
+  reactivation:  { label: "החייאת לידים", cls: "reactivation" },
 };
 function statusMeta(status) {
   return STATUS_META[status] || { label: "חדש", cls: "new" };
 }
 const STATUS_OPTIONS = [
   ["new", "חדש"], ["contacted", "נוצר קשר"], ["hot", "חם"], ["not_relevant", "לא רלוונטי"],
+  ["reactivation", "החייאת לידים"],
 ];
 function statusSelectHtml(phone, tenantId, currentStatus) {
   const value = currentStatus || "new";
@@ -2549,11 +2567,54 @@ function renderReactivateSendResults(results) {
   loadControlCenter(); // מרענן את ספירת "משימות פתוחות" במרכז הבקרה עם המשימות החדשות
 }
 
+// tenant אפקטיבי לפעולות ההחייאה - אותו tenantFilter הראשי של הטבלה; "" (כל
+// העסקים) נופל ל-"default", כי /api/reactivate/tenant-settings תמיד דורשים tenant אחד
+function reactivateTenantId() {
+  return document.getElementById("tenantFilter").value || "default";
+}
+
+async function loadReactivateDaysDefault() {
+  const tenantId = reactivateTenantId();
+  const hint = document.getElementById("reactivateDaysHint");
+  hint.textContent = "טוען הגדרה שמורה...";
+  try {
+    const res = await fetch(`/api/tenant-settings?tenant_id=${encodeURIComponent(tenantId)}`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    document.getElementById("reactivateDaysInput").value = data.reactivation_days;
+    hint.textContent = `ברירת המחדל הנוכחית עבור "${tenantId}": ${data.reactivation_days} ימים - כל עסק יכול להגדיר לעצמו ערך שונה`;
+  } catch (err) {
+    hint.textContent = "לא ניתן היה לטעון הגדרה שמורה (ברירת מחדל: 30 ימים)";
+  }
+}
+
 document.getElementById("reactivateBtn").addEventListener("click", () => {
   document.getElementById("overlay").classList.add("open");
   document.getElementById("reactivatePanel").classList.add("open");
+  loadReactivateDaysDefault();
 });
 document.getElementById("reactivatePanelClose").addEventListener("click", closeAllPanels);
+
+document.getElementById("reactivateSaveDaysBtn").addEventListener("click", async () => {
+  const tenantId = reactivateTenantId();
+  const days = parseInt(document.getElementById("reactivateDaysInput").value, 10);
+  const hint = document.getElementById("reactivateDaysHint");
+  if (isNaN(days) || days < 0) {
+    hint.textContent = "מספר ימים לא תקין";
+    return;
+  }
+  try {
+    const res = await fetch("/api/tenant-settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenant_id: tenantId, reactivation_days: days }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    hint.textContent = `נשמר! מעכשיו ברירת המחדל עבור "${tenantId}" היא ${days} ימים`;
+  } catch (err) {
+    hint.textContent = "שמירה נכשלה: " + err.message;
+  }
+});
 
 document.getElementById("reactivatePreviewBtn").addEventListener("click", async () => {
   const body = document.getElementById("reactivateBody");
@@ -2564,7 +2625,7 @@ document.getElementById("reactivatePreviewBtn").addEventListener("click", async 
     const res = await fetch("/api/reactivate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ send: false, days }),
+      body: JSON.stringify({ send: false, days, tenant_id: reactivateTenantId() }),
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
@@ -2589,7 +2650,7 @@ document.getElementById("reactivateSendBtn").addEventListener("click", async () 
     const res = await fetch("/api/reactivate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ send: true, days }),
+      body: JSON.stringify({ send: true, days, tenant_id: reactivateTenantId() }),
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();

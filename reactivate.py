@@ -22,7 +22,8 @@ from dotenv import load_dotenv
 
 import db
 import prompts
-from extract import DEFAULT_TENANT_ID, _customer_key, last_contact_at, load_customers, update_lead_status
+import tenant_settings
+from extract import DEFAULT_TENANT_ID, _customer_key, extract_safe_first_name, last_contact_at, load_customers, update_lead_status
 from whatsapp_send import is_trial_restriction, send_whatsapp_message
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
@@ -30,14 +31,22 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש -
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 CONTACTS_FILE = Path(__file__).parent / "contacts.csv"
-ALREADY_HANDLED_STATUSES = {"contacted", "hot", "not_relevant"}
-DEFAULT_COLD_DAYS = 30  # סף ברירת המחדל להחייאה ידנית מהדשבורד - "לא נוצר קשר מעל 30 יום"
+# "reactivation" (החייאת לידים) - סטטוס ייעודי שהוקצה לליד שנשלחה אליו הודעת החייאה
+# (אמיתית או מדומה - ראו is_trial_restriction למטה), נפרד מ-"contacted" הכללי -
+# כך שההבחנה "פנינו מחדש ליד קר" נשארת גלויה ולא נבלעת בתוך "נוצר קשר" הרגיל.
+# נכלל גם ב-ALREADY_HANDLED_STATUSES כדי שליד לא יטופל שוב מיד בהרצה הבאה.
+ALREADY_HANDLED_STATUSES = {"contacted", "hot", "not_relevant", "reactivation"}
+# ברירת המחדל (30 יום) מגיעה עכשיו ממקור אמת יחיד - tenant_settings.py - כדי שכל
+# עסק יוכל להגדיר לעצמו מרווח שונה (קמעונאות מול נדל"ן, ראו get_cold_leads למטה
+# ו-/api/tenant-settings ב-server.py); DEFAULT_COLD_DAYS נשאר קיים כשם-מוכר
+# (alias) כדי לא לשבור קוד/תיעוד קיים שמתייחס אליו.
+DEFAULT_COLD_DAYS = tenant_settings.DEFAULT_REACTIVATION_DAYS
 FOLLOW_UP_DAYS_AHEAD = 3  # בעוד כמה ימים תיקבע משימת המעקב שנוצרת אוטומטית אחרי שליחה
 
 OUTREACH_PROMPT = """\
 אתה כותב הודעת וואטסאפ קצרה, חמה וטבעית (לא שיווקית מדי) לפנייה מחודשת ללקוח פוטנציאלי
 שהיה בקשר בעבר ולא המשיך.
-שם הלקוח: {name}
+{name_line}
 שם העסק שלו (אם רלוונטי): {business}
 כתוב הודעה קצרה בעברית (2-3 משפטים), בגוף ראשון, כאילו אתה בעל העסק שפונה מחדש.
 אל תמציא פרטים שלא ניתנו. החזר רק את טקסט ההודעה, בלי מרכאות ובלי הסברים נוספים.
@@ -56,9 +65,20 @@ not_relevant (לא מעוניין, מבקש הסרה, לא רלוונטי).
 def generate_outreach_message(name: str, business: str, vertical: str | None = None) -> str:
     """vertical (אופציונלי, למשל contact["vertical"] מ-contacts.csv): אם יש
     override מותאם-ענף מוגדר ל-vertical הזה ב-prompts.json, הוא ינוצח את
-    התבנית הבסיסית - ראו prompts.get_prompt."""
+    התבנית הבסיסית - ראו prompts.get_prompt.
+    שם לא-בטוח לשימוש (ריק/מכיל ספרה/מילת-מפתח גנרית כמו "לקוח"/"מתעניין" - ראו
+    extract.extract_safe_first_name) לא מוזרק להודעה בכלל - Claude מקבל הנחיה
+    מפורשת לפתוח בברכה ניטרלית ("היי, מה שלומך?") במקום, כדי למנוע הודעה
+    רובוטית/מביכה שמשתמשת בשם גרוע/מומצא."""
+    safe_name = extract_safe_first_name(name)
+    name_line = (
+        f"שם הלקוח: {safe_name} - פתח את ההודעה בפנייה אישית בשמו הפרטי."
+        if safe_name else
+        "אין שם לקוח בטוח לשימוש - אל תשתמש בשם ואל תמציא אחד; פתח את ההודעה "
+        "בברכה חמה וניטרלית (למשל \"היי, מה שלומך?\")."
+    )
     prompt_template = prompts.get_prompt("reactivation_outreach", OUTREACH_PROMPT, vertical=vertical)
-    prompt = prompt_template.format(name=name, business=business or "לא ידוע")
+    prompt = prompt_template.format(name_line=name_line, business=business or "לא ידוע")
     response = client.messages.create(
         model="claude-opus-5",
         max_tokens=300,
@@ -97,7 +117,8 @@ def get_cold_leads(
     *אחרי* הקריאה הזו - הוספת סף ימים כללי כאן היה שובר את הסף המהיר (3 ימים)
     של ורטיקל ecommerce. days=<מספר>: מוסיף גם סינון "לא נוצר קשר מעל X ימים" -
     ליד עם היסטוריה עדכנית (גם אם הסטטוס עדיין 'new') לא ייחשב קר מספיק - לשימוש
-    ההחייאה הידנית מהדשבורד (/api/reactivate, ברירת מחדל DEFAULT_COLD_DAYS)."""
+    ההחייאה הידנית מהדשבורד (/api/reactivate, ברירת מחדל פר-tenant מ-
+    tenant_settings.get_reactivation_days - ראו שם)."""
     customers = load_customers()
     now = datetime.now(timezone.utc)
     cold = []
@@ -168,7 +189,7 @@ def run_reactivation_campaign(
                 )
                 update_lead_status(
                     contact["phone"],
-                    status="contacted",
+                    status="reactivation",
                     extra={"customer_name": contact["name"], "business_name": contact.get("business")},
                     tenant_id=tenant_id,
                     note=note,
