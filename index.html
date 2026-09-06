@@ -38,6 +38,20 @@
     --status-critical: #e2695f;
     --status-critical-soft: rgba(226,105,95,0.16);
     --shadow: 0 14px 34px rgba(0,0,0,0.45);
+    /* שדרוג "Luxury Dark Theme" (לבקשת המשתמש): glassmorphism + גבול-הילה זהב/פלטינה
+       דק על כרטיסים/כפתורים/טבלה, במקום משטח אטום שטוח. --glass-bg שקוף-חלקית
+       (לא אטום כמו surface-1) כדי שהילת הרקע (--page-bg-image, ראו body) תיראה
+       דרכו; --glass-border-grad מיושם כטבעת 1px דרך מסכת ::before (ראו .glass) */
+    --glass-bg: linear-gradient(155deg, rgba(48,42,32,0.70), rgba(19,16,12,0.62));
+    /* גרסה אטומה יותר ל-.panel/.modal-box - תוכן צפוף (צ'אט/טפסים) לאורך זמן דורש
+       קריאות גבוהה יותר מ"זכוכית אמיתית" - עדיין ניכר blur/הילה בקצוות, לא שטוח */
+    --glass-bg-solid: linear-gradient(155deg, rgba(41,36,28,0.95), rgba(19,16,12,0.94));
+    --glass-border-grad: linear-gradient(135deg, rgba(226,192,132,0.75), rgba(255,255,255,0.10) 35%, rgba(205,164,94,0.18) 65%, rgba(224,224,230,0.5));
+    --glass-shadow: 0 24px 60px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.05);
+    --page-bg-image:
+      radial-gradient(1100px 560px at 12% -8%, rgba(205,164,94,0.12), transparent 60%),
+      radial-gradient(900px 520px at 108% 8%, rgba(226,226,232,0.07), transparent 55%),
+      radial-gradient(1000px 680px at 50% 115%, rgba(205,164,94,0.06), transparent 60%);
   }
   [data-theme="light"] {
     color-scheme: light;
@@ -60,19 +74,54 @@
     --status-critical: #b23a34;
     --status-critical-soft: #fae2e0;
     --shadow: 0 8px 24px rgba(36,31,24,0.10);
+    --glass-bg: linear-gradient(155deg, rgba(255,253,248,0.78), rgba(247,240,226,0.62));
+    --glass-bg-solid: linear-gradient(155deg, rgba(255,253,248,0.97), rgba(250,244,232,0.96));
+    --glass-border-grad: linear-gradient(135deg, rgba(169,120,47,0.6), rgba(255,255,255,0.55) 35%, rgba(169,120,47,0.18) 65%, rgba(255,255,255,0.7));
+    --glass-shadow: 0 16px 40px rgba(36,31,24,0.14), inset 0 1px 0 rgba(255,255,255,0.6);
+    --page-bg-image:
+      radial-gradient(1100px 560px at 12% -8%, rgba(169,120,47,0.07), transparent 60%),
+      radial-gradient(900px 520px at 108% 8%, rgba(169,120,47,0.05), transparent 55%);
   }
 
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    background: var(--surface-2);
+    /* רקע רב-שכבתי (לא צבע שטוח) - הילות רדיאליות עדינות של זהב/פלטינה מעל
+       ה-surface הכהה הבסיסי, עומדות במקום (fixed) כדי לתת תחושת עומק אטמוספרי
+       שנשאר יציב מתחת לכרטיסי הזכוכית (.glass) גם בגלילה */
+    background: var(--page-bg-image), var(--surface-2);
+    background-attachment: fixed;
     color: var(--text-primary);
     font-family: "Heebo", system-ui, -apple-system, "Segoe UI", sans-serif;
     min-height: 100vh;
   }
   /* כותרות - Frank Ruhl Libre (serif עברי איכותי, נקרא ב-Haaretz ופרסומים
-     מובילים אחרים) - נותן תחושת יוקרה/עריכתיות, בניגוד לגוף הטקסט הצפוף (Heebo) */
-  h1, h2, h3, .cc-card h3 { font-family: "Frank Ruhl Libre", serif; font-weight: 600; letter-spacing: 0.2px; }
+     מובילים אחרים) - נותן תחושת יוקרה/עריכתיות, בניגוד לגוף הטקסט הצפוף (Heebo).
+     .cc-card h3 יוצא מהכלל בכוונה - ראו ההגדרה הייעודית שלו למטה ("תווית פרימיום"
+     קטנה/אחידה/tracked, לא כותרת serif) */
+  h1, h2, h3 { font-family: "Frank Ruhl Libre", serif; font-weight: 600; letter-spacing: 0.2px; }
+
+  /* === "זכוכית" - הטבעה חוזרת לכל כרטיס/משטח מרכזי (כרטיסי מרכז בקרה, אריחי
+     סיכום, מיכל הטבלה, הפאנלים, המודאל): רקע שקוף-חלקית + blur (רואים את הילת
+     הרקע דרכו) + טבעת-הילה זהב/פלטינה דקה (1px) בעזרת מסכת ::before - לא border
+     רגיל, כי גרדיאנט לא עובד על border-color ישירות. isolation:isolate מבטיח
+     שה-z-index הפנימי של ::before לא "יברח" מעל תוכן של אלמנטים אחרים בעמוד. */
+  .glass {
+    position: relative; isolation: isolate;
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    backdrop-filter: blur(20px) saturate(150%);
+  }
+  .glass::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px;
+    background: var(--glass-border-grad);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none; z-index: 1;
+  }
+  /* פאנלים/מודאל מארחים תוכן צפוף (צ'אט, טפסים) לאורך זמן - זכוכית "אטומה" יותר */
+  .panel.glass, .modal-box.glass { background: var(--glass-bg-solid); }
 
   .page { max-width: 1680px; margin: 0 auto; padding: 32px 24px 64px; }
 
@@ -86,10 +135,16 @@
   }
 
   .cc-card {
-    background: var(--surface-1); border: 1px solid var(--border);
-    border-radius: 18px; padding: 18px; box-shadow: var(--shadow);
+    border-radius: 20px; padding: 18px; box-shadow: var(--glass-shadow);
   }
-  .cc-card h3 { margin: 0 0 12px; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+  /* "תווית פרימיום" - sans, קטנה, אחידה (uppercase) ו-tracked, בצבע accent - לא
+     כותרת serif רגילה; זה נראה טוב יותר עם tracking מאשר סריף (ראו ההערה למעלה
+     על היציאה מהכלל של h1,h2,h3) - סגנון "עיתונאי-יוקרתי" (eyebrow label) */
+  .cc-card h3 {
+    margin: 0 0 14px; font-size: 11.5px; font-weight: 700; letter-spacing: 1.4px;
+    text-transform: uppercase; color: var(--accent);
+    display: flex; align-items: center; gap: 6px;
+  }
   .cc-stat-row {
     display: flex; justify-content: space-between; align-items: center;
     padding: 9px 0; border-bottom: 1px solid var(--gridline); font-size: 13px;
@@ -117,6 +172,7 @@
     width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
     font-weight: 700; font-size: 13px; color: #fff;
+    box-shadow: 0 0 0 2px rgba(205,164,94,0.3), 0 2px 8px rgba(0,0,0,0.35);
   }
   .name-cell { display: flex; align-items: center; gap: 10px; }
   .name-cell-text { min-width: 0; }
@@ -173,39 +229,62 @@
     display: flex; align-items: center; justify-content: space-between;
     gap: 16px; margin-bottom: 28px; flex-wrap: wrap;
   }
-  header.top h1 { font-size: 27px; margin: 0 0 5px; letter-spacing: 0.3px; }
+  /* כותרת ראשית - גרדיאנט טקסט זהב עדין (לא תג טקסט שטוח) - "טיפוגרפיה חדה
+     ומרשימה" כפי שהתבקש; גודל מוגדל משמעותית לתחושת נוכחות פרימיום */
+  header.top h1 {
+    font-size: 38px; margin: 0 0 6px; letter-spacing: 0.4px; line-height: 1.1;
+    background: linear-gradient(135deg, var(--text-primary) 30%, var(--accent) 150%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
+  }
   header.top p { margin: 0; color: var(--text-secondary); font-size: 14px; }
   .top-actions { display: flex; gap: 8px; }
 
   button, a.btn-link {
     font-family: inherit; font-size: 13px; cursor: pointer;
     border-radius: 10px; border: 1px solid var(--border);
-    background: var(--surface-1); color: var(--text-primary);
-    padding: 9px 16px; transition: background .15s, transform .12s, box-shadow .15s, border-color .15s;
+    background: var(--surface-3); color: var(--text-primary);
+    padding: 9px 16px; transition: background .15s, transform .12s, box-shadow .2s, border-color .2s;
     display: inline-block; text-decoration: none; line-height: 1.4;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
   }
-  button:hover, a.btn-link:hover { background: var(--surface-3); border-color: var(--accent); transform: translateY(-1px); }
+  /* hover "מואר" - לא רק שינוי background שטוח: הילת accent עדינה + הגבהה,
+     נותנת תחושת "כפתור שמגיב אליך" מודרנית ("hover effects חלקים" כפי שהתבקש) */
+  button:hover, a.btn-link:hover {
+    border-color: var(--accent); transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.28), 0 0 0 1px rgba(205,164,94,0.18);
+  }
   button:active, a.btn-link:active { transform: translateY(0); }
   /* כפתור ראשי: מילוי זהב + טקסט כהה (ניגודיות טובה יותר מטקסט לבן על זהב) -
      זה "הכפתור הבולט" המרכזי של העיצוב, עם הגבהה (lift) עדינה במעבר עכבר */
   button.primary {
-    background: var(--accent); color: #1c1712; border-color: var(--accent); font-weight: 700;
-    box-shadow: 0 4px 14px rgba(205,164,94,0.28);
+    background: linear-gradient(155deg, #e2c07f, var(--accent) 60%, #b78a45);
+    color: #1c1712; border-color: transparent; font-weight: 700;
+    box-shadow: 0 10px 26px rgba(205,164,94,0.32), inset 0 1px 0 rgba(255,255,255,0.35);
   }
-  button.primary:hover { filter: brightness(1.08); box-shadow: 0 6px 18px rgba(205,164,94,0.4); transform: translateY(-1px); }
-  [data-theme="light"] button.primary { color: #fff; box-shadow: 0 4px 14px rgba(169,120,47,0.25); }
+  button.primary:hover {
+    filter: brightness(1.06); transform: translateY(-2px);
+    box-shadow: 0 14px 34px rgba(205,164,94,0.45), inset 0 1px 0 rgba(255,255,255,0.4);
+  }
+  [data-theme="light"] button.primary { color: #fff; box-shadow: 0 10px 26px rgba(169,120,47,0.3), inset 0 1px 0 rgba(255,255,255,0.3); }
 
   .stat-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 14px; margin-bottom: 28px;
   }
   .stat-tile {
-    background: var(--surface-1); border: 1px solid var(--border);
-    border-radius: 16px; padding: 16px 18px; border-inline-start: 3px solid var(--tile-color, var(--accent));
-    box-shadow: var(--shadow); transition: transform .15s;
+    border-radius: 18px; padding: 18px 20px; border-inline-start: 3px solid var(--tile-color, var(--accent));
+    box-shadow: var(--glass-shadow); transition: transform .18s, box-shadow .18s;
   }
-  .stat-tile:hover { transform: translateY(-2px); }
-  .stat-tile .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; font-family: "Frank Ruhl Libre", serif; }
+  .stat-tile:hover { transform: translateY(-3px); box-shadow: 0 28px 64px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06); }
+  /* מספר מודגש - גרדיאנט טקסט מהצבע הסמנטי של האריח (--tile-color, אותו צבע
+     כמו מסגרת ההתחלה) לטקסט הראשי - "מספרים חדים ומרשימים" כפי שהתבקש, בלי
+     לוותר על קידוד-הצבעים הקיים (חם=ירוק/נוצר קשר=כתום/לא רלוונטי=אדום) */
+  .stat-tile .value {
+    font-size: 38px; font-weight: 700; font-variant-numeric: tabular-nums;
+    font-family: "Frank Ruhl Libre", serif; letter-spacing: 0.3px; line-height: 1.15;
+    background: linear-gradient(135deg, var(--text-primary) 15%, var(--tile-color, var(--accent)) 145%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
+  }
   .stat-tile .label { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; }
 
   .import-status {
@@ -226,21 +305,21 @@
   .toolbar input { flex: 1; min-width: 200px; }
 
   .table-card {
-    background: var(--surface-1); border: 1px solid var(--border);
-    border-radius: 18px; overflow: hidden; box-shadow: var(--shadow);
+    border-radius: 20px; overflow: hidden; box-shadow: var(--glass-shadow);
   }
   /* עמודות רבות (עם סרגל הצד) עלולות לחרוג מהרוחב הזמין - גלילה אופקית פנימית
      על #tableWrap עצמו, כדי ש-.table-card ישמור על הפינות המעוגלות בלי לגזור */
   #tableWrap { overflow-x: auto; }
   table { width: 100%; min-width: 1080px; border-collapse: collapse; font-size: 13.5px; }
   thead th {
-    text-align: start; padding: 12px 16px; font-weight: 600;
-    color: var(--text-secondary); font-size: 12px;
-    border-bottom: 1px solid var(--gridline); white-space: nowrap;
+    text-align: start; padding: 14px 16px; font-weight: 700;
+    color: var(--accent); font-size: 11px; letter-spacing: 0.8px; text-transform: uppercase;
+    border-bottom: 1px solid var(--border); white-space: nowrap;
   }
-  tbody td { padding: 12px 16px; border-bottom: 1px solid var(--gridline); vertical-align: middle; }
+  tbody td { padding: 13px 16px; border-bottom: 1px solid var(--gridline); vertical-align: middle; transition: background .12s; }
   tbody tr:last-child td { border-bottom: none; }
-  tbody tr:hover { background: var(--surface-3); }
+  /* hover שורה - הילת accent שקופה-חלקית, לא מילוי אפור שטוח - מתאים לשפת ה-glass הכללית */
+  tbody tr:hover td { background: rgba(205,164,94,0.07); }
   td.name { font-weight: 600; }
   td.muted, .muted { color: var(--text-muted); }
   td.phone { font-variant-numeric: tabular-nums; direction: ltr; text-align: right; }
@@ -316,7 +395,7 @@
 
   .panel {
     position: fixed; top: 0; bottom: 0; inset-inline-end: 0; width: min(420px, 100vw);
-    background: var(--surface-1); box-shadow: var(--shadow); z-index: 50;
+    box-shadow: 0 0 80px rgba(0,0,0,0.5); z-index: 50;
     display: flex; flex-direction: column;
     transform: translateX(100%);
     transition: transform .25s ease;
@@ -459,8 +538,8 @@
   }
   .modal-overlay.open { display: flex; }
   .modal-box {
-    background: var(--surface-1); border-radius: 16px; padding: 24px;
-    max-width: 380px; width: calc(100% - 40px); box-shadow: var(--shadow);
+    border-radius: 18px; padding: 24px;
+    max-width: 380px; width: calc(100% - 40px); box-shadow: var(--glass-shadow);
   }
   .modal-box h3 { margin: 0 0 10px; font-size: 16px; }
   .modal-box p { margin: 0 0 20px; color: var(--text-secondary); font-size: 13.5px; line-height: 1.5; }
@@ -636,22 +715,22 @@
           <button type="button" id="bulkClearBtn">בטל בחירה</button>
         </div>
 
-        <div class="table-card">
+        <div class="table-card glass">
           <div id="tableWrap"></div>
         </div>
       </div>
 
       <aside class="control-center">
-        <div class="cc-card">
+        <div class="cc-card glass">
           <h3>🎯 מרכז בקרה</h3>
           <div id="ccStats"></div>
         </div>
-        <div class="cc-card">
+        <div class="cc-card glass">
           <h3>📅 היום ביומן</h3>
           <div id="ccTasks"></div>
           <div class="cc-card-footer"><button type="button" id="ccTasksMore">לכל היומן</button></div>
         </div>
-        <div class="cc-card">
+        <div class="cc-card glass">
           <h3>💡 משוב אחרון</h3>
           <div id="ccFeedback"></div>
           <div class="cc-card-footer"><button type="button" id="ccFeedbackMore">לכל המשוב</button></div>
@@ -692,7 +771,7 @@
 </div>
 
 <div class="overlay" id="overlay"></div>
-<aside class="panel" id="panel">
+<aside class="panel glass" id="panel">
   <div class="panel-header">
     <div>
       <h2>
@@ -718,7 +797,7 @@
   </div>
 </aside>
 
-<aside class="panel" id="callPanel">
+<aside class="panel glass" id="callPanel">
   <div class="panel-header">
     <div>
       <h2 id="callPanelName">שיחה</h2>
@@ -729,7 +808,7 @@
   <div class="panel-body" id="callPanelBody"></div>
 </aside>
 
-<aside class="panel" id="tasksPanel">
+<aside class="panel glass" id="tasksPanel">
   <div class="panel-header">
     <div>
       <h2 id="tasksPanelName">משימות</h2>
@@ -740,7 +819,7 @@
   <div class="panel-body" id="tasksPanelBody"></div>
 </aside>
 
-<aside class="panel" id="calendarPanel">
+<aside class="panel glass" id="calendarPanel">
   <div class="panel-header">
     <div>
       <h2>📅 יומן</h2>
@@ -751,7 +830,7 @@
   <div class="panel-body" id="calendarPanelBody"></div>
 </aside>
 
-<aside class="panel" id="feedbackPanel">
+<aside class="panel glass" id="feedbackPanel">
   <div class="panel-header">
     <div>
       <h2>💡 משוב על המערכת</h2>
@@ -762,7 +841,7 @@
   <div class="panel-body" id="feedbackPanelBody"></div>
 </aside>
 
-<aside class="panel" id="addLeadPanel">
+<aside class="panel glass" id="addLeadPanel">
   <div class="panel-header">
     <div>
       <h2>➕ הוספת ליד חדש</h2>
@@ -789,7 +868,7 @@
   </div>
 </aside>
 
-<aside class="panel" id="editLeadPanel">
+<aside class="panel glass" id="editLeadPanel">
   <div class="panel-header">
     <div>
       <h2>✏️ עריכת ליד</h2>
@@ -838,7 +917,7 @@
 </aside>
 
 <div class="modal-overlay" id="confirmModalOverlay">
-  <div class="modal-box">
+  <div class="modal-box glass">
     <h3 id="confirmModalTitle"></h3>
     <p id="confirmModalBody"></p>
     <div class="modal-actions">
@@ -848,7 +927,7 @@
   </div>
 </div>
 
-<aside class="panel panel-wide" id="promptsPanel">
+<aside class="panel panel-wide glass" id="promptsPanel">
   <div class="panel-header">
     <div>
       <h2>🤖 תבניות וסוכנים</h2>
@@ -859,7 +938,7 @@
   <div class="panel-body" id="promptsPanelBody"></div>
 </aside>
 
-<aside class="panel" id="reactivatePanel">
+<aside class="panel glass" id="reactivatePanel">
   <div class="panel-header">
     <div>
       <h2>החייאת לידים קרים</h2>
@@ -1038,7 +1117,7 @@ function renderStats() {
     { label: "לא רלוונטי", value: counts.not_relevant, color: "var(--status-critical)" },
   ];
   document.getElementById("statGrid").innerHTML = tiles.map(t => `
-    <div class="stat-tile" style="--tile-color:${t.color}">
+    <div class="stat-tile glass" style="--tile-color:${t.color}">
       <div class="value">${t.value}</div>
       <div class="label">${t.label}</div>
     </div>
