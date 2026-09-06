@@ -167,6 +167,24 @@
   .cc-card-footer { margin-top: 10px; text-align: center; }
   .cc-card-footer button { width: 100%; font-size: 12.5px; padding: 6px; }
 
+  /* כרטיס "🔥 החייאת לידים" - כמות זמינה (או התקדמות חיה אם קמפיין רץ), אותה
+     שפת מספר-בגרדיאנט כמו .stat-tile .value, כדי שירגיש כמו חלק מאותה משפחה */
+  .cc-card-reactivation .cc-reactivation-count {
+    font-size: 40px; font-weight: 700; font-family: "Frank Ruhl Libre", serif;
+    line-height: 1.1; text-align: center;
+    background: linear-gradient(135deg, var(--text-primary) 15%, var(--accent) 145%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
+  }
+  /* מצב "רץ ברקע" - גוון status-warning (אותו צבע כמו "🧪 סימולציה"/"נוצר קשר"),
+     לא זהב-מותגי, כדי שברור מייד שזה מצב-ביניים זמני ולא המספר הסטטי הרגיל */
+  .cc-card-reactivation .cc-reactivation-count.running {
+    background: linear-gradient(135deg, var(--text-primary) 15%, var(--status-warning) 145%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .cc-card-reactivation .cc-reactivation-label { text-align: center; font-size: 13px; color: var(--text-secondary); margin-top: 4px; font-weight: 600; }
+  .cc-card-reactivation .cc-reactivation-sub { text-align: center; font-size: 11.5px; color: var(--text-muted); margin-top: 6px; }
+  .cc-card-reactivation .cc-reactivation-btn { width: 100%; margin-top: 14px; }
+
   /* אווטאר עגול עם ראשי תיבות - צבע נגזר דטרמיניסטית משם הליד */
   .avatar {
     width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
@@ -703,7 +721,6 @@
             <option value="contacted">נוצר קשר</option>
             <option value="hot">חם</option>
             <option value="not_relevant">לא רלוונטי</option>
-        <option value="reactivation">החייאת לידים</option>
             <option value="reactivation">החייאת לידים</option>
           </select>
           <select id="scoreFilter">
@@ -728,7 +745,6 @@
             <option value="contacted">נוצר קשר</option>
             <option value="hot">חם</option>
             <option value="not_relevant">לא רלוונטי</option>
-        <option value="reactivation">החייאת לידים</option>
             <option value="reactivation">החייאת לידים</option>
           </select>
           <button type="button" id="bulkApplyBtn">עדכן סטטוס לנבחרים</button>
@@ -745,6 +761,10 @@
         <div class="cc-card glass">
           <h3>🎯 מרכז בקרה</h3>
           <div id="ccStats"></div>
+        </div>
+        <div class="cc-card glass cc-card-reactivation">
+          <h3>🔥 החייאת לידים</h3>
+          <div id="ccReactivation"></div>
         </div>
         <div class="cc-card glass">
           <h3>📅 היום ביומן</h3>
@@ -2094,7 +2114,10 @@ document.getElementById("searchInput").addEventListener("input", () => {
 document.getElementById("statusFilter").addEventListener("change", renderTable);
 document.getElementById("scoreFilter").addEventListener("change", renderTable);
 document.getElementById("categoryFilter").addEventListener("change", renderTable);
-document.getElementById("tenantFilter").addEventListener("change", renderTable);
+document.getElementById("tenantFilter").addEventListener("change", () => {
+  renderTable();
+  loadReactivationCard(); // הכמות הזמינה להחייאה תלוית-tenant - מתעדכנת עם הסינון
+});
 
 // ---- Unified Inbox: רשימת שיחות + חלון צ'אט קבוע (לא slide-over) ----
 let inboxLeads = [];
@@ -2488,6 +2511,7 @@ async function loadControlCenter() {
     ccFeedbackCache = [];
   }
   renderControlCenter();
+  loadReactivationCard();
 }
 
 function renderControlCenter() {
@@ -2531,6 +2555,62 @@ function renderControlCenter() {
   `).join("");
   document.getElementById("ccFeedback").innerHTML = feedbackHtml || '<div class="cc-empty">אין משוב עדיין</div>';
   document.querySelectorAll("#ccFeedback .cc-mini-item").forEach(btn => btn.addEventListener("click", openFeedbackPanel));
+}
+
+// כרטיס "🔥 החייאת לידים" במרכז הבקרה - בולט, גלוי בלי לפתוח פאנל: כמות הלידים
+// הקרים הזמינים כרגע להחייאה (לפי מרווח הימים המוגדר ל-tenant הנוכחי -
+// tenant_settings), או מצב חי אם קמפיין כבר רץ ברקע (אותה טבלת reactivation_batches
+// שהפאנל עצמו עוקב אחריה - "מחובר לקוד הקיים", לא מנגנון מקביל). "הפעל קמפיין"/
+// "צפה בהתקדמות" פותחים את אותו פאנל החייאה קיים - שם נשארת חובת התצוגה-המקדימה
+// לפני שליחה בפועל (מדיניות הבטיחות ב-CLAUDE.md) - הכרטיס הזה לא עוקף אותה.
+let ccReactivationPollTimer = null;
+
+async function loadReactivationCard() {
+  const tenantId = reactivateTenantId();
+  try {
+    const batchesRes = await fetch(`/api/reactivate/batches?tenant_id=${encodeURIComponent(tenantId)}`);
+    const batches = batchesRes.ok ? await batchesRes.json() : [];
+    if (batches[0] && batches[0].status === "running") {
+      renderReactivationCardRunning(batches[0]);
+      if (!ccReactivationPollTimer) {
+        ccReactivationPollTimer = setTimeout(() => { ccReactivationPollTimer = null; loadReactivationCard(); }, 4000);
+      }
+      return;
+    }
+  } catch (err) { /* נופל לתצוגת הכמות הזמינה למטה */ }
+
+  try {
+    const res = await fetch(`/api/reactivate/eligible-count?tenant_id=${encodeURIComponent(tenantId)}`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    renderReactivationCardIdle(await res.json());
+  } catch (err) {
+    document.getElementById("ccReactivation").innerHTML = '<div class="cc-empty">שגיאה בטעינה</div>';
+  }
+}
+
+function openReactivationCardTarget() {
+  document.getElementById("reactivateBtn").click();
+}
+
+function renderReactivationCardIdle(data) {
+  document.getElementById("ccReactivation").innerHTML = `
+    <div class="cc-reactivation-count">${data.eligible_count}</div>
+    <div class="cc-reactivation-label">לידים קרים זמינים להחייאה</div>
+    <div class="cc-reactivation-sub">לא נוצר קשר מעל ${data.days} ימים · tenant "${escapeHtml(data.tenant_id)}"</div>
+    <button type="button" class="primary cc-reactivation-btn" id="ccReactivationBtn">🔥 הפעל קמפיין</button>
+  `;
+  document.getElementById("ccReactivationBtn").addEventListener("click", openReactivationCardTarget);
+}
+
+function renderReactivationCardRunning(batch) {
+  const done = batch.sent_count + batch.simulated_count + batch.error_count;
+  document.getElementById("ccReactivation").innerHTML = `
+    <div class="cc-reactivation-count running">${done}/${batch.total_leads}</div>
+    <div class="cc-reactivation-label">⏳ קמפיין רץ ברקע...</div>
+    <div class="cc-reactivation-sub">${batch.sent_count} נשלחו · ${batch.simulated_count} סימולציה · ${batch.error_count} נכשלו</div>
+    <button type="button" class="cc-reactivation-btn" id="ccReactivationBtn">👁️ צפה בהתקדמות</button>
+  `;
+  document.getElementById("ccReactivationBtn").addEventListener("click", openReactivationCardTarget);
 }
 
 document.getElementById("ccTasksMore").addEventListener("click", openCalendarPanel);
@@ -2676,6 +2756,7 @@ document.getElementById("reactivateSaveDaysBtn").addEventListener("click", async
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
     hint.textContent = `נשמר! מעכשיו ברירת המחדל עבור "${tenantId}" היא ${days} ימים`;
+    loadReactivationCard(); // הכמות הזמינה בכרטיס מרכז הבקרה תלויה בסף הזה
   } catch (err) {
     hint.textContent = "שמירה נכשלה: " + err.message;
   }
@@ -2725,6 +2806,7 @@ document.getElementById("reactivateSendBtn").addEventListener("click", async () 
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
     pollReactivateBatch(data.batch_id);
+    loadReactivationCard(); // הכרטיס במרכז הבקרה יעבור מיד למצב "רץ ברקע" - לא מחכה ל-loadControlCenter הבא
   } catch (err) {
     document.getElementById("reactivateBody").insertAdjacentHTML(
       "afterbegin", '<div class="error">שגיאה בשליחה: ' + escapeHtml(err.message) + "</div>"

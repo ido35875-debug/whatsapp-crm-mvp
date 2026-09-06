@@ -610,6 +610,20 @@ def api_get_reactivate_batches():
     return jsonify(db.get_reactivation_batches(tenant_id=tenant_id))
 
 
+@app.route("/api/reactivate/eligible-count")
+def api_reactivate_eligible_count():
+    """כמות הלידים הקרים הזמינים כרגע להחייאה, לפי מרווח הימים המוגדר ל-tenant
+    הזה (tenant_settings) - לכרטיס "🔥 החייאת לידים" בולט במרכז הבקרה בדשבורד.
+    **בכוונה לא קורא ל-run_reactivation_campaign/generate_outreach_message** -
+    זה היה מייצר הודעת Claude אמיתית לכל ליד קר רק כדי להציג מספר, על כל טעינת
+    דשבורד; get_cold_leads לבדה זולה (בדיקת סטטוס/תאריך בלבד, בלי קריאת AI)."""
+    tenant_id = request.args.get("tenant_id") or DEFAULT_TENANT_ID
+    days = tenant_settings.get_reactivation_days(tenant_id)
+    contacts = reactivate.load_contacts()
+    cold_leads = reactivate.get_cold_leads(contacts, tenant_id=tenant_id, days=days)
+    return jsonify({"tenant_id": tenant_id, "days": days, "eligible_count": len(cold_leads)})
+
+
 @app.route("/api/tenant-settings")
 def api_get_tenant_settings():
     """הגדרות פר-tenant (כרגע רק reactivation_days) - קריאה בלבד, לשימוש פאנל
