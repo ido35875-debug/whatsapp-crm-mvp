@@ -50,6 +50,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from openpyxl import load_workbook
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import Dial, VoiceResponse
+from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
@@ -141,6 +142,13 @@ def _verify_twilio_request(req) -> bool:
 
 @app.errorhandler(Exception)
 def handle_uncaught_exception(exc):
+    # חריגות HTTP רגילות (404/405 וכו') הן זרימה תקינה - למשל הדפדפן מבקש
+    # /favicon.ico שלא קיים, או קליינט פוגע בנתיב שגוי. אלו לא "שגיאה לא מטופלת"
+    # ולא אמורות להיראות ב-ERROR log/traceback (זה בדיוק מה שהופך את הלוג ללא-
+    # שימושי לאיתור באגים אמיתיים) ולא אמורות להפוך ל-500 - מוחזרות כמו שהן,
+    # עם קוד הסטטוס וההודעה האמיתיים שלהן.
+    if isinstance(exc, HTTPException):
+        return jsonify({"error": exc.description}), exc.code
     logger.error("שגיאה לא מטופלת בבקשה ל-%s: %s", request.path, exc, exc_info=True)
     return jsonify({"error": "שגיאת שרת פנימית"}), 500
 
