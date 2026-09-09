@@ -392,6 +392,43 @@ def save_call_notes_and_summary(call_id: int, notes: str, summary: str) -> dict 
         conn.close()
 
 
+def update_call(call_id: int, status: str | None = None, notes: str | None = None,
+                 summary: str | None = None) -> dict | None:
+    """עדכון ידני של שורת שיחה קיימת - status/notes/summary כל אחד בנפרד (None =
+    השאר ללא שינוי), לשימוש POST /api/calls/<id>/update. בניגוד ל-
+    save_call_notes_and_summary (שתמיד קובע notes+summary יחד, כחלק מזרימת
+    התקציר האוטומטי המקורית ע"י Claude) - זו עריכה ידנית ישירה, שדה-שדה.
+    **בכוונה לא נוגע ב-messages/customers.json history** - אלו לוג היסטורי
+    בלתי-ניתן-לשינוי (append-only) בכל שאר המערכת; העריכה כאן מתקנת רק את
+    רשומת ה-calls עצמה (מקור האמת לפרטי השיחה בפני עצמה), לא "מזייפת" תיקון
+    רטרואקטיבי של מה שכבר הוצג/נשלח בצ'אט בזמנו."""
+    fields, values = [], []
+    if status is not None:
+        fields.append("status = ?")
+        values.append(status)
+    if notes is not None:
+        fields.append("notes = ?")
+        values.append(notes)
+    if summary is not None:
+        fields.append("summary = ?")
+        values.append(summary)
+    if not fields:
+        return get_call(call_id)
+    fields.append("updated_at = ?")
+    values.append(datetime.now(timezone.utc).isoformat())
+    values.append(call_id)
+
+    conn = _get_connection()
+    try:
+        conn.execute(f"UPDATE calls SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM calls WHERE id = ?", (call_id,)).fetchone()
+        return dict(row) | {"simulated": bool(row["simulated"])} if row else None
+    finally:
+        conn.close()
+
+
 def get_calls(phone: str, tenant_id: str = "default") -> list[dict]:
     """כל השיחות של ליד, החדשה ביותר קודם - לשימוש GET /api/calls (יומן שיחות מיני)."""
     conn = _get_connection()

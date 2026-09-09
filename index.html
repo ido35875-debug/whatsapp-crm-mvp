@@ -595,6 +595,21 @@
   .task-row-actions button { font-size: 12px; padding: 4px 8px; }
   .feedback-row-desc { white-space: pre-wrap; line-height: 1.4; }
   .feedback-row-type { font-size: 12px; color: var(--text-muted); }
+
+  /* היסטוריית שיחות פר-ליד (📋) - כרטיס גבוה (לא שורה אופקית כמו task-row, כי
+     יש כאן טקסט ארוך - הערות+תקציר), עם מצב עריכה שמחליף את התצוגה הרגילה */
+  .call-history-row {
+    border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+    margin-bottom: 10px; font-size: 13px;
+  }
+  .call-history-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .call-history-status { font-weight: 700; }
+  .call-history-time { font-size: 11.5px; color: var(--text-muted); }
+  .call-history-field-label { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+  .call-history-field-value { white-space: pre-wrap; line-height: 1.4; }
+  .call-history-edit-btn { font-size: 12px; padding: 4px 8px; }
+  .call-history-edit-form input, .call-history-edit-form textarea { margin-top: 4px; }
+  .call-history-edit-actions { display: flex; gap: 6px; margin-top: 10px; }
   select.feedback-status-select {
     font-size: 12px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border);
     background: var(--surface-3); color: var(--text-secondary);
@@ -795,6 +810,7 @@
           <div id="inboxChatPropertyWrap" class="panel-property-wrap"></div>
           <button type="button" class="call-btn" id="inboxCallBtn">📞 שיחה</button>
           <button type="button" class="call-btn" id="inboxTasksBtn">📅 משימות</button>
+          <button type="button" class="call-btn" id="inboxCallHistoryBtn">📋 היסטוריית שיחות</button>
         </div>
         <div class="inbox-chat-body" id="inboxChatBody">
           <div class="inbox-chat-empty muted">בחר שיחה מהרשימה כדי להתחיל</div>
@@ -825,6 +841,7 @@
       <div id="panelPropertyWrap" class="panel-property-wrap"></div>
       <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
       <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
+      <button type="button" class="call-btn" id="panelCallHistoryBtn">📋 היסטוריית שיחות</button>
     </div>
     <button class="panel-close" id="panelClose" aria-label="סגור">✕</button>
   </div>
@@ -858,6 +875,17 @@
     <button class="panel-close" id="tasksPanelClose" aria-label="סגור">✕</button>
   </div>
   <div class="panel-body" id="tasksPanelBody"></div>
+</aside>
+
+<aside class="panel glass" id="callHistoryPanel">
+  <div class="panel-header">
+    <div>
+      <h2 id="callHistoryPanelName">היסטוריית שיחות</h2>
+      <p id="callHistoryPanelSub"></p>
+    </div>
+    <button class="panel-close" id="callHistoryPanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body" id="callHistoryPanelBody"></div>
 </aside>
 
 <aside class="panel glass" id="calendarPanel">
@@ -1711,7 +1739,7 @@ function stopDialQueue() {
 // פאנלים נוספים (שיחה/משימות/יומן/משוב) נפתחים מעל #panel/#inboxView באותו overlay
 // המשותף - כשסוגרים אחד מהם, מסירים את ה-overlay רק אם אף פאנל אחר לא עדיין open
 // (למשל #panel, אם הפאנל השני נפתח מעליו ולא מה-Inbox).
-const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "calendarPanel", "feedbackPanel", "addLeadPanel", "editLeadPanel", "promptsPanel"];
+const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "callHistoryPanel", "calendarPanel", "feedbackPanel", "addLeadPanel", "editLeadPanel", "promptsPanel"];
 function closeSubPanel(id) {
   document.getElementById(id).classList.remove("open");
   const anyOpen = OVERLAY_PANEL_IDS.some(pid => document.getElementById(pid).classList.contains("open"));
@@ -1842,6 +1870,138 @@ document.getElementById("tasksPanelBody").addEventListener("click", async (e) =>
     await setTaskStatus(row.dataset.taskId, "cancelled");
     loadTasksPanel();
     loadControlCenter();
+  }
+});
+
+// ---- היסטוריית שיחות פר-ליד (📋) - עריכה ידנית של status/notes/summary לשיחה
+// קיימת. אותו מקור נתונים (GET /api/calls) שכבר קיים מ-Click-to-Call, אבל עד
+// עכשיו לא היה לו צרכן ב-UI בכלל - שיחות הופיעו רק כבועות בצ'אט (מ-messages,
+// שיקוף חד-פעמי בזמן היצירה). **העריכה כאן משנה רק את רשומת calls עצמה - לא
+// את הבועה/ה-history שכבר נוצרו** (ראו db.update_call) - זה עקבי עם "היסטוריה
+// היא לוג append-only" בכל שאר המערכת; מי שרוצה לראות/לתקן את הפרטים המדויקים
+// של שיחה מסוימת פותח את הפאנל הזה, לא "עורך את העבר" בצ'אט עצמו.
+let activeCallHistoryLead = null; // { phone, tenantId, name }
+let callHistoryCache = new Map(); // call_id -> call object גולמי מהשרת (נמנע פירסור טקסט שכבר עוצב ל-DOM)
+
+function callHistoryTimeLabel(iso) {
+  return new Date(iso).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
+}
+
+function renderCallHistoryRow(call) {
+  return `
+    <div class="call-history-row" data-call-id="${call.id}">
+      <div class="call-history-view">
+        <div class="call-history-head">
+          <span class="call-history-status">📞 ${escapeHtml(call.status)}${call.simulated ? " · 🧪 סימולציה" : ""}</span>
+          <span class="call-history-time">${escapeHtml(callHistoryTimeLabel(call.created_at))}</span>
+        </div>
+        <div class="call-history-field-label">פירוט/תזכורת השיחה</div>
+        <div class="call-history-field-value muted">${call.notes ? escapeHtml(call.notes) : "—"}</div>
+        <div class="call-history-field-label">סיכום השיחה</div>
+        <div class="call-history-field-value">${call.summary ? escapeHtml(call.summary) : "—"}</div>
+        <div class="call-history-edit-actions">
+          <button type="button" class="call-history-edit-btn">✏️ ערוך</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadCallHistoryPanel() {
+  const body = document.getElementById("callHistoryPanelBody");
+  body.innerHTML = '<div class="loading">טוען היסטוריית שיחות...</div>';
+  try {
+    const { phone, tenantId } = activeCallHistoryLead;
+    const res = await fetch(`/api/calls?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const calls = await res.json();
+    callHistoryCache = new Map(calls.map(c => [String(c.id), c]));
+    body.innerHTML = calls.length
+      ? calls.map(renderCallHistoryRow).join("")
+      : '<div class="empty">אין עדיין שיחות מתועדות לליד הזה</div>';
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה בטעינת היסטוריית שיחות: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function openCallHistoryPanel(phone, tenantId, name) {
+  activeCallHistoryLead = { phone, tenantId, name };
+  document.getElementById("callHistoryPanelName").textContent = "📋 " + name;
+  document.getElementById("callHistoryPanelSub").textContent = phone + " · " + tenantId;
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("callHistoryPanel").classList.add("open");
+  loadCallHistoryPanel();
+}
+
+function closeCallHistoryPanel() {
+  closeSubPanel("callHistoryPanel");
+  activeCallHistoryLead = null;
+}
+
+document.getElementById("panelCallHistoryBtn").addEventListener("click", () => {
+  const lead = panelChat.currentLead;
+  if (lead) openCallHistoryPanel(lead.phone, lead.tenantId, document.getElementById("panelName").textContent);
+});
+document.getElementById("inboxCallHistoryBtn").addEventListener("click", () => {
+  const lead = inboxChat.currentLead;
+  if (lead) openCallHistoryPanel(lead.phone, lead.tenantId, document.getElementById("inboxChatName").textContent);
+});
+document.getElementById("callHistoryPanelClose").addEventListener("click", closeCallHistoryPanel);
+
+// עריכה: מחליף את .call-history-view בטופס inline (לא מודאל נפרד - השיחה
+// הספציפית כבר בפאנל ייעודי, אין צורך בעוד שכבה) - שמירה/ביטול מרעננים חזרה
+// לתצוגה הרגילה מה-DB, לא רק מסתירים את הטופס (מוודא שהתצוגה תמיד תואמת שרת)
+document.getElementById("callHistoryPanelBody").addEventListener("click", async (e) => {
+  const row = e.target.closest(".call-history-row");
+  if (!row) return;
+  const callId = row.dataset.callId;
+
+  if (e.target.classList.contains("call-history-edit-btn")) {
+    const call = callHistoryCache.get(callId);
+    if (!call) return;
+    const view = row.querySelector(".call-history-view");
+    view.insertAdjacentHTML("afterend", `
+      <form class="call-history-edit-form">
+        <label class="call-history-field-label">סטטוס</label>
+        <input type="text" class="ch-edit-status" value="${escapeHtml(call.status || "")}">
+        <label class="call-history-field-label">פירוט/תזכורת השיחה</label>
+        <textarea class="ch-edit-notes">${escapeHtml(call.notes || "")}</textarea>
+        <label class="call-history-field-label">סיכום השיחה</label>
+        <textarea class="ch-edit-summary">${escapeHtml(call.summary || "")}</textarea>
+        <div class="call-history-edit-actions">
+          <button type="submit" class="primary">💾 שמור</button>
+          <button type="button" class="call-history-cancel-btn">ביטול</button>
+        </div>
+      </form>
+    `);
+    view.style.display = "none";
+  } else if (e.target.classList.contains("call-history-cancel-btn")) {
+    row.querySelector(".call-history-edit-form").remove();
+    row.querySelector(".call-history-view").style.display = "";
+  }
+});
+
+document.getElementById("callHistoryPanelBody").addEventListener("submit", async (e) => {
+  const form = e.target.closest(".call-history-edit-form");
+  if (!form) return;
+  e.preventDefault();
+  const row = form.closest(".call-history-row");
+  const callId = row.dataset.callId;
+  const payload = {
+    status: form.querySelector(".ch-edit-status").value.trim() || null,
+    notes: form.querySelector(".ch-edit-notes").value.trim(),
+    summary: form.querySelector(".ch-edit-summary").value.trim(),
+  };
+  try {
+    const res = await fetch(`/api/calls/${callId}/update`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    loadCallHistoryPanel();
+  } catch (err) {
+    alert("עדכון השיחה נכשל: " + err.message);
   }
 });
 

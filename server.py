@@ -781,6 +781,26 @@ def api_call_notes(call_id):
     return jsonify({"ok": True, "call": updated_call, "summary": summary})
 
 
+@app.route("/api/calls/<int:call_id>/update", methods=["POST"])
+def api_call_update(call_id):
+    """עריכה ידנית של שיחה קיימת - status/notes/summary, כל שדה אופציונלי בנפרד
+    (רק מה שסופק בבקשה מתעדכן, ראו db.update_call). **לא** משוקף להיסטוריית
+    הצ'אט (messages/customers.json) - זו תיקון לרשומת השיחה עצמה (מקור האמת
+    לפרטי השיחה), לא לתמלול שכבר הוצג/נשלח בזמנו - ראו התיעוד ב-db.update_call."""
+    if not db.get_call(call_id):
+        return jsonify({"error": "שיחה לא נמצאה"}), 404
+
+    data = request.get_json(silent=True) or {}
+    status = data.get("status")
+    notes = data.get("notes")
+    summary = data.get("summary")
+    if status is None and notes is None and summary is None:
+        return jsonify({"error": "לא סופק שדה לעדכון (status/notes/summary)"}), 400
+
+    updated = db.update_call(call_id, status=status, notes=notes, summary=summary)
+    return jsonify({"ok": True, "call": updated})
+
+
 @app.route("/api/calls/<int:call_id>/transcribe", methods=["POST"])
 def api_call_transcribe(call_id):
     """מתמלל קובץ אודיו שהועלה (transcription.transcribe_audio, OpenAI Whisper API)
