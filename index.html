@@ -338,6 +338,10 @@
   tbody tr:last-child td { border-bottom: none; }
   /* hover שורה - הילת accent שקופה-חלקית, לא מילוי אפור שטוח - מתאים לשפת ה-glass הכללית */
   tbody tr:hover td { background: rgba(205,164,94,0.07); }
+  /* שורה שלמה לחיצה (פותחת את פאנל ה-Timeline) - עכבר-יד רק על השורה, לא על
+     שדות/כפתורים פנימיים שממילא לא מפעילים את הפתיחה (ראו wireRowClickToOpen) */
+  tr.lead-row { cursor: pointer; }
+  tr.lead-row input, tr.lead-row select, tr.lead-row button { cursor: auto; }
   td.name { font-weight: 600; }
   td.muted, .muted { color: var(--text-muted); }
   td.phone { font-variant-numeric: tabular-nums; direction: ltr; text-align: right; }
@@ -1350,7 +1354,7 @@ function renderTable() {
     const key = `${tenantId}::${lead.phone}`;
     const secondary = [lead.business_name, lead.location].filter(Boolean).join(" · ");
     return `
-      <tr>
+      <tr class="lead-row" data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}" data-name="${escapeHtml(lead.customer_name || lead.phone)}">
         <td><input type="checkbox" class="row-checkbox" data-key="${escapeHtml(key)}" ${selectedLeads.has(key) ? "checked" : ""}></td>
         <td class="serial-cell">${i + 1}</td>
         <td>
@@ -1400,6 +1404,19 @@ function renderTable() {
   });
   wrap.querySelectorAll(".edit-lead-btn").forEach(btn => {
     btn.addEventListener("click", () => openEditLeadPanel(btn.dataset.phone, btn.dataset.tenant));
+  });
+
+  // שורה שלמה לחיצה פותחת את פאנל ה-Timeline (Contact 360), לא רק כפתור
+  // "💬 היסטוריה" הייעודי - נוחות נוספת, לא מחליפה את הכפתור (עדיין עובד בדיוק
+  // כמו קודם). e.target.closest(...) מדלג על אלמנטים אינטראקטיביים בתוך השורה
+  // (checkbox/select/input/button/קישור) - הם כבר מטפלים בעצמם בקליק שלהם (או
+  // בכלל לא אמורים לפתוח כלום, כמו ה-checkbox), ולא רוצים "לגנוב" את הקליק מהם
+  // או לפתוח את הפאנל כתופעת-לוואי לא-רצויה כשמשנים סטטוס/מקלידים קטגוריה.
+  wrap.querySelectorAll(".lead-row").forEach(tr => {
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest("input, select, button, a")) return;
+      openHistory(tr.dataset.phone, tr.dataset.tenant, tr.dataset.name);
+    });
   });
 
   wrap.querySelectorAll("tbody .row-checkbox").forEach(cb => {
