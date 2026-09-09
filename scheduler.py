@@ -25,13 +25,28 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # מפורש - לא ת�
 
 import db
 import reactivate
-from extract import DEFAULT_TENANT_ID, _customer_key, last_contact_at, load_customers
+from extract import (
+    DEFAULT_TENANT_ID,
+    _customer_key,
+    generate_followup_message,
+    last_contact_at,
+    load_customers,
+    log_manual_reply,
+)
 from paths import DATA_DIR
+from whatsapp_send import is_trial_restriction, send_whatsapp_message
 
 CHAT_HISTORY_FILE = DATA_DIR / "chat_history.txt"
 
 SCAN_INTERVAL_SECONDS = int(os.environ.get("SCHEDULER_INTERVAL_SECONDS", "3600"))
 AUTO_SEND = os.environ.get("SCHEDULER_AUTO_SEND", "false").strip().lower() == "true"
+
+# פולו-אפ אוטומטי ללידים שסומנו "נוצר קשר" ולא ענו - טריגר אוטומציה **נפרד**
+# מ-AUTO_SEND (החייאת לידים קרים) - אותה מדיניות בטיחות בדיוק (dry-run כברירת
+# מחדל, שליחה אמיתית דורשת env var מפורש), אבל דגל משלו כי אלו שתי אוטומציות
+# עצמאיות - אין סיבה שהדלקת אחת תפעיל את השנייה בטעות.
+FOLLOWUP_HOURS = int(os.environ.get("FOLLOWUP_HOURS", "24"))
+AUTO_FOLLOWUP = os.environ.get("SCHEDULER_AUTO_FOLLOWUP", "false").strip().lower() == "true"
 
 # ורטיקל -> כמה ימים בלי שום קשר (נכנס/יוצא) בהיסטוריית הכרטיס, לפני שליד קר נחשב
 # "בשל" להחייאה חוזרת. שלושת הענפים ממסמך האפיון (חזון המוצר ב-CLAUDE.md): איקומרס -
@@ -111,16 +126,95 @@ def run_scan(tenant_id: str = DEFAULT_TENANT_ID) -> list[dict]:
     return results
 
 
+def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
+    """סורק customers.json לחיפוש לידים שסומנו "נוצר קשר" (lead_status=="contacted")
+    ולא קיבלו תגובה נכנסת תוך FOLLOWUP_HOURS שעות מאז status_changed_at (ראו
+    extract.update_lead_status) - ומייצר/שולח הודעת פולו-אפ (extract.
+    generate_followup_message). tenant_id=None (ברירת מחדל) סורק את כל ה-tenants -
+    בניגוד ל-run_scan, שדורש tenant_id ספציפי (ההחייאה תמיד רצה per-tenant דרך
+    contacts.csv); כאן אין קובץ contacts.csv מעורב בכלל, רק customers.json שכבר
+    כולל tenant_id בכל מפתח, אז אין סיבה להגביל לtenant יחיד כברירת מחדל.
+
+    **שליחה אמיתית רק אם AUTO_FOLLOWUP=true** (SCHEDULER_AUTO_FOLLOWUP ב-.env) -
+    בדיוק כמו AUTO_SEND למעלה: ברירת המחדל היא dry-run (מייצר את ההודעה, רושם
+    בלוג, לא שולח כלום). כשל Trial (whatsapp_send.is_trial_restriction) נתפס
+    ומטופל בדיוק כמו בכל שאר נקודות השליחה בפרויקט - נרשם כ-simulated, לא
+    כשגיאה אמיתית."""
+    now = datetime.now(timezone.utc)
+    customers = load_customers()
+    results = []
+
+    for key, card in customers.items():
+        card_tenant, _, phone = key.partition("::")
+        if tenant_id and card_tenant != tenant_id:
+            continue
+        if card.get("lead_status") != "contacted":
+            continue
+        changed_at_str = card.get("status_changed_at")
+        if not changed_at_str:
+            continue  # כרטיס ישן מלפני שהשדה נוסף - אין בסיס לחשב ממנו טיימר
+        try:
+            changed_at = datetime.fromisoformat(changed_at_str)
+        except ValueError:
+            continue
+        if (now - changed_at).total_seconds() < FOLLOWUP_HOURS * 3600:
+            continue  # עדיין בתוך חלון ההמתנה
+
+        history = card.get("history") or []
+        if any(h.get("direction") == "in" and h.get("timestamp", "") > changed_at_str for h in history):
+            continue  # כבר ענה מאז - אין צורך בפולו-אפ
+        if any(h.get("channel") == "followup" and h.get("timestamp", "") > changed_at_str for h in history):
+            continue  # כבר נשלח פולו-אפ פעם אחת מאז הסימון הזה - לא שולחים שוב בכל מחזור סריקה
+
+        message = generate_followup_message(card)
+        entry = {
+            "phone": phone, "tenant_id": card_tenant, "name": card.get("customer_name"),
+            "message": message, "sent": False, "simulated": False, "error": None,
+        }
+
+        if AUTO_FOLLOWUP:
+            try:
+                entry["sid"] = send_whatsapp_message(phone, message)
+                entry["sent"] = True
+            except Exception as exc:
+                if is_trial_restriction(exc):
+                    entry["simulated"] = True
+                else:
+                    entry["error"] = str(exc)
+
+            if entry["sent"] or entry["simulated"]:
+                # source_channel="followup" (לא "whatsapp") - כדי שה-בדיקה למעלה
+                # תוכל להבדיל פולו-אפ אוטומטי מהודעה רגילה, ולא לשלוח כפול
+                log_manual_reply(phone, message, tenant_id=card_tenant, source_channel="followup", simulated=entry["simulated"])
+                db.log_message(phone, message, direction="out", tenant_id=card_tenant, channel="followup", simulated=entry["simulated"])
+            status_label = "נשלח בפועל" if entry["sent"] else ("סימולציה (Trial)" if entry["simulated"] else f"נכשל: {entry['error']}")
+        else:
+            status_label = "dry-run - לא נשלח"
+
+        _log(f"פולו-אפ ({status_label}): {entry['name'] or phone} ({phone}, tenant={card_tenant})")
+        results.append(entry)
+
+    if not results:
+        _log(f"בדיקת פולו-אפים: אין לידים שממתינים מעל {FOLLOWUP_HOURS} שעות בלי תשובה.")
+    return results
+
+
 def _loop() -> None:
     _log(
         f"מנוע התזמון הופעל. מרווח סריקה: {SCAN_INTERVAL_SECONDS} שניות. "
-        f"auto_send={AUTO_SEND}" + ("" if AUTO_SEND else " (dry-run בלבד - לא שולח הודעות אמיתיות)") + "."
+        f"auto_send={AUTO_SEND}" + ("" if AUTO_SEND else " (dry-run בלבד - לא שולח הודעות אמיתיות)") +
+        f" | auto_followup={AUTO_FOLLOWUP} (סף {FOLLOWUP_HOURS} שעות)" +
+        ("" if AUTO_FOLLOWUP else " (dry-run בלבד)") + "."
     )
     while not _stop_event.is_set():
         try:
             run_scan()
         except Exception as exc:
             _log(f"שגיאה במחזור סריקה: {exc}")
+        try:
+            check_pending_followups()
+        except Exception as exc:
+            _log(f"שגיאה בבדיקת פולו-אפים: {exc}")
         _stop_event.wait(SCAN_INTERVAL_SECONDS)
     _log("מנוע התזמון נעצר.")
 
@@ -146,4 +240,6 @@ def status() -> dict:
         "auto_send": AUTO_SEND,
         "interval_seconds": SCAN_INTERVAL_SECONDS,
         "last_run_at": _last_run_at,
+        "auto_followup": AUTO_FOLLOWUP,
+        "followup_hours": FOLLOWUP_HOURS,
     }

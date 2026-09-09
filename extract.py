@@ -248,6 +248,113 @@ def generate_call_summary(notes: str, card: dict) -> str:
     return next(block.text for block in response.content if block.type == "text").strip()
 
 
+# ---- AI Sales Copilot (בתוך פאנל ה-Timeline) - אותו דפוס בדיוק כמו generate_reply/
+# generate_call_summary למעלה: קבוע כברירת מחדל בקוד + prompts.get_prompt כמקור
+# אמת בזמן ריצה (עריכה חיה מ-"🤖 תבניות וסוכנים", בלי לגעת בקוד) ----
+
+OBJECTION_RESPONSE_PROMPT = """\
+אתה נציג מכירות מנוסה שעוזר לענות בצורה משכנעת אך לא לוחצת להודעה האחרונה שהתקבלה
+מלקוח פוטנציאלי בוואטסאפ (שיכולה להיות התנגדות, שאלה, או היסוס).
+פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}, מיקום - {location}.
+
+ההודעה האחרונה מהלקוח:
+"{last_message}"
+
+כתוב הצעת מענה קצרה בעברית (2-3 משפטים) שמתייחסת ישירות למה שהלקוח כתב, מפוגגת
+חשש/היסוס בעדינות (בלי להיות תוקפני או מתנצל יתר על המידה), ומזמינה להמשך שיחה.
+אל תמציא פרטים/מבצעים/הבטחות שלא ניתנו. החזר רק את טקסט ההודעה המוצעת, בלי מרכאות
+ובלי הסברים נוספים.
+"""
+
+
+def generate_objection_response(last_message: str, card: dict) -> str:
+    """מציע מענה מהיר להתנגדות/הודעה אחרונה מהלקוח - כפתור "💬 הצע מענה להתנגדות"
+    בפאנל ה-Timeline. לא שולח כלום בעצמו - רק מנסח הצעה שהנציג יכול להעתיק/לערוך
+    לפני שליחה בפועל דרך הקומפוזר הרגיל (POST /api/messages/send)."""
+    prompt_template = prompts.get_prompt("objection_response", OBJECTION_RESPONSE_PROMPT)
+    prompt = prompt_template.format(
+        last_message=last_message,
+        customer_name=card.get("customer_name") or "לא ידוע",
+        business_name=card.get("business_name") or "לא ידוע",
+        location=card.get("location") or "לא ידוע",
+    )
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=200,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return next(block.text for block in response.content if block.type == "text").strip()
+
+
+EXECUTIVE_SUMMARY_PROMPT = """\
+אתה עוזר שמסכם עבור מנהל מכירות עסוק את כל ההיסטוריה מול ליד מסוים, בקצרה וממוקד.
+פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}, מיקום - {location}.
+
+היסטוריית ההודעות/שיחות עם הליד (מהישנה לחדשה):
+{history_text}
+
+כתוב סיכום מנהלים בעברית בדיוק בפורמט הבא - שלושה בולטים (•), כל אחד משפט אחד קצר
+וממוקד: היכן עומד התהליך מול הליד, מה החשש/העניין המרכזי שעלה, ומה הצעד הבא המומלץ.
+אל תמציא פרטים שלא עלו בהיסטוריה בפועל. החזר רק את שלושת הבולטים, בלי כותרת ובלי
+הסברים נוספים.
+"""
+
+
+FOLLOWUP_PROMPT = """\
+אתה כותב הודעת מעקב (follow-up) קצרה וטבעית בעברית ללקוח שיצרתם איתו קשר
+לאחרונה (סומן "נוצר קשר"), אך הוא עדיין לא השיב.
+פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}.
+
+כתוב הודעת פולו-אפ קצרה (1-2 משפטים), עדינה ולא לחוצה, שמזכירה בעדינות שעדיין
+מחכים לתשובתו ומזמינה אותו להמשיך את השיחה כשנוח לו - שונה בטון מפנייה ראשונה
+ללקוח קר (זה לא "החייאה" - השיחה כבר התחילה). אל תמציא פרטים שלא ניתנו. החזר
+רק את טקסט ההודעה, בלי מרכאות ובלי הסברים נוספים.
+"""
+
+
+def generate_followup_message(card: dict) -> str:
+    """הודעת פולו-אפ אוטומטית ללידים שסומנו "נוצר קשר" ולא ענו תוך X שעות - ראו
+    scheduler.check_pending_followups. פרומפט נפרד מ-reactivate.generate_
+    outreach_message (החייאת לידים קרים) בכוונה - טון שונה: "עדיין מחכים לתשובה
+    משיחה שכבר התחילה", לא "פונים מחדש אחרי הפסקה ארוכה"."""
+    prompt_template = prompts.get_prompt("followup_message", FOLLOWUP_PROMPT)
+    prompt = prompt_template.format(
+        customer_name=card.get("customer_name") or "לא ידוע",
+        business_name=card.get("business_name") or "לא ידוע",
+    )
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=150,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return next(block.text for block in response.content if block.type == "text").strip()
+
+
+def generate_executive_summary(history_text: str, card: dict) -> str:
+    """סיכום מנהלים ב-3 בולטים של כל ההיסטוריה מול הליד - כפתור "📋 סיכום מנהלים"
+    בפאנל ה-Timeline. history_text: טקסט מרוכז של כל ההודעות/תקצירי שיחות (ראו
+    server.py - api_executive_summary, בונה מ-db.get_messages)."""
+    prompt_template = prompts.get_prompt("executive_summary", EXECUTIVE_SUMMARY_PROMPT)
+    prompt = prompt_template.format(
+        history_text=history_text or "(אין עדיין היסטוריה מתועדת)",
+        customer_name=card.get("customer_name") or "לא ידוע",
+        business_name=card.get("business_name") or "לא ידוע",
+        location=card.get("location") or "לא ידוע",
+    )
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=400,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return next(block.text for block in response.content if block.type == "text").strip()
+
+
 def process_message_with_reply(
     phone: str,
     message_text: str,
@@ -419,12 +526,18 @@ def update_lead_status(
 ) -> dict:
     """simulated=True: ה-note (אם יש) מסומן בהיסטוריה כסימולציה (ראו _append_history) -
     לשימוש כשחסימת Twilio Trial מנעה שליחה אמיתית (whatsapp_send.is_trial_restriction),
-    אבל עדיין רוצים לתעד את הכוונה ולעדכן סטטוס לצורך בדיקה (ראו reactivate.py)."""
+    אבל עדיין רוצים לתעד את הכוונה ולעדכן סטטוס לצורך בדיקה (ראו reactivate.py).
+    status_changed_at מתעדכן בכל קריאה (גם אם הסטטוס בפועל לא השתנה - "מתי עודכן
+    לאחרונה", לא "מתי השתנה בפעם הראשונה") - זה הבסיס לטיימר הפולו-אפ האוטומטי
+    (scheduler.check_pending_followups: "לא נוצר קשר תוך X שעות מאז שסומן 'נוצר
+    קשר'") - שדה חדש, תואם-לאחור: כרטיסים ישנים בלי השדה פשוט לא ייכנסו לטיימר
+    עד העדכון הבא שלהם."""
     customers = load_customers()
     key = _customer_key(tenant_id, phone)
     card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
     card.setdefault("source_channel", source_channel)
     card["lead_status"] = status
+    card["status_changed_at"] = datetime.now(timezone.utc).isoformat()
     for k, value in (extra or {}).items():
         if value:
             card[k] = value

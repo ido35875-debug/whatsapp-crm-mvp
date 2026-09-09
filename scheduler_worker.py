@@ -15,6 +15,7 @@ SCHEDULER_AUTO_SEND=true, זה אומר שליחה כפולה/משולשת של 
 הרצה: python scheduler_worker.py
 """
 
+import os
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -22,10 +23,18 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 import scheduler
 
 
+FOLLOWUP_INTERVAL_SECONDS = int(os.environ.get("FOLLOWUP_INTERVAL_SECONDS", "1800"))  # ברירת מחדל: כל חצי שעה
+
+
 def main() -> None:
     scheduler._log(
         f"clock process (APScheduler) הופעל - מרווח {scheduler.SCAN_INTERVAL_SECONDS} שניות, "
         f"auto_send={scheduler.AUTO_SEND}" + ("" if scheduler.AUTO_SEND else " (dry-run בלבד)") + "."
+    )
+    scheduler._log(
+        f"job נוסף: בדיקת פולו-אפים - מרווח {FOLLOWUP_INTERVAL_SECONDS} שניות, "
+        f"auto_followup={scheduler.AUTO_FOLLOWUP} (סף {scheduler.FOLLOWUP_HOURS} שעות)" +
+        ("" if scheduler.AUTO_FOLLOWUP else " (dry-run בלבד)") + "."
     )
 
     sched = BlockingScheduler(timezone="UTC")
@@ -36,6 +45,17 @@ def main() -> None:
         next_run_time=datetime.now(timezone.utc),  # סריקה ראשונה מיידית, כמו ה-thread הקודם
         id="reactivation_scan",
         max_instances=1,  # לא מריצים סריקה חדשה אם הקודמת עוד לא הסתיימה
+    )
+    # job שני, נפרד ועצמאי מסריקת ההחייאה למעלה - מרווח משלו (בדרך כלל קצר יותר,
+    # כי חלון הפולו-אפ עצמו נמדד בשעות, לא בימים כמו לידים קרים) - ראו
+    # scheduler.check_pending_followups לפרטי הלוגיקה והגנת הבטיחות (AUTO_FOLLOWUP).
+    sched.add_job(
+        scheduler.check_pending_followups,
+        trigger="interval",
+        seconds=FOLLOWUP_INTERVAL_SECONDS,
+        next_run_time=datetime.now(timezone.utc),
+        id="followup_check",
+        max_instances=1,
     )
 
     try:

@@ -44,6 +44,36 @@ def transcribe_audio(file_bytes: bytes, filename: str) -> str:
     return response.json()["text"].strip()
 
 
+def transcribe_audio_with_segments(file_bytes: bytes, filename: str) -> dict:
+    """כמו transcribe_audio, אבל מבקש מ-Whisper גם חותמות-זמן פר-משפט (segment) -
+    לנגן התמליל האינטראקטיבי (POST /api/calls/<id>/transcribe-recording): קליק על
+    משפט בתמליל קופץ לנקודת הזמן המתאימה בהקלטה. **תוספת, לא שינוי** ל-
+    transcribe_audio הקיים (שממשיך לשמש את זרימת ההכתבה הידנית לתוך תיבת ההערות -
+    שם אין צורך בחותמות זמן, טקסט רגיל מספיק) - אין נקודת קריאה קיימת שמשתנה.
+    מחזיר {"text": "<טקסט מלא>", "segments": [{"start": float, "end": float,
+    "text": str}, ...]}. מעלה RuntimeError/requests.HTTPError כמו transcribe_audio."""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("תמלול אוטומטי לא מוגדר: חסר OPENAI_API_KEY ב-.env")
+
+    response = requests.post(
+        WHISPER_API_URL,
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+        files={"file": (filename, file_bytes)},
+        data={
+            "model": "whisper-1", "language": "he",
+            "response_format": "verbose_json", "timestamp_granularities[]": "segment",
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    data = response.json()
+    segments = [
+        {"start": seg["start"], "end": seg["end"], "text": seg["text"].strip()}
+        for seg in data.get("segments", [])
+    ]
+    return {"text": data.get("text", "").strip(), "segments": segments}
+
+
 def download_twilio_media(media_url: str) -> bytes:
     """מוריד קובץ מדיה (הודעה קולית נכנסת וכו') מכתובת Twilio - כתובות מדיה של
     Twilio מוגנות ודורשות Basic Auth עם Account SID + Auth Token, בדיוק כמו כל

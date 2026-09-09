@@ -6,6 +6,7 @@
 משותפים" ב-CLAUDE.md). אין כאן כפילות לוגיקת עסקים - רק רישום.
 """
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -124,11 +125,19 @@ def _get_connection() -> sqlite3.Connection:
             notes TEXT,
             summary TEXT,
             simulated INTEGER NOT NULL DEFAULT 0,
+            transcript_segments TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
+    # מיגרציה קלה: calls שכבר קיימת (כמו ב-crm_data.db הנוכחי, לפני שנוסף נגן
+    # התמלול האינטראקטיבי) לא תקבל את העמודה החדשה מ-CREATE TABLE IF NOT EXISTS
+    # לבדו - צריך להוסיף אותה בנפרד אם היא עוד לא שם (אותו רעיון כמו _MIGRATIONS
+    # למעלה, שם ספציפית ל-messages).
+    existing_call_columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)")}
+    if "transcript_segments" not in existing_call_columns:
+        conn.execute("ALTER TABLE calls ADD COLUMN transcript_segments TEXT")
     conn.commit()
     return conn
 
@@ -375,6 +384,33 @@ def save_recording_url(call_sid: str, recording_url: str) -> None:
         conn.close()
 
 
+def _call_row_to_dict(row: sqlite3.Row) -> dict:
+    """ממיר שורת calls גולמית ל-dict - simulated ל-bool, transcript_segments (JSON
+    text, ראו save_transcript_segments) ל-list פייתוני (או None אם לא תומלל)."""
+    d = dict(row) | {"simulated": bool(row["simulated"])}
+    d["transcript_segments"] = json.loads(row["transcript_segments"]) if row["transcript_segments"] else None
+    return d
+
+
+def save_transcript_segments(call_id: int, segments: list[dict]) -> dict | None:
+    """שומר תמלול עם חותמות-זמן פר-משפט (ראו transcription.
+    transcribe_audio_with_segments) על שורת שיחה קיימת - לנגן התמליל האינטראקטיבי
+    (POST /api/calls/<id>/transcribe-recording). נפרד מ-save_call_notes_and_summary/
+    update_call - זה שדה טכני נוסף (JSON), לא הערות/תקציר טקסט חופשי."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calls SET transcript_segments = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(segments, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), call_id),
+        )
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM calls WHERE id = ?", (call_id,)).fetchone()
+        return _call_row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def save_call_notes_and_summary(call_id: int, notes: str, summary: str) -> dict | None:
     """שומר הערות חופשיות שהקליד הנציג + תקציר שנוצר ע"י Claude על שורת שיחה קיימת
     (לפי id, לא call_sid). מחזיר את השורה המעודכנת המלאה."""
@@ -387,7 +423,7 @@ def save_call_notes_and_summary(call_id: int, notes: str, summary: str) -> dict 
         conn.commit()
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM calls WHERE id = ?", (call_id,)).fetchone()
-        return dict(row) | {"simulated": bool(row["simulated"])} if row else None
+        return _call_row_to_dict(row) if row else None
     finally:
         conn.close()
 
@@ -424,7 +460,7 @@ def update_call(call_id: int, status: str | None = None, notes: str | None = Non
         conn.commit()
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM calls WHERE id = ?", (call_id,)).fetchone()
-        return dict(row) | {"simulated": bool(row["simulated"])} if row else None
+        return _call_row_to_dict(row) if row else None
     finally:
         conn.close()
 
@@ -438,7 +474,7 @@ def get_calls(phone: str, tenant_id: str = "default") -> list[dict]:
             "SELECT * FROM calls WHERE phone = ? AND tenant_id = ? ORDER BY created_at DESC",
             (phone, tenant_id),
         ).fetchall()
-        return [dict(row) | {"simulated": bool(row["simulated"])} for row in rows]
+        return [_call_row_to_dict(row) for row in rows]
     finally:
         conn.close()
 
@@ -450,7 +486,7 @@ def get_call(call_id: int) -> dict | None:
     try:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM calls WHERE id = ?", (call_id,)).fetchone()
-        return dict(row) | {"simulated": bool(row["simulated"])} if row else None
+        return _call_row_to_dict(row) if row else None
     finally:
         conn.close()
 

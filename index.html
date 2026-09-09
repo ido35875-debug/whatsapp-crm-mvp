@@ -461,6 +461,16 @@
   .msg-row.out .bubble-wrap { align-items: flex-start; }
   .msg-row.in .bubble-wrap { align-items: flex-end; }
 
+  /* הערה פנימית (channel="note") - כרטיס ממורכז ומעומעם, לא בועת צ'אט שמאל/ימין -
+     מבדיל אותה חזותית ומיידית מהודעה שהלקוח באמת ראה (וואטסאפ/תקציר שיחה) */
+  .msg-row.note { justify-content: center; }
+  .msg-row.note .bubble-wrap { align-items: center; max-width: 90%; }
+  .bubble.note {
+    background: var(--surface-3); color: var(--text-secondary);
+    border: 1px dashed var(--border); font-style: italic;
+  }
+  .msg-meta.note { color: var(--text-muted); justify-content: center; }
+
   .reactivate-actions {
     border-top: 1px solid var(--gridline); padding: 12px 16px; flex-shrink: 0;
     display: flex; gap: 8px;
@@ -520,6 +530,30 @@
   }
   .composer-error.show { display: block; }
   .composer-error.warning { color: var(--status-warning); background: var(--status-warning-soft); }
+
+  /* טופס הוספת הערה פנימית - קטן ומעומעם בכוונה, כדי שיהיה ברור חזותית שהוא
+     נפרד לגמרי מהקומפוזר הראשי (שליחת הודעה אמיתית ללקוח) */
+  .note-form { display: flex; gap: 8px; margin-top: 8px; }
+  .note-form input {
+    flex: 1; font-family: inherit; font-size: 12.5px; padding: 7px 10px;
+    border-radius: 8px; border: 1px dashed var(--border); background: transparent;
+    color: var(--text-secondary);
+  }
+  .note-form input:focus { outline: none; border-color: var(--text-muted); }
+  .note-form button { flex-shrink: 0; font-size: 12.5px; padding: 7px 12px; }
+
+  /* AI Sales Copilot - שני כפתורים + כרטיס תוצאה שמופיע/נעלם, בין הפיד לקומפוזר */
+  .ai-copilot { border-top: 1px solid var(--gridline); padding: 10px 16px; flex-shrink: 0; }
+  .ai-copilot-buttons { display: flex; gap: 8px; }
+  .ai-copilot-buttons button { flex: 1; font-size: 12.5px; padding: 8px; }
+  .ai-copilot-buttons button:disabled { opacity: .6; cursor: default; }
+  .ai-copilot-result {
+    margin-top: 10px; padding: 12px 14px; border-radius: 10px;
+    background: var(--accent-soft); border: 1px solid var(--accent);
+    font-size: 13px; line-height: 1.5; white-space: pre-wrap;
+  }
+  .ai-copilot-result-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .ai-copilot-result-actions button { font-size: 12px; padding: 5px 10px; }
 
   /* Click-to-Call */
   .call-btn { font-size: 12.5px; padding: 6px 12px; }
@@ -610,6 +644,16 @@
   .call-history-edit-btn { font-size: 12px; padding: 4px 8px; }
   .call-history-edit-form input, .call-history-edit-form textarea { margin-top: 4px; }
   .call-history-edit-actions { display: flex; gap: 6px; margin-top: 10px; }
+
+  /* נגן תמליל אינטראקטיבי - מוצג רק לשיחה עם הקלטה אמיתית (call.recording_url) */
+  .transcript-player { margin: 10px 0; padding: 10px; background: var(--surface-2); border-radius: 10px; }
+  .transcript-audio { width: 100%; height: 32px; }
+  .transcript-segments { margin-top: 8px; font-size: 12.5px; line-height: 1.9; }
+  .transcript-segment {
+    cursor: pointer; border-radius: 4px; padding: 1px 3px; transition: background .1s;
+  }
+  .transcript-segment:hover { background: var(--accent-soft); color: var(--accent); }
+  .transcript-transcribe-btn { margin-top: 8px; font-size: 12px; padding: 6px 10px; width: 100%; }
   select.feedback-status-select {
     font-size: 12px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border);
     background: var(--surface-3); color: var(--text-secondary);
@@ -656,6 +700,35 @@
     background: var(--surface-1); color: var(--text-secondary); font-size: 13.5px;
   }
   .view-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* תצוגת קנבן (Kanban) - עמודה לכל סטטוס, גרירה ושחרור בין עמודות */
+  .kanban-board { display: flex; gap: 16px; overflow-x: auto; padding-bottom: 16px; align-items: flex-start; }
+  .kanban-column {
+    flex: 0 0 290px; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 16px; box-shadow: var(--shadow); display: flex; flex-direction: column;
+    max-height: calc(100vh - 260px);
+  }
+  .kanban-column-header {
+    padding: 14px 16px; border-bottom: 1px solid var(--gridline);
+    display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 14px;
+  }
+  .kanban-column-count {
+    font-size: 12px; color: var(--text-muted); font-weight: 700;
+    background: var(--surface-3); border-radius: 999px; padding: 1px 9px;
+  }
+  .kanban-column-body { flex: 1; overflow-y: auto; padding: 10px; transition: background .15s; }
+  .kanban-column-body.drag-over { background: var(--accent-soft); }
+  .kanban-card {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px;
+    padding: 10px 12px; margin-bottom: 8px; cursor: grab; transition: box-shadow .15s, opacity .15s;
+  }
+  .kanban-card:hover { box-shadow: var(--shadow); }
+  .kanban-card:active { cursor: grabbing; }
+  .kanban-card.dragging { opacity: .35; }
+  .kanban-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .kanban-card-name { min-width: 0; }
+  .kanban-card-primary { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kanban-card-secondary { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .inbox-layout {
     display: flex; height: calc(100vh - 260px); min-height: 460px;
@@ -720,6 +793,7 @@
 
   <div class="view-toggle">
     <button type="button" id="tableViewBtn" class="view-tab active">📋 טבלה</button>
+    <button type="button" id="kanbanViewBtn" class="view-tab">🗂️ קנבן</button>
     <button type="button" id="inboxViewBtn" class="view-tab">💬 Inbox</button>
   </div>
 
@@ -811,9 +885,17 @@
           <button type="button" class="call-btn" id="inboxCallBtn">📞 שיחה</button>
           <button type="button" class="call-btn" id="inboxTasksBtn">📅 משימות</button>
           <button type="button" class="call-btn" id="inboxCallHistoryBtn">📋 היסטוריית שיחות</button>
+          <button type="button" class="call-btn" id="inboxQuickEditBtn">✏️ ערוך פרטים</button>
         </div>
         <div class="inbox-chat-body" id="inboxChatBody">
           <div class="inbox-chat-empty muted">בחר שיחה מהרשימה כדי להתחיל</div>
+        </div>
+        <div class="ai-copilot" id="inboxAiCopilotWrap" style="display:none;">
+          <div class="ai-copilot-buttons">
+            <button type="button" id="inboxObjectionBtn">💬 הצע מענה להתנגדות</button>
+            <button type="button" id="inboxExecSummaryBtn">📋 סיכום מנהלים</button>
+          </div>
+          <div class="ai-copilot-result" id="inboxAiCopilotResult" style="display:none;"></div>
         </div>
         <div class="composer" id="inboxComposerWrap" style="display:none;">
           <div class="composer-error" id="inboxComposerError"></div>
@@ -821,9 +903,17 @@
             <textarea id="inboxComposerInput" placeholder="כתוב הודעה..." rows="1" required></textarea>
             <button type="submit" class="primary" id="inboxComposerSend">שלח</button>
           </form>
+          <form id="inboxNoteForm" class="note-form">
+            <input type="text" id="inboxNoteInput" placeholder="🗒️ הוסף הערה פנימית (לא נשלח ללקוח)...">
+            <button type="submit" id="inboxNoteSend">הוסף הערה</button>
+          </form>
         </div>
       </section>
     </div>
+  </div>
+
+  <div id="kanbanView" style="display:none;">
+    <div class="kanban-board" id="kanbanBoard"></div>
   </div>
 </div>
 
@@ -842,15 +932,27 @@
       <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
       <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
       <button type="button" class="call-btn" id="panelCallHistoryBtn">📋 היסטוריית שיחות</button>
+      <button type="button" class="call-btn" id="panelQuickEditBtn">✏️ ערוך פרטים</button>
     </div>
     <button class="panel-close" id="panelClose" aria-label="סגור">✕</button>
   </div>
   <div class="panel-body" id="panelBody"></div>
+  <div class="ai-copilot" id="aiCopilotWrap">
+    <div class="ai-copilot-buttons">
+      <button type="button" id="objectionBtn">💬 הצע מענה להתנגדות</button>
+      <button type="button" id="execSummaryBtn">📋 סיכום מנהלים</button>
+    </div>
+    <div class="ai-copilot-result" id="aiCopilotResult" style="display:none;"></div>
+  </div>
   <div class="composer">
     <div class="composer-error" id="composerError"></div>
     <form id="composerForm">
       <textarea id="composerInput" placeholder="כתוב הודעה..." rows="1" required></textarea>
       <button type="submit" class="primary" id="composerSend">שלח</button>
+    </form>
+    <form id="noteForm" class="note-form">
+      <input type="text" id="noteInput" placeholder="🗒️ הוסף הערה פנימית (לא נשלח ללקוח)...">
+      <button type="submit" id="noteSend">הוסף הערה</button>
     </form>
   </div>
 </aside>
@@ -1155,6 +1257,7 @@ async function loadLeads() {
     renderStats();
     renderTable();
     loadControlCenter();
+    if (document.getElementById("kanbanView").style.display !== "none") renderKanban();
   } catch (err) {
     wrap.innerHTML = '<div class="error">שגיאה בטעינת הלידים: ' + escapeHtml(err.message) + "</div>";
   }
@@ -1319,6 +1422,102 @@ function renderTable() {
   updateBulkBar();
 }
 
+// תצוגת קנבן - עמודה לכל סטטוס (אותו STATUS_OPTIONS שכבר קיים, לא אוצר מילים חדש),
+// כרטיסים קומפקטיים, גרירה-ושחרור שקוראת ל-POST /api/leads/status הקיים (אותו
+// נתיב שה-select בטבלה כבר משתמש בו) - אין נתיב API חדש. מכבד את אותם הפילטרים
+// (חיפוש/tenant/קטגוריה/ציון) שהטבלה כבר מכבדת, דרך getFilteredLeads() המשותפת.
+const KANBAN_STATUSES = STATUS_OPTIONS.map(([value]) => value);
+
+function kanbanCardHtml(lead) {
+  const tenantId = lead.tenant_id || "default";
+  const key = `${tenantId}::${lead.phone}`;
+  const secondary = [lead.business_name, lead.location].filter(Boolean).join(" · ");
+  return `
+    <div class="kanban-card" draggable="true" data-key="${escapeHtml(key)}"
+         data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}">
+      <div class="kanban-card-head">
+        ${avatarHtml(lead)}
+        <div class="kanban-card-name">
+          <div class="kanban-card-primary">${escapeHtml(lead.customer_name || "ללא שם")}</div>
+          ${secondary ? `<div class="kanban-card-secondary">${escapeHtml(secondary)}</div>` : ""}
+        </div>
+      </div>
+      ${scoreBadgeHtml(lead.score)}
+    </div>
+  `;
+}
+
+function renderKanban() {
+  const board = document.getElementById("kanbanBoard");
+  const leads = getFilteredLeads();
+
+  const byStatus = {};
+  KANBAN_STATUSES.forEach(s => { byStatus[s] = []; });
+  leads.forEach(lead => {
+    const status = KANBAN_STATUSES.includes(lead.lead_status) ? lead.lead_status : "new";
+    byStatus[status].push(lead);
+  });
+
+  board.innerHTML = KANBAN_STATUSES.map(status => {
+    const meta = statusMeta(status === "new" ? null : status);
+    const cards = byStatus[status];
+    return `
+      <div class="kanban-column">
+        <div class="kanban-column-header">
+          <span>${escapeHtml(meta.label)}</span>
+          <span class="kanban-column-count">${cards.length}</span>
+        </div>
+        <div class="kanban-column-body" data-status="${status}">
+          ${cards.map(kanbanCardHtml).join("") || '<div class="empty">אין לידים</div>'}
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  wireKanbanDragAndDrop();
+}
+
+function wireKanbanDragAndDrop() {
+  const board = document.getElementById("kanbanBoard");
+
+  board.querySelectorAll(".kanban-card").forEach(card => {
+    card.addEventListener("dragstart", (e) => {
+      card.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", JSON.stringify({ phone: card.dataset.phone, tenant: card.dataset.tenant }));
+    });
+    card.addEventListener("dragend", () => card.classList.remove("dragging"));
+  });
+
+  board.querySelectorAll(".kanban-column-body").forEach(col => {
+    col.addEventListener("dragover", (e) => {
+      e.preventDefault(); // נדרש כדי לאפשר drop בכלל (ברירת המחדל של הדפדפן חוסמת)
+      col.classList.add("drag-over");
+    });
+    col.addEventListener("dragleave", () => col.classList.remove("drag-over"));
+    col.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      col.classList.remove("drag-over");
+      let data;
+      try { data = JSON.parse(e.dataTransfer.getData("text/plain") || "{}"); } catch { return; }
+      if (!data.phone) return;
+
+      const newStatus = col.dataset.status;
+      try {
+        const res = await fetch("/api/leads/status", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone: data.phone, tenant_id: data.tenant, status: newStatus }),
+        });
+        if (!res.ok) throw new Error((await res.json()).error || ("HTTP " + res.status));
+        await loadLeads(); // מרענן allLeads + renderKanban (דרך ה-hook ב-loadLeads) עם המצב האמיתי מהשרת
+      } catch (err) {
+        alert("עדכון סטטוס נכשל: " + err.message);
+        renderKanban(); // משחזר את הכרטיס לעמודה המקורית - allLeads לא השתנה כי הבקשה נכשלה
+      }
+    });
+  });
+}
+
 function updateBulkBar() {
   const bar = document.getElementById("bulkBar");
   const count = selectedLeads.size;
@@ -1332,6 +1531,19 @@ function renderBubble(m) {
   const dir = m.direction === "out" ? "out" : "in";
   const time = new Date(m.timestamp).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
   const isVoice = m.channel === "voice";
+  const isNote = m.channel === "note";
+  // הערה פנימית - כרטיס ממורכז ומעומעם, לא בועת צ'אט שמאל/ימין רגילה, כדי שיהיה
+  // ברור מיד שזו לא הודעה שהלקוח ראה בכלל (בניגוד לתקציר שיחה/וואטסאפ)
+  if (isNote) {
+    return `
+      <div class="msg-row note">
+        <div class="bubble-wrap">
+          <div class="bubble note">🗒️ ${escapeHtml(m.message)}</div>
+          <div class="msg-meta note"><span>הערה פנימית — לא נשלח ללקוח</span><span>·</span><span>${time}</span></div>
+        </div>
+      </div>
+    `;
+  }
   const statusLabel = m.simulated
     ? "⚠️ סימולציה - לא נשלח בפועל"
     : isVoice ? "📞 תקציר שיחה" : (dir === "out" ? "נשלח" : "התקבל");
@@ -1435,6 +1647,8 @@ function createChatController(ids) {
     hideComposerError();
     composerInputEl().value = "";
     syncStatus();
+    // תוצאת AI Copilot שייכת לליד הקודם - לא רלוונטית יותר כשעוברים לליד אחר
+    if (ids.aiCopilotResult) document.getElementById(ids.aiCopilotResult).style.display = "none";
     if (ids.onOpen) ids.onOpen();
 
     const el = bodyEl();
@@ -1507,6 +1721,90 @@ function createChatController(ids) {
     }
   });
 
+  // הוספת הערה פנימית (channel="note") - נפרד לגמרי מהקומפוזר הראשי (POST
+  // /api/messages/note, לא /api/messages/send) - לעולם לא עובר דרך Twilio.
+  // אותו דפוס בדיוק כמו הקומפוזר: מציגים דרך pollForNew אחרי שמירה מוצלחת,
+  // לא בועה "אופטימית" מקומית - מונע כפילות בין תצוגה מקומית למה שבאמת נשמר.
+  if (ids.noteForm) {
+    document.getElementById(ids.noteForm).addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!currentLead) return;
+      const inputEl = document.getElementById(ids.noteInput);
+      const text = inputEl.value.trim();
+      if (!text) return;
+      try {
+        const res = await fetch("/api/messages/note", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone: currentLead.phone, tenant_id: currentLead.tenantId, text }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+        inputEl.value = "";
+        await pollForNew();
+      } catch (err) {
+        alert("הוספת הערה נכשלה: " + err.message);
+      }
+    });
+  }
+
+  // AI Sales Copilot - שני כפתורים משותפים ל-helper אחד (אותו טעינה/שגיאה/ביטול-
+  // נעילה) - כל כפתור מזין endpoint + render-תוצאה משלו. לא שולח כלום בעצמו -
+  // "↩️ השתמש בהודעה" (רק במענה-להתנגדות) ממלא את הקומפוזר הקיים, לא שולח ישירות.
+  async function runAiCopilot(btnId, endpoint, loadingText, onSuccess) {
+    if (!currentLead || !ids.aiCopilotResult) return;
+    const btn = document.getElementById(btnId);
+    const resultEl = document.getElementById(ids.aiCopilotResult);
+    btn.disabled = true;
+    resultEl.style.display = "block";
+    resultEl.innerHTML = `<div class="loading">${loadingText}</div>`;
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: currentLead.phone, tenant_id: currentLead.tenantId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      onSuccess(data, resultEl);
+    } catch (err) {
+      resultEl.innerHTML = '<div class="error">שגיאה: ' + escapeHtml(err.message) + "</div>";
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  if (ids.objectionBtn) {
+    document.getElementById(ids.objectionBtn).addEventListener("click", () => {
+      runAiCopilot(ids.objectionBtn, "/api/leads/objection-response", "חושב על מענה...", (data, resultEl) => {
+        resultEl.innerHTML = `
+          ${escapeHtml(data.response)}
+          <div class="ai-copilot-result-actions">
+            <button type="button" class="primary ai-copilot-use-btn">↩️ השתמש בהודעה</button>
+            <button type="button" class="ai-copilot-dismiss-btn">✕ סגור</button>
+          </div>
+        `;
+        resultEl.querySelector(".ai-copilot-use-btn").addEventListener("click", () => {
+          composerInputEl().value = data.response;
+          composerInputEl().focus();
+          resultEl.style.display = "none";
+        });
+        resultEl.querySelector(".ai-copilot-dismiss-btn").addEventListener("click", () => { resultEl.style.display = "none"; });
+      });
+    });
+  }
+  if (ids.execSummaryBtn) {
+    document.getElementById(ids.execSummaryBtn).addEventListener("click", () => {
+      runAiCopilot(ids.execSummaryBtn, "/api/leads/executive-summary", "מכין סיכום מנהלים...", (data, resultEl) => {
+        resultEl.innerHTML = `
+          ${escapeHtml(data.summary)}
+          <div class="ai-copilot-result-actions">
+            <button type="button" class="ai-copilot-dismiss-btn">✕ סגור</button>
+          </div>
+        `;
+        resultEl.querySelector(".ai-copilot-dismiss-btn").addEventListener("click", () => { resultEl.style.display = "none"; });
+      });
+    });
+  }
+
   return {
     open, close, syncStatus,
     get currentLead() { return currentLead; },
@@ -1518,6 +1816,8 @@ const panelChat = createChatController({
   propertyWrap: "panelPropertyWrap",
   composerForm: "composerForm", composerInput: "composerInput",
   composerSend: "composerSend", composerError: "composerError",
+  noteForm: "noteForm", noteInput: "noteInput",
+  objectionBtn: "objectionBtn", execSummaryBtn: "execSummaryBtn", aiCopilotResult: "aiCopilotResult",
 });
 
 const inboxChat = createChatController({
@@ -1525,9 +1825,12 @@ const inboxChat = createChatController({
   propertyWrap: "inboxChatPropertyWrap",
   composerForm: "inboxComposerForm", composerInput: "inboxComposerInput",
   composerSend: "inboxComposerSend", composerError: "inboxComposerError",
+  noteForm: "inboxNoteForm", noteInput: "inboxNoteInput",
+  objectionBtn: "inboxObjectionBtn", execSummaryBtn: "inboxExecSummaryBtn", aiCopilotResult: "inboxAiCopilotResult",
   onOpen: () => {
     document.getElementById("inboxChatHeader").style.display = "";
     document.getElementById("inboxComposerWrap").style.display = "";
+    document.getElementById("inboxAiCopilotWrap").style.display = "";
   },
 });
 
@@ -1887,6 +2190,31 @@ function callHistoryTimeLabel(iso) {
   return new Date(iso).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
 }
 
+// נגן תמליל אינטראקטיבי - מוצג רק כשיש הקלטה אמיתית (call.recording_url, מ-Twilio
+// /voice/recording-status) - שיחת simulated (המצב היחיד שנבדק בפועל בסביבה הזו,
+// ראו CLAUDE.md) לא תציג את זה בכלל, בכוונה: אין הקלטה, אין מה להציע לתמלל.
+// ⚠️ עדיין לא אומת מול הקלטת שיחה אמיתית - Voice אף פעם לא הוגדר בסביבה הזו.
+function transcriptPlayerHtml(call) {
+  if (!call.recording_url) return "";
+  if (call.transcript_segments && call.transcript_segments.length) {
+    const segmentsHtml = call.transcript_segments.map(seg =>
+      `<span class="transcript-segment" data-start="${seg.start}">${escapeHtml(seg.text)}</span>`
+    ).join(" ");
+    return `
+      <div class="transcript-player">
+        <audio controls preload="metadata" class="transcript-audio" src="${escapeHtml(call.recording_url)}"></audio>
+        <div class="transcript-segments">${segmentsHtml}</div>
+      </div>
+    `;
+  }
+  return `
+    <div class="transcript-player">
+      <audio controls preload="metadata" class="transcript-audio" src="${escapeHtml(call.recording_url)}"></audio>
+      <button type="button" class="transcript-transcribe-btn">📝 תמלל הקלטה עם חותמות-זמן</button>
+    </div>
+  `;
+}
+
 function renderCallHistoryRow(call) {
   return `
     <div class="call-history-row" data-call-id="${call.id}">
@@ -1895,6 +2223,7 @@ function renderCallHistoryRow(call) {
           <span class="call-history-status">📞 ${escapeHtml(call.status)}${call.simulated ? " · 🧪 סימולציה" : ""}</span>
           <span class="call-history-time">${escapeHtml(callHistoryTimeLabel(call.created_at))}</span>
         </div>
+        ${transcriptPlayerHtml(call)}
         <div class="call-history-field-label">פירוט/תזכורת השיחה</div>
         <div class="call-history-field-value muted">${call.notes ? escapeHtml(call.notes) : "—"}</div>
         <div class="call-history-field-label">סיכום השיחה</div>
@@ -1948,6 +2277,18 @@ document.getElementById("inboxCallHistoryBtn").addEventListener("click", () => {
 });
 document.getElementById("callHistoryPanelClose").addEventListener("click", closeCallHistoryPanel);
 
+// עריכה מהירה - פותח את #editLeadPanel (הקיים) עבור הליד שפתוח כרגע בצ'אט, בלי
+// לחזור לטבלה ולחפש את השורה שם
+document.getElementById("panelQuickEditBtn").addEventListener("click", () => {
+  const lead = panelChat.currentLead;
+  if (lead) openEditLeadPanel(lead.phone, lead.tenantId);
+});
+document.getElementById("inboxQuickEditBtn").addEventListener("click", () => {
+  const lead = inboxChat.currentLead;
+  if (lead) openEditLeadPanel(lead.phone, lead.tenantId);
+});
+
+
 // עריכה: מחליף את .call-history-view בטופס inline (לא מודאל נפרד - השיחה
 // הספציפית כבר בפאנל ייעודי, אין צורך בעוד שכבה) - שמירה/ביטול מרעננים חזרה
 // לתצוגה הרגילה מה-DB, לא רק מסתירים את הטופס (מוודא שהתצוגה תמיד תואמת שרת)
@@ -1978,6 +2319,40 @@ document.getElementById("callHistoryPanelBody").addEventListener("click", async 
   } else if (e.target.classList.contains("call-history-cancel-btn")) {
     row.querySelector(".call-history-edit-form").remove();
     row.querySelector(".call-history-view").style.display = "";
+  } else if (e.target.classList.contains("transcript-segment")) {
+    // קליק על משפט בתמליל - קופץ לנקודת הזמן המתאימה בהקלטה ומנגן משם.
+    // שני מכשולים אמיתיים (נבדקו בפועל, לא תיאורטיים):
+    // 1. אם המטא-דאטה עדיין לא נטענה (readyState < HAVE_METADATA) - הדפדפן מתעלם
+    //    בשקט מהצבת currentTime. פתרון: ממתינים ל-loadedmetadata קודם אם צריך.
+    // 2. הצבת currentTime מפעילה seek **א-סינכרוני** (במיוחד ב-MP3, שדורש חישוב
+    //    מיקום בקובץ) - קריאה מיידית ל-play() לפני שה-seek הסתיים בפועל גורמת
+    //    לניגון להתחיל מהמיקום הישן, לא מהיעד. פתרון: ממתינים לאירוע seeked
+    //    (מאשר שה-seek באמת הסתיים) לפני שקוראים ל-play().
+    const audio = row.querySelector(".transcript-audio");
+    if (audio) {
+      const seekTo = parseFloat(e.target.dataset.start) || 0;
+      const doSeek = () => {
+        audio.addEventListener("seeked", () => audio.play(), { once: true });
+        audio.currentTime = seekTo;
+      };
+      if (audio.readyState >= 1) doSeek();
+      else audio.addEventListener("loadedmetadata", doSeek, { once: true });
+    }
+  } else if (e.target.classList.contains("transcript-transcribe-btn")) {
+    const btn = e.target;
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "מתמלל...";
+    try {
+      const res = await fetch(`/api/calls/${callId}/transcribe-recording`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      loadCallHistoryPanel(); // מרענן מה-DB - התמליל עם חותמות הזמן יוצג עכשיו
+    } catch (err) {
+      alert("תמלול ההקלטה נכשל: " + err.message);
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+    }
   }
 });
 
@@ -2339,10 +2714,14 @@ function renderInboxList() {
 
 function switchView(view) {
   const isInbox = view === "inbox";
-  document.getElementById("tableView").style.display = isInbox ? "none" : "";
+  const isKanban = view === "kanban";
+  const isTable = !isInbox && !isKanban;
+  document.getElementById("tableView").style.display = isTable ? "" : "none";
   document.getElementById("inboxView").style.display = isInbox ? "" : "none";
-  document.getElementById("tableViewBtn").classList.toggle("active", !isInbox);
+  document.getElementById("kanbanView").style.display = isKanban ? "" : "none";
+  document.getElementById("tableViewBtn").classList.toggle("active", isTable);
   document.getElementById("inboxViewBtn").classList.toggle("active", isInbox);
+  document.getElementById("kanbanViewBtn").classList.toggle("active", isKanban);
 
   if (isInbox) {
     closeAllPanels(); // אם הפאנל הנגלל פתוח, סוגרים אותו כדי לא להריץ שני chat sessions מקבילים
@@ -2350,9 +2729,11 @@ function switchView(view) {
   } else {
     inboxChat.close(); // עוצרים polling של ה-inbox כשלא רואים אותו
   }
+  if (isKanban) renderKanban();
 }
 document.getElementById("tableViewBtn").addEventListener("click", () => switchView("table"));
 document.getElementById("inboxViewBtn").addEventListener("click", () => switchView("inbox"));
+document.getElementById("kanbanViewBtn").addEventListener("click", () => switchView("kanban"));
 
 function showImportStatus(text, isError = false) {
   const el = document.getElementById("importStatus");

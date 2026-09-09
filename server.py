@@ -72,6 +72,8 @@ try:
         DEFAULT_TENANT_ID,
         delete_lead,
         generate_call_summary,
+        generate_executive_summary,
+        generate_objection_response,
         import_lead,
         load_customers,
         log_call_summary,
@@ -554,6 +556,68 @@ def api_messages():
     return jsonify(db.get_messages(phone, tenant_id=tenant_id, since=since))
 
 
+@app.route("/api/messages/note", methods=["POST"])
+def api_add_note():
+    """הערה פנימית של הצוות על הליד - מופיעה בפיד הכרונולוגי (channel="note") לצד
+    הודעות הוואטסאפ ותקצירי השיחות, אבל **לעולם לא נשלחת ללקוח** - לא עוברת דרך
+    Twilio/send_whatsapp_message בכלל, בניגוד ל-/api/messages/send. משתמשת באותה
+    טבלת messages (לא טבלה נפרדת) - ההערה היא עוד סוג רשומה בציר הזמן של הליד,
+    לא ישות נפרדת; ה-polling הקיים (pollForNewMessages) מרים אותה אוטומטית."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    text = (data.get("text") or "").strip()
+    if not phone or not text:
+        return jsonify({"error": "חסר טלפון או תוכן הערה"}), 400
+    db.log_message(phone, text, direction="out", tenant_id=tenant_id, channel="note")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/leads/objection-response", methods=["POST"])
+def api_objection_response():
+    """AI Sales Copilot - מציע מענה קצר להודעה האחרונה **שהתקבלה מהלקוח** (direction=
+    "in" - לא סתם ההודעה הכרונולוגית האחרונה, שיכולה להיות תגובה אוטומטית שלנו עצמנו).
+    לא שולח כלום - רק מחזיר טקסט מוצע; הנציג מחליט אם/איך להשתמש בו."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+
+    messages = db.get_messages(phone, tenant_id=tenant_id)
+    last_inbound = next((m for m in reversed(messages) if m["direction"] == "in"), None)
+    if not last_inbound:
+        return jsonify({"error": "אין עדיין הודעה נכנסת מהלקוח להתייחס אליה"}), 400
+
+    card = load_customers().get(f"{tenant_id}::{phone}", {})
+    response_text = generate_objection_response(last_inbound["message"], card)
+    return jsonify({"ok": True, "response": response_text, "based_on": last_inbound["message"]})
+
+
+@app.route("/api/leads/executive-summary", methods=["POST"])
+def api_executive_summary():
+    """AI Sales Copilot - סיכום מנהלים ב-3 בולטים של כל ההיסטוריה מול הליד (הודעות
+    וואטסאפ + תקצירי שיחות - כל channel, לא רק whatsapp - כדי שסיכום השיחות הטלפוניות
+    ייכלל גם הוא)."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+
+    messages = db.get_messages(phone, tenant_id=tenant_id)
+    if not messages:
+        return jsonify({"error": "אין עדיין היסטוריה מתועדת לליד הזה"}), 400
+
+    history_lines = [
+        f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
+        for m in messages
+    ]
+    card = load_customers().get(f"{tenant_id}::{phone}", {})
+    summary_text = generate_executive_summary("\n".join(history_lines), card)
+    return jsonify({"ok": True, "summary": summary_text})
+
+
 @app.route("/api/reactivate", methods=["POST"])
 def api_reactivate():
     """מפעיל את קמפיין חימום הלידים הקרים (reactivate.py) מתוך הדשבורד. ברירת המחדל
@@ -825,6 +889,34 @@ def api_call_transcribe(call_id):
         return jsonify({"error": f"תמלול נכשל: {exc}"}), 502
 
     return jsonify({"ok": True, "text": text})
+
+
+@app.route("/api/calls/<int:call_id>/transcribe-recording", methods=["POST"])
+def api_call_transcribe_recording(call_id):
+    """מתמלל את ההקלטה **האמיתית** של השיחה (call.recording_url, ראו /voice/
+    recording-status) עם חותמות-זמן פר-משפט - לנגן התמליל האינטראקטיבי בפאנל
+    היסטוריית השיחות (קליק על משפט קופץ לנקודת הזמן המתאימה בהקלטה). שונה
+    מ-/api/calls/<id>/transcribe (זו לא הכתבה ידנית של קובץ שהועלה - זו ההקלטה
+    שכבר קיימת על השיחה עצמה). 400 אם לשיחה הזו אין recording_url בכלל (עדיין
+    לא נתמכה - למשל שיחה simulated, או שהוקלטה עדיין לא הגיעה)."""
+    call = db.get_call(call_id)
+    if not call:
+        return jsonify({"error": "שיחה לא נמצאה"}), 404
+    recording_url = call.get("recording_url")
+    if not recording_url:
+        return jsonify({"error": "לשיחה הזו אין הקלטה שמורה (recording_url) - אין מה לתמלל"}), 400
+
+    try:
+        audio_bytes = transcription.download_twilio_media(recording_url)
+        result = transcription.transcribe_audio_with_segments(audio_bytes, "recording.mp3")
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.error("תמלול הקלטה נכשל (call_id=%s): %s", call_id, exc, exc_info=True)
+        return jsonify({"error": f"תמלול נכשל: {exc}"}), 502
+
+    updated_call = db.save_transcript_segments(call_id, result["segments"])
+    return jsonify({"ok": True, "text": result["text"], "call": updated_call})
 
 
 VALID_PROMPT_VERTICALS = {"ecommerce", "services", "real_estate"}
