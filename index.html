@@ -994,6 +994,17 @@
         </div>
       </div>
     </header>
+    <!-- אזהרת API_SECRET_KEY חסר (מוצג רק אם window.__API_KEY__ הוזרק ריק, ראו
+         server.py:index ו-checkApiKeyConfigured למטה) - כל בקשות ה-/api/* ייכשלו
+         ב-401 במצב הזה, וזה נראה בדשבורד כ"אין חיבור לשרת" (סימפטום מטעה - השרת
+         כן חי, רק חוסם fail-closed כי אין מפתח תקין). נפוץ בפריסה ראשונה בענן -
+         .env לא מועלה ל-git בכוונה, כך שמשתני הסביבה חייבים הגדרה ידנית בלוח
+         הבקרה של הפלטפורמה (Render/Railway). -->
+    <div id="apiKeyMissingBanner" style="display:none;"
+      class="mx-6 mt-3 flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-300">
+      <i data-lucide="alert-triangle" class="h-4 w-4 shrink-0"></i>
+      <span>מפתח <code>API_SECRET_KEY</code> לא מוגדר בשרת - לכן כל בקשות ה-API נחסמות (401), וזה מה שנראה כ"אין חיבור לשרת". השרת עצמו פעיל - צריך להגדיר את משתנה הסביבה <code>API_SECRET_KEY</code> בלוח הבקרה של הפלטפורמה (Render/Railway וכו') ולהפעיל מחדש.</span>
+    </div>
     <div class="import-status" id="importStatus"></div>
 
     <main class="flex-1 overflow-y-auto p-6 lg:p-8">
@@ -3503,8 +3514,17 @@ document.getElementById("globalSearchInput").addEventListener("input", (e) => {
 async function checkServerStatus() {
   const dot = document.getElementById("serverPulseDot");
   const text = document.getElementById("serverStatusText");
+  checkApiKeyConfigured();
   try {
     const res = await fetch("/api/calls/config-status");
+    if (res.status === 401) {
+      // השרת בהחלט חי (קיבלנו תגובת HTTP תקינה) - רק חוסם fail-closed כי המפתח
+      // חסר/שגוי (ראו apiKeyMissingBanner). "אין חיבור לשרת" כאן היה מטעה -
+      // נראה כתקלת רשת בזמן שזו בעצם הגדרת סביבה חסרה/שגויה.
+      text.textContent = "שגיאת הרשאה (401) - בדוק API_SECRET_KEY";
+      dot.classList.add("bg-rose-400");
+      return;
+    }
     if (!res.ok) throw new Error("HTTP " + res.status);
     text.textContent = "השרת פעיל";
     dot.classList.remove("bg-rose-400");
@@ -4607,6 +4627,16 @@ try {
   const saved = localStorage.getItem("crm-theme");
   if (saved) document.documentElement.setAttribute("data-theme", saved);
 } catch (e) {}
+
+// מציג את apiKeyMissingBanner אם אין שום מפתח API בכלל (לא הוזרק מהשרת, ולא
+// override מקומי) - האבחנה החשובה: זה שונה ממקרה שבו יש מפתח אבל הוא שגוי
+// (אז 401 עדיין יתפוס, אבל ה"באג" האמיתי שם הוא הקשה/הגדרה שגויה, לא היעדר
+// הגדרה בשרת לגמרי) - ראו ההערה המלאה ב-HTML של הבאנר.
+function checkApiKeyConfigured() {
+  const banner = document.getElementById("apiKeyMissingBanner");
+  if (banner) banner.style.display = activeApiKey() ? "none" : "";
+}
+checkApiKeyConfigured();
 
 loadCurrentUser();
 loadLeads().then(() => renderOverviewCards());

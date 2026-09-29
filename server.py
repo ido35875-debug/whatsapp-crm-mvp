@@ -147,6 +147,19 @@ _file_handler.setLevel(logging.WARNING)  # קובץ הלוג מתמקד בשגי
 _file_handler.setFormatter(_log_formatter)
 logger.addHandler(_file_handler)
 
+if not API_SECRET_KEY:
+    # תקלה נפוצה מאוד בפריסה ראשונה בענן (Render/Railway): .env לא מועלה
+    # ל-git בכוונה (סודות), כך שמשתני הסביבה חייבים הגדרה ידנית בלוח הבקרה של
+    # הפלטפורמה - בלעדיה כל /api/* נחסם (401) והדשבורד מציג "אין חיבור לשרת"
+    # (מטעה - השרת חי, ראו index.html:checkServerStatus). אזהרה חד-פעמית כאן,
+    # בזמן עליית השרת, כדי שהתקלה תיראה מיד בלוגים של הפלטפורמה - לא רק
+    # תתגלה בשקט כשמישהו כבר מדווח "המערכת לא עובדת".
+    logger.warning(
+        "⚠️ API_SECRET_KEY אינו מוגדר - כל בקשות ה-/api/* ייחסמו (401)! "
+        "הגדירו את משתנה הסביבה API_SECRET_KEY (לדוגמה, python -c \"import secrets; print(secrets.token_urlsafe(32))\") "
+        "בלוח הבקרה של הפלטפורמה (Render/Railway וכו') ופרסו מחדש."
+    )
+
 app = Flask(__name__)
 # מאחורי ngrok/reverse-proxy: משקף את ה-scheme/host/port הציבוריים האמיתיים מתוך
 # X-Forwarded-* במקום 127.0.0.1 המקומי - קריטי גם לאימות חתימת Twilio (_verify_twilio_request)
