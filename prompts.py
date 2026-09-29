@@ -11,9 +11,14 @@ prompts.json הוא מקור האמת בזמן ריצה. הקבועים הקשי
 """
 
 import json
-from pathlib import Path
 
-PROMPTS_FILE = Path(__file__).parent / "prompts.json"
+from paths import DATA_DIR
+
+# state שמשתנה בזמן ריצה (נערך חי מ-"🤖 תבניות וסוכנים") - עובר דרך DATA_DIR
+# (ראו paths.py) בדיוק כמו customers.json/crm_data.db, כדי לשרוד הפעלות מחדש/
+# דיפלויים חדשים ב-production על filesystem ephemeral (Docker/Render) - ברירת
+# המחדל בלי DATA_DIR מוגדר היא תיקיית הפרויקט, זהה להתנהגות הקודמת בהרצה מקומית.
+PROMPTS_FILE = DATA_DIR / "prompts.json"
 
 
 def load_prompts() -> dict:

@@ -36,17 +36,25 @@ scheduler.py לפני שמדליקים שליחה אוטומטית אמיתית 
 
 import csv
 import io
+import json
 import logging
 import os
+import queue as queue_module
+import random
+import secrets
 import sys
 import threading
-from datetime import datetime, timezone
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from openpyxl import load_workbook
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import Dial, VoiceResponse
@@ -62,8 +70,11 @@ try:
     # לכן כל השרשרת חייבת להיות בתוך אותו try/except - אחרת ה-KeyError קורה כבר
     # ב-"import reactivate" למשל, לפני שמגיעים בכלל לבלוק שתופס אותו.
     import db
+    import outbound_engine
     import reactivate
+    import sales_agent
     import scheduler
+    import scheduling_agent
     import prompts
     import tenant_settings
     import transcription
@@ -73,7 +84,8 @@ try:
         delete_lead,
         generate_call_summary,
         generate_executive_summary,
-        generate_objection_response,
+        generate_missing_fields_message,
+        get_missing_fields,
         import_lead,
         load_customers,
         log_call_summary,
@@ -83,12 +95,17 @@ try:
         rekey_lead,
         resolve_existing_phone,
         update_lead_agent,
+        update_lead_ai_enabled,
         update_lead_category,
         update_lead_fields,
         update_lead_status,
         update_lead_voice_extraction,
     )
-    from whatsapp_send import TWILIO_AUTH_TOKEN, _to_e164, is_trial_restriction, send_whatsapp_message
+    # is_trial_restriction נשאר בשימוש ישיר כאן רק עבור /api/calls/start (שיחות
+    # קוליות, voice_call.py) - Voice נשאר קשיח מול Twilio תמיד, ללא קשר ל-
+    # WHATSAPP_PROVIDER (ראו ההערה בראש whatsapp_provider.py).
+    from whatsapp_send import TWILIO_AUTH_TOKEN, is_trial_restriction
+    from whatsapp_provider import TwilioProvider, get_provider
 except KeyError as exc:
     # משתנה סביבה קריטי חסר (כרגע רק ANTHROPIC_API_KEY נדרש קשיח - os.environ[...] ולא
     # os.environ.get(...)) - נכשלים מיד עם הודעה ברורה, לא עם traceback גולמי שקשה
@@ -103,6 +120,13 @@ HOST = os.environ.get("HOST", "127.0.0.1")  # production מאחורי container/
 FLASK_DEBUG = os.environ.get("FLASK_DEBUG", "false").strip().lower() == "true"
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 VERIFY_TWILIO_SIGNATURE = os.environ.get("VERIFY_TWILIO_SIGNATURE", "true").strip().lower() == "true"
+API_SECRET_KEY = os.environ.get("API_SECRET_KEY", "").strip()  # שער אימות ל-/api/* - ראו _require_api_key למטה
+# מתג "מצב צל" גלובלי (שלב 6 - סגירת פיילוט, ברירת מחדל false - לא משנה התנהגות
+# קיימת). whatsapp_provider.get_provider() כבר עוטף בעצמו את השליחה היוצאת
+# (UltraMsg/Green API/Twilio-לא-TwiML) בסימולציה כש-DRY_RUN=true - ה-קבוע כאן
+# נחוץ **רק** למסלול Twilio TwiML הסינכרוני (webhook() למטה), ששם "השליחה" היא
+# תגובת ה-HTTP עצמה ולא קריאת send_message נפרדת שאפשר לעטוף באותה נקודה.
+DRY_RUN = os.environ.get("DRY_RUN", "false").strip().lower() == "true"
 
 BASE_DIR = Path(__file__).parent
 from paths import DATA_DIR  # noqa: E402 - chat_history.txt (state) נשמר כאן; server_error.log/index.html נשארים ב-BASE_DIR
@@ -128,7 +152,83 @@ app = Flask(__name__)
 # X-Forwarded-* במקום 127.0.0.1 המקומי - קריטי גם לאימות חתימת Twilio (_verify_twilio_request)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 
+
+def _rate_limit_key() -> str:
+    """מזהה להגבלת קצב - מפתח API אם סופק (מדויק יותר מ-IP: כמה משתמשים/
+    שותפים יכולים לשבת מאחורי אותה כתובת, למשל משרד/NAT משותף - לא רוצים
+    שאחד "ישרוף" את המכסה של כולם), אחרת כתובת ה-IP האמיתית של הלקוח (דרך
+    ProxyFix מעל - קריטי מאחורי ngrok/reverse-proxy, אחרת כל הבקשות היו
+    נראות מגיעות מאותה כתובת פנימית). לא קורא ל-_resolve_user (לא רוצה לשלם
+    שאילתת DB על כל בקשה רק בשביל מפתח ה-rate-limit - גם מפתח לא-תקין
+    מספיק ככינוי ייחודי-לרוב למגביל)."""
+    key = request.headers.get("X-API-Key") or request.args.get("api_key")
+    if not key:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            key = auth_header[len("Bearer "):].strip()
+    return key or get_remote_address()
+
+
+# ---- הגבלת קצב (Rate Limiting - שלב 4) - הגנה מפני DDoS/ניצול לרעה ----
+# ברירת מחדל: memory:// (בתוך-process) - כמו תור ה-webhook/מנויי ה-SSE (שלב 3),
+# תחת Gunicorn מרובה-workers כל process סופר בנפרד (מכפיל בפועל את המכסה
+# האפקטיבית פי מספר ה-workers) - טרייד-אוף מתועד, לא מוסתר. ל-production אמיתי
+# מרובה-workers: מגדירים RATELIMIT_STORAGE_URI=redis://... (דורש גם
+# `pip install redis`) כדי שכל ה-workers ישתפו מונה אחד אמיתי.
+RATELIMIT_STORAGE_URI = os.environ.get("RATELIMIT_STORAGE_URI", "memory://")
+RATELIMIT_DEFAULT = os.environ.get("RATELIMIT_DEFAULT", "200 per minute")
+
+limiter = Limiter(
+    key_func=_rate_limit_key,
+    app=app,
+    default_limits=[RATELIMIT_DEFAULT],
+    storage_uri=RATELIMIT_STORAGE_URI,
+    headers_enabled=True,  # X-RateLimit-* בכל תגובה - עוזר ללקוח (ה-UI/אינטגרציות) לדעת כמה נשאר לפני שהוא נחסם
+    swallow_errors=True,  # אם ה-storage (Redis) נופל - עדיף לתת לבקשה לעבור (fail-open) מלהפיל את כל השרת בגלל תשתית ניטור
+)
+
 _twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else None
+
+
+@app.route("/health")
+@limiter.exempt
+def api_health():
+    """בדיקת תקינות סטנדרטית (שלב 4) - ל-Load Balancer/Orchestrator (Docker
+    healthcheck, Render/Railway וכו'). **לא** תחת /api/ בכוונה - _require_api_key
+    מדלג במפורש על נתיבים שלא מתחילים ב-/api/ (ראו שם), כך שכלי ניטור חיצוניים
+    לא צריכים מפתח כדי לדעת אם השרת חי. פטורה מ-rate limiting (limiter.exempt) -
+    פינג תכוף מה-orchestrator (כל כמה שניות) לא אמור להיחסם ולגרום ל"בריא"
+    להיראות "מת". לא חושפת נתון עסקי כלשהו - רק סטטוסים טכניים.
+
+    בודקת בפועל (לא רק "התהליך חי"): (1) DB - שאילתה אמיתית (db.health_check,
+    לא רק "החיבור נפתח") נגד sqlite/postgres לפי DATABASE_URL; (2) תור עיבוד
+    ה-webhook (שלב 3) - שה-worker thread עדיין חי וגודל התור הנוכחי. 200 אם
+    הכל תקין, 503 (Service Unavailable) אחרת - כדי ש-orchestrator/LB אמיתי
+    ידע להוציא את המופע הזה ממחזור התעבורה, לא רק לוג שקט."""
+    db_ok, db_error = True, None
+    try:
+        db.health_check()
+    except Exception as exc:
+        db_ok = False
+        db_error = str(exc)
+
+    worker_alive = _webhook_worker_thread.is_alive() if _webhook_worker_thread else False
+    healthy = db_ok and worker_alive
+
+    payload = {
+        "status": "ok" if healthy else "degraded",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "db": {
+            "ok": db_ok,
+            "backend": "postgresql" if db.IS_POSTGRES else "sqlite",
+            "error": db_error,
+        },
+        "async_queue": {
+            "worker_alive": worker_alive,
+            "queue_size": _webhook_job_queue.qsize(),
+        },
+    }
+    return jsonify(payload), 200 if healthy else 503
 
 
 def _verify_twilio_request(req) -> bool:
@@ -140,6 +240,373 @@ def _verify_twilio_request(req) -> bool:
         return False
     signature = req.headers.get("X-Twilio-Signature", "")
     return _twilio_validator.validate(req.url, req.form, signature)
+
+
+ADMIN_USER = {"user_id": "admin", "name": "מנהל מערכת (מפתח ראשי)", "role": "admin", "tenant_ids": []}
+
+
+def _resolve_user(provided_key: str | None) -> dict | None:
+    """מזהה את המשתמש ששייך למפתח שסופק - שני מקורות: (1) API_SECRET_KEY הראשי
+    מ-.env (שלב 6, נשאר כמו שהיה) → "אדמין מובלע" תמיד, לא תלוי בטבלת users
+    בכלל (תאימות לאחור מוחלטת); (2) טבלת db.users (שלב 2, RBAC) - partner/
+    client/admin נוספים, כל אחד עם מפתח משלו. None אם המפתח לא תואם אף אחד
+    מהשניים. השוואת המפתח הראשי ב-secrets.compare_digest (constant-time) -
+    לא `==` רגיל, כדי לא לחשוף את אורכו/תוכנו דרך הבדל בזמן תגובה."""
+    if not provided_key:
+        return None
+    if API_SECRET_KEY and secrets.compare_digest(provided_key, API_SECRET_KEY):
+        return ADMIN_USER
+    return db.get_user_by_api_key(provided_key)
+
+
+@app.before_request
+def _require_api_key():
+    """שער אימות + זיהוי-משתמש ל-כל נתיבי /api/* (שלב 6 + שלב 2 - RBAC).
+    before_request יחיד לכל הנתיבים - לא decorator בכל endpoint בנפרד, כדי
+    שאף נתיב /api/* חדש בעתיד לא "יישכח" בטעות בלי אימות.
+
+    **לא** נוגע ב-GET / (הגשת ה-UI) או ב-/webhook*/voice/* (Twilio/UltraMsg -
+    יש להם אימות חתימה משלהם) - אלו כלל לא מתחילים ב-/api/, כך שהבדיקה למטה
+    מדלגת עליהם מאליה.
+
+    מקבל את המפתח דרך X-API-Key **או** Authorization: Bearer <key> **או**
+    ?api_key= ב-query string (רק כשאין header - ראו הערה בהמשך). המשתמש
+    שזוהה נשמר ב-g.current_user לכל משך הבקשה - endpoints שצריכים לסנן לפי
+    tenant/role (ראו _effective_tenant_ids) קוראים אותו משם, לא בודקים בעצמם.
+
+    ⚠️ אם אף מפתח לא זוהה (לא API_SECRET_KEY, לא משתמש RBAC) - חוסם הכל
+    (fail-closed), לא פותח את השער בשקט - "אימות שדולג עליו בטעות" הוא בדיוק
+    התרחיש שגרם לפער התיעודי המקורי."""
+    if not request.path.startswith("/api/"):
+        return None
+
+    provided = request.headers.get("X-API-Key")
+    if not provided:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            provided = auth_header[len("Bearer "):].strip()
+    if not provided:
+        # EventSource (SSE, GET /api/events - שלב 3) לא תומך ב-headers מותאמים
+        # אישית בכלל - query string היא הדרך המעשית היחידה להעביר אימות אליו.
+        # נבדק אחרון בכוונה (רק כשאין header בכלל) - כדי לא לעודד מפתחות ב-URL
+        # (שיכולים להישמר בלוגים/היסטוריית דפדפן) לנתיבים שכן יכולים להשתמש ב-header.
+        provided = request.args.get("api_key")
+
+    user = _resolve_user(provided)
+    if not user:
+        return jsonify({"error": "Unauthorized - נדרש X-API-Key או Authorization: Bearer <key> תקין"}), 401
+    g.current_user = user
+    return None
+
+
+def _require_admin():
+    """בודק שהמשתמש הנוכחי הוא admin - endpoints ניהוליים (ראו /api/admin/users)
+    קוראים לזה כשורה ראשונה. מחזיר תגובת 403 מוכנה אם לא, אחרת None (המשך רגיל)."""
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "הפעולה הזו מוגבלת למנהלי מערכת (admin) בלבד"}), 403
+    return None
+
+
+def _effective_tenant_ids(requested_tenant_id: str | None) -> list[str] | None:
+    """קובעת אילו tenant_ids מותר למשתמש הנוכחי לראות בפועל - לב הבידוד
+    (Multi-Tenant Isolation, שלב 2). admin: None = בלי הגבלה בכלל (מכבד את מה
+    שביקשו, כולל "הראה הכל" כברירת מחדל - זהה להתנהגות הקודמת). partner/
+    client: **תמיד** מצטמצם ל-tenant_ids המוקצים למשתמש ב-DB - גם אם ה-query
+    param ביקש tenant אחר (או כלום) - כדי שסינון tenant לא יהיה "נוחות UI"
+    בלבד שאפשר לעקוף, אלא גבול אמיתי שנאכף בשרת בכל בקשה."""
+    user = g.current_user
+    if user["role"] == "admin":
+        return [requested_tenant_id] if requested_tenant_id else None
+    allowed = user.get("tenant_ids") or []
+    if requested_tenant_id:
+        return [requested_tenant_id] if requested_tenant_id in allowed else []
+    return allowed
+
+
+def _effective_client_id() -> str | None:
+    """מזהה client_id לאכיפת בידוד קשיח לתפקיד client (שלב 5 - Enterprise
+    Production Readiness) - **בנוסף** לבידוד tenant_id הקיים (שלב 2, ראו
+    _effective_tenant_ids) ולא במקומו: tenant_id ממשיך לבטא איזה עסק/ורטיקל
+    מדובר; client_id מבטא איזה משתמש RBAC ספציפי הוא "הבעלים" של הליד (הוקצה
+    לו דרך /api/leads/update או ביבוא, admin/partner בלבד - ראו שם). None =
+    בלי הגבלה נוספת (admin/partner ממשיכים להיות מוגבלים רק לפי tenant_ids
+    כבעבר) - client מוגבל **תמיד** ל-client_id == user_id שלו עצמו, בלי יוצא
+    מן הכלל ובלי אפשרות לבקש אחרת (כמו tenant_ids, זה גבול שרת, לא נוחות UI)."""
+    user = g.current_user
+    if user["role"] != "client":
+        return None
+    return user["user_id"]
+
+
+def _authorize_lead_access(phone: str, tenant_id: str):
+    """בודקת שהמשתמש הנוכחי רשאי לגעת בליד הזה - tenant_id (שלב 2) **וגם**
+    client_id (שלב 5) - לא סומכת על כך ש-phone/tenant_id שהתקבלו בבקשה "בטח
+    שייכים" לקורא, כמו שנקודות קצה ותיקות יותר נהגו לעשות. שלב 6 (סגירת
+    פיילוט): מיושמת גם על /api/leads/status,/category,/agent - לא רק על
+    ai-toggle החדש יותר (שלב 5), שממנו הועבר הקוד לכאן במקום להישאר משוכפל.
+
+    מחזירה (card, None) אם מותר - card הוא זה שכבר נטען מ-customers.json, כדי
+    שהקורא לא יצטרך לטעון שוב; או (None, response) עם תגובת שגיאה מוכנה
+    (404 אם הליד לא קיים בכלל, 403 אם קיים אבל לא בבעלות המשתמש) - הקורא
+    בודק `if err: return err` ומחזיר אותה כמו שהיא."""
+    card = load_customers().get(f"{tenant_id}::{phone}")
+    if not card:
+        return None, (jsonify({"error": "ליד לא נמצא"}), 404)
+    resolved_tenant_id = card.get("tenant_id", tenant_id)
+    allowed_tenant_ids = _effective_tenant_ids(resolved_tenant_id)
+    if allowed_tenant_ids is not None and resolved_tenant_id not in allowed_tenant_ids:
+        return None, (jsonify({"error": "אין הרשאה לליד הזה"}), 403)
+    required_client_id = _effective_client_id()
+    if required_client_id is not None and card.get("client_id") != required_client_id:
+        return None, (jsonify({"error": "אין הרשאה לליד הזה"}), 403)
+    return card, None
+
+
+def _ai_enabled_for(phone: str, tenant_id: str) -> bool:
+    """בודקת אם מענה AI אוטומטי פעיל לליד (שלב 5, ברירת מחדל: True) - נבדקת
+    לפני כל החלטה להריץ process_message_with_reply (webhook הסינכרוני של
+    Twilio, ו-_process_incoming_message_job ברקע). ליד חדש שאין לו כרטיס
+    עדיין (הודעה ראשונה אי-פעם ממנו) מקבל True - "AI פעיל" היא ברירת המחדל
+    הרצויה לליד חדש, לא "לא ידוע = כבוי"."""
+    card = load_customers().get(f"{tenant_id}::{phone}")
+    return bool(card.get("ai_enabled", True)) if card else True
+
+
+@app.route("/api/me")
+def api_me():
+    """זהות המשתמש הנוכחי (לפי מפתח ה-API שסופק) - ה-UI קורא לזה בעליית העמוד
+    כדי להתאים את עצמו לתפקיד (partner/client לא רואים לשונית B2B Campaigns/
+    ניהול-אדמין, למשל) ולמלא את מחשבון העמלות של שותף."""
+    user = g.current_user
+    return jsonify({
+        "user_id": user["user_id"], "name": user["name"], "role": user["role"],
+        "tenant_ids": user.get("tenant_ids") or [],
+        "commission_rate": user.get("commission_rate"),
+        "avg_deal_value": user.get("avg_deal_value"),
+    })
+
+
+_event_subscribers: list = []
+_event_subscribers_lock = threading.Lock()
+
+
+def publish_event(event_type: str, data: dict) -> None:
+    """משדרת אירוע לכל לקוחות ה-SSE המחוברים כרגע (GET /api/events, שלב 3) -
+    קוראים לזה מכל מקום שמשנה state שה-UI צריך לשקף בלייב (הודעה נכנסת/יוצאת,
+    עדכון כרטיס ליד, הצעת פגישה חדשה, אישור/דחיית משימה). לא חוסם: כל מנוי
+    מקבל תור-בגודל-מוגבל משלו (ראו api_events) - לקוח איטי/תקוע פשוט מפסיד
+    אירוע (put_nowait נכשל בשקט), לא עוצר את שאר המנויים או את הקוד הקורא."""
+    payload = json.dumps(
+        {"type": event_type, "ts": datetime.now(timezone.utc).isoformat(), **data}, ensure_ascii=False
+    )
+    with _event_subscribers_lock:
+        subscribers = list(_event_subscribers)
+    for q in subscribers:
+        try:
+            q.put_nowait(payload)
+        except queue_module.Full:
+            pass
+
+
+@app.route("/api/events")
+def api_events():
+    """Server-Sent Events - זרם עדכונים חי ל-UI (שלב 3): הודעה נכנסת/יוצאת,
+    עדכון כרטיס ליד, הצעת פגישה חדשה מסוכן היומן. index.html נרשם עם
+    EventSource ומרענן רכיבים ספציפיים בתגובה (wireLiveEvents/handleLiveEvent),
+    כתחליף/השלמה ל-polling הקבוע - בלי לגעת בפועל ב-polling הקיים (נשאר כרשת
+    ביטחון אם SSE מתנתק).
+
+    ⚠️ מגבלה אמיתית תחת Gunicorn מרובה-workers: כל חיבור SSE "תופס" worker
+    שלם למשך כל החיבור (workers סינכרוניים, לא asyncio) - למספר גדול של
+    משתמשים מחוברים בו-זמנית ב-production אמיתי נדרש gevent/eventlet worker
+    class (או broker חיצוני כמו Redis pub/sub) - לא רק התור התוך-process הזה.
+    בהרצה מקומית (python server.py, process יחיד, משתמש אחד/מעטים) זו לא
+    מגבלה מעשית."""
+    def stream():
+        client_queue: "queue_module.Queue" = queue_module.Queue(maxsize=50)
+        with _event_subscribers_lock:
+            _event_subscribers.append(client_queue)
+        try:
+            yield "retry: 3000\n\n"
+            while True:
+                try:
+                    payload = client_queue.get(timeout=25)
+                    yield f"data: {payload}\n\n"
+                except queue_module.Empty:
+                    yield ": heartbeat\n\n"  # שורת-הערה בפרוטוקול SSE - שומרת את החיבור פתוח בלי אירוע אמיתי
+        finally:
+            with _event_subscribers_lock:
+                if client_queue in _event_subscribers:
+                    _event_subscribers.remove(client_queue)
+
+    return Response(
+        stream(), mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@app.route("/api/admin/users", methods=["GET"])
+def api_admin_list_users():
+    """רשימת משתמשי RBAC (partner/client/admin נוספים) - אדמין-בלבד. לא כולל
+    את מפתח האדמין הראשי מ-.env (ADMIN_USER) - הוא לא שורה ב-DB בכלל."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    return jsonify(db.get_users())
+
+
+@app.route("/api/admin/users", methods=["POST"])
+def api_admin_create_user():
+    """יוצר משתמש RBAC חדש (partner/client/admin נוסף) עם מפתח API ייחודי -
+    אדמין-בלבד. מייצר את המפתח בשרת (secrets.token_urlsafe) - לא מקבל מפתח
+    מהקליינט, כדי שאי אפשר יהיה "לבחור" מפתח חלש/צפוי. partner/client חייבים
+    tenant_ids לא-ריק - אחרת המשתמש נוצר אבל לא יראה שום ליד (_effective_
+    tenant_ids מחזיר רשימה ריקה), שזו כמעט תמיד טעות, לא כוונה."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    user_id = (data.get("user_id") or "").strip()
+    name = (data.get("name") or "").strip()
+    role = data.get("role")
+    tenant_ids = data.get("tenant_ids") or []
+    commission_rate = data.get("commission_rate")
+    avg_deal_value = data.get("avg_deal_value")
+
+    if not user_id or not name or role not in ("admin", "partner", "client"):
+        return jsonify({"error": "חסר user_id/name, או role לא תקין (admin/partner/client)"}), 400
+    if role in ("partner", "client") and not tenant_ids:
+        return jsonify({"error": "partner/client חייבים tenant_ids לפחות אחד - אחרת לא יראו שום ליד"}), 400
+
+    api_key = secrets.token_urlsafe(24)
+    try:
+        db.create_user(
+            api_key, user_id, name, role,
+            tenant_ids=tenant_ids, commission_rate=commission_rate, avg_deal_value=avg_deal_value,
+        )
+    except db.IntegrityError:
+        return jsonify({"error": f"משתמש עם user_id '{user_id}' כבר קיים"}), 409
+    # api_key מוחזר פעם אחת בלבד כאן (תגובת היצירה) - GET /api/admin/users כן
+    # מחזיר אותו גם הוא בפועל (ראו db.get_users) כדי שאדמין יוכל לשחזר/למסור
+    # אותו שוב מאוחר יותר בלי לאבד גישה - זה נתיב אדמין-בלבד ממילא.
+    return jsonify({"ok": True, "user_id": user_id, "api_key": api_key})
+
+
+@app.route("/api/admin/users/<user_id>", methods=["DELETE"])
+def api_admin_delete_user(user_id):
+    """מבטלת משתמש RBAC - אדמין-בלבד. המפתח שלו מפסיק לעבוד מיד (get_user_by_
+    api_key לא ימצא אותו יותר)."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    if not db.delete_user(user_id):
+        return jsonify({"error": "משתמש לא נמצא"}), 404
+    return jsonify({"ok": True})
+
+
+def _compute_commission_for_user(user: dict) -> dict:
+    """הליבה המשותפת ל-/api/partner/commissions (self) ול-/api/admin/revenue-
+    forecast (סכימה על פני כל השותפים) - סופרת לידים שהומרו (contacted/hot/
+    reactivation) בקרב ה-tenant_ids המוקצים למשתמש, ומכפילה במחיר-עסקה ממוצע
+    ובשיעור העמלה שהוגדרו לו. נוסחה שקופה ופשוטה, לא הערכה חשבונאית אמיתית."""
+    allowed_tenant_ids = set(user.get("tenant_ids") or [])
+    conversions = 0
+    total_leads = 0
+    engaged_statuses = {"contacted", "hot", "reactivation"}
+    for key, card in load_customers().items():
+        tenant_id, _, key_phone = key.partition("::")
+        resolved_tenant_id = card.get("tenant_id", tenant_id)
+        if resolved_tenant_id not in allowed_tenant_ids:
+            continue
+        total_leads += 1
+        if card.get("lead_status") in engaged_statuses:
+            conversions += 1
+
+    commission_rate = user.get("commission_rate") or 0
+    avg_deal_value = user.get("avg_deal_value") or 0
+    estimated_commission = conversions * avg_deal_value * commission_rate
+
+    return {
+        "user_id": user["user_id"], "name": user["name"],
+        "tenant_ids": sorted(allowed_tenant_ids),
+        "total_leads": total_leads,
+        "conversions": conversions,
+        "conversion_rate": round((conversions / total_leads) * 100, 1) if total_leads else 0,
+        "commission_rate": commission_rate,
+        "avg_deal_value": avg_deal_value,
+        "estimated_commission": round(estimated_commission, 2),
+    }
+
+
+@app.route("/api/partner/commissions")
+def api_partner_commissions():
+    """מחשבון עמלות לשותף (partner) - "מחשבון עמלות אישי" שהתבקש. admin/client
+    מקבלים 404 - זו יכולת ספציפית לתפקיד partner."""
+    user = g.current_user
+    if user["role"] != "partner":
+        return jsonify({"error": "מחשבון עמלות זמין רק למשתמשי partner"}), 404
+    return jsonify(_compute_commission_for_user(user))
+
+
+@app.route("/api/admin/revenue-forecast")
+def api_admin_revenue_forecast():
+    """תחזית הכנסה כוללת מעמלות שותפים - אדמין-בלבד. סוכם את _compute_commission_
+    for_user על פני כל משתמשי ה-partner הקיימים (ראו לשונית Analytics)."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    partners = [u for u in db.get_users() if u["role"] == "partner"]
+    breakdown = [_compute_commission_for_user(p) for p in partners]
+    total_forecast = round(sum(p["estimated_commission"] for p in breakdown), 2)
+    return jsonify({"partners": breakdown, "total_estimated_commission": total_forecast})
+
+
+@app.route("/api/analytics/timeseries")
+def api_analytics_timeseries():
+    """נתוני סדרת-זמן יומית ל-Chart.js (לשונית Analytics): נפח שיחות, פגישות/
+    משימות שנוצרו, והמרות (לידים שעברו לסטטוס contacted/hot/reactivation) -
+    כל אחד סופר לפי היום שבו קרה, לחלון ?days= האחרון (ברירת מחדל 14, מקסימום
+    90). מכבד בידוד Multi-Tenant (שלב 2) - partner/client רואים רק את
+    ה-tenant_ids שהוקצו להם, בדיוק כמו /api/leads."""
+    try:
+        days = max(1, min(int(request.args.get("days", 14)), 90))
+    except (TypeError, ValueError):
+        days = 14
+    allowed_tenant_ids = _effective_tenant_ids(request.args.get("tenant_id") or None)
+
+    today = datetime.now(timezone.utc).date()
+    date_labels = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+    since_date = date_labels[0]
+
+    calls_by_day = db.analytics_daily_counts("calls", allowed_tenant_ids, since_date)
+    tasks_by_day = db.analytics_daily_counts("calendar_tasks", allowed_tenant_ids, since_date)
+
+    # המרות - אין לוג-אירועים ייעודי לשינויי סטטוס (רק status_changed_at אחרון
+    # על הכרטיס עצמו) - סורקים customers.json וסופרים לפי היום של status_
+    # changed_at לכל ליד שהגיע לאחד מסטטוסי המעורבות. קירוב סביר, לא לוג מדויק
+    # של כל שינוי היסטורי (אם ליד עבר סטטוס כמה פעמים, רק האחרון נספר).
+    conversions_by_day: dict[str, int] = {}
+    engaged_statuses = {"contacted", "hot", "reactivation"}
+    for key, card in load_customers().items():
+        if card.get("lead_status") not in engaged_statuses:
+            continue
+        tenant_id, _, _ = key.partition("::")
+        resolved_tenant_id = card.get("tenant_id", tenant_id)
+        if allowed_tenant_ids is not None and resolved_tenant_id not in allowed_tenant_ids:
+            continue
+        changed_at = card.get("status_changed_at")
+        if not changed_at:
+            continue
+        day = changed_at[:10]
+        if day >= since_date:
+            conversions_by_day[day] = conversions_by_day.get(day, 0) + 1
+
+    return jsonify({
+        "labels": date_labels,
+        "calls": [calls_by_day.get(d, 0) for d in date_labels],
+        "meetings": [tasks_by_day.get(d, 0) for d in date_labels],
+        "conversions": [conversions_by_day.get(d, 0) for d in date_labels],
+    })
 
 
 @app.errorhandler(Exception)
@@ -160,23 +627,29 @@ CHAT_HISTORY_FILE = DATA_DIR / "chat_history.txt"
 
 
 def parse_incoming() -> tuple[str, str, str]:
-    """מנרמל הודעה נכנסת מכל ערוץ לפורמט אחיד: (contact_id, message_text, source)."""
+    """מנרמל הודעה נכנסת מכל ערוץ לפורמט אחיד: (contact_id, message_text, source).
+    whatsapp (form-encoded של Twilio, או JSON של ספקים כמו Green API) מפוענח דרך
+    ה-Provider הפעיל (ראו whatsapp_provider.get_provider) - כל ספק יודע לפענח את
+    הפורמט הגולמי שלו, כדי ששאר האפליקציה לא תצטרך לדעת עליו כלום. instagram/
+    facebook (PLACEHOLDER גנרי, לא תעבורת API אמיתית) ממשיכים בדיוק כמו קודם -
+    JSON עם שדה source מפורש, לא קשור ל-WhatsApp Provider בכלל."""
     source = request.args.get("source", "whatsapp")
     if source not in SUPPORTED_SOURCES:
         source = "whatsapp"
 
     if request.is_json:
-        # PLACEHOLDER: פורמט גנרי, לא הפורמט האמיתי של Meta Graph API
         data = request.get_json(silent=True) or {}
-        source = data.get("source", source)
-        contact_id = str(data.get("contact_id", ""))
-        message_text = data.get("text", "")
-    else:
-        # Twilio (WhatsApp) שולח form-encoded עם השדות From ו-Body
-        contact_id = request.form.get("From", "").replace("whatsapp:", "")
-        message_text = request.form.get("Body", "")
+        declared_source = data.get("source", source)
+        if declared_source in SUPPORTED_SOURCES and declared_source != "whatsapp":
+            # PLACEHOLDER: פורמט גנרי, לא הפורמט האמיתי של Meta Graph API
+            return str(data.get("contact_id", "")), data.get("text", ""), declared_source
+        source = "whatsapp"  # JSON בלי source אחר מוצהר = הודעת WhatsApp מבוססת-JSON (למשל Green API)
 
-    return contact_id, message_text, source
+    if source == "whatsapp":
+        contact_id, message_text = get_provider().parse_webhook(request)
+        return contact_id, message_text, source
+
+    return "", "", source
 
 
 def _log_incoming_message(tenant_id: str, source: str, contact_id: str, message_text: str) -> None:
@@ -190,7 +663,16 @@ def _log_incoming_message(tenant_id: str, source: str, contact_id: str, message_
 
 @app.route("/")
 def index():
-    return send_from_directory(BASE_DIR, "index.html")
+    """מגיש את הדשבורד, ומזריק את מפתח ה-API הפעיל כקבוע JS (window.__API_KEY__)
+    בזמן ההגשה - **לא** שמור בתוך index.html עצמו (קובץ שנמצא ב-git, ראו
+    .gitignore) כדי שהמפתח לא ידלוף להיסטוריית ה-repo. עדיין גלוי בפועל לכל
+    מי שטוען את הדף (view-source/DevTools) - זו מגבלה מובנית של מפתח סטטי
+    בפרונט משותף, לא כשל במימוש: זה חוסם רק בקשות API "עיוורות" (בוטים/
+    כלי-סריקה שלא טענו את העמוד כלל), לא תוקף ממוקד שכבר פתח את האתר."""
+    html = (BASE_DIR / "index.html").read_text(encoding="utf-8")
+    injected = f'<script>window.__API_KEY__={json.dumps(API_SECRET_KEY)};</script>'
+    html = html.replace("</head>", injected + "</head>", 1)
+    return Response(html, mimetype="text/html")
 
 
 @app.route("/api/leads")
@@ -201,15 +683,32 @@ def api_leads():
     לא להאט את טעינת הטבלה הרגילה עם שאילתת DB נוספת לכל שורה.
     ?include_score=1 (משמש את הטבלה הראשית + מסנן טווח הציון): מוסיף "ציון חום"
     מחושב (1-100, ראו db.compute_lead_score) - גם הוא כבוי כברירת מחדל מאותה סיבה
-    (עוד כמה שאילתות DB לכל שורה)."""
+    (עוד כמה שאילתות DB לכל שורה).
+    missing_fields (חדש) - תמיד מחושב, ללא opt-in: בניגוד ל-score/last_message
+    זו בדיקת dict בזיכרון בלבד (get_missing_fields), בלי שאילתת DB - אין עלות
+    ביצועים שמצדיקה כבוי-כברירת-מחדל. משמש לאינדיקטור "פרטים חסרים" בטבלה.
+
+    בידוד Multi-Tenant (שלב 2, RBAC): partner/client מוגבלים בשרת ל-tenant_ids
+    שהוקצו להם (ראו _effective_tenant_ids) - לא רק סינון-UI שאפשר לעקוף. admin
+    ממשיך לראות הכל, בדיוק כמו קודם.
+    בידוד client_id (שלב 5, נוסף על תנאי tenant_id למעלה, לא במקומו): תפקיד
+    client מוגבל בנוסף ל-card["client_id"] == user_id שלו עצמו (ראו
+    _effective_client_id) - ליד בלי client_id בכלל לא ייחשב "שלו" (לא ברירת
+    מחדל פתוחה) אלא אם צוין לו במפורש."""
     include_last_message = request.args.get("include_last_message") == "1"
     include_score = request.args.get("include_score") == "1"
+    allowed_tenant_ids = _effective_tenant_ids(request.args.get("tenant_id") or None)
+    required_client_id = _effective_client_id()
 
     leads = []
     for key, card in load_customers().items():
         tenant_id, _, key_phone = key.partition("::")
         phone = card.get("phone", key_phone)
         resolved_tenant_id = card.get("tenant_id", tenant_id)
+        if allowed_tenant_ids is not None and resolved_tenant_id not in allowed_tenant_ids:
+            continue
+        if required_client_id is not None and card.get("client_id") != required_client_id:
+            continue
         lead = {
             "tenant_id": resolved_tenant_id,
             "phone": phone,
@@ -224,6 +723,9 @@ def api_leads():
             "property_type": card.get("property_type"),
             "budget": card.get("budget"),
             "notes": card.get("notes"),
+            "client_id": card.get("client_id"),
+            "ai_enabled": card.get("ai_enabled", True),
+            "missing_fields": get_missing_fields(card),
         }
         if include_last_message:
             last = db.get_last_message(phone, tenant_id=resolved_tenant_id)
@@ -235,6 +737,22 @@ def api_leads():
             lead["score"] = db.compute_lead_score(phone, tenant_id=resolved_tenant_id)
         leads.append(lead)
     return jsonify(leads)
+
+
+def _requested_client_id(data: dict) -> str | None:
+    """שלב 5 (Enterprise Production Readiness): מחלצת client_id מבקשת יצירה/
+    עריכת ליד - admin/partner **בלבד** רשאים לקבוע/לנקות אותו. client שמנסה
+    לשלוח את השדה הזה בבקשה נחסם בשקט (מתעלמים מהשדה, לא 403 לכל הבקשה - שאר
+    השדות עדיין נשמרים כרגיל) - זה בדיוק העיקוף שהבידוד ב-_effective_client_id
+    נועד למנוע: client לא יכול "להעביר" ליד לעצמו/לאחר בעצמו.
+    None = השדה לא נשלח בבקשה, או שהמשתמש הנוכחי לא מורשה - update_lead_fields
+    מתייחס לשניהם כ"לא נוגעים בשדה" (זהה ל-None של כל שדה אחר שם). "" (מחרוזת
+    ריקה) מפורשת מ-admin/partner = ניקוי מכוון של השיוך - שונה מ-None בכוונה."""
+    if "client_id" not in data:
+        return None
+    if g.current_user["role"] not in ("admin", "partner"):
+        return None
+    return (data.get("client_id") or "").strip()
 
 
 @app.route("/api/leads", methods=["POST"])
@@ -262,6 +780,7 @@ def api_create_lead():
         lead_status=status,
         category=(data.get("category") or "").strip() or None,
         agent=(data.get("agent") or "").strip() or None,
+        client_id=_requested_client_id(data) or None,
     )
     return jsonify({"ok": True, "card": card, "is_new": is_new})
 
@@ -301,6 +820,7 @@ def api_update_lead():
         agent=data.get("agent"),
         category=data.get("category"),
         notes=data.get("notes"),
+        client_id=_requested_client_id(data),
     )
     return jsonify({"ok": True, "card": card, "phone": phone})
 
@@ -328,23 +848,32 @@ def api_search():
     קטגוריה, מ-customers.json - בזיכרון, זול), ובנוסף מחפש בתוכן פעילות (הודעות
     וואטסאפ, הערות/תקציר שיחות, כותרת/הערות משימות - db.search_activity). מחזיר
     איחוד (union) של שתי ההתאמות כרשימת {phone, tenant_id} - הדשבורד מסנן לפיה את
-    allLeads הטעון כבר, בלי לשלוף מחדש את כל רשימת הלידים."""
+    allLeads הטעון כבר, בלי לשלוף מחדש את כל רשימת הלידים.
+
+    בידוד Multi-Tenant (שלב 2): שתי ההתאמות (כרטיס + db.search_activity) מסוננות
+    ל-tenant_ids המותרים למשתמש - אחרת חיפוש היה יכול "לדלוף" קיום/תוכן של ליד
+    מ-tenant אחר, גם אם /api/leads הרגיל כבר לא מציג אותו."""
     q = (request.args.get("q") or "").strip()
     if not q:
         return jsonify([])
     q_lower = q.lower()
+    allowed_tenant_ids = _effective_tenant_ids(None)
 
     matches = set()
     for key, card in load_customers().items():
         tenant_id, _, key_phone = key.partition("::")
         phone = card.get("phone", key_phone)
         resolved_tenant_id = card.get("tenant_id", tenant_id)
+        if allowed_tenant_ids is not None and resolved_tenant_id not in allowed_tenant_ids:
+            continue
         haystack = " ".join(str(card.get(f) or "") for f in
                              ("customer_name", "business_name", "location", "phone", "category", "agent")).lower()
         if q_lower in haystack:
             matches.add((phone, resolved_tenant_id))
 
-    matches.update(db.search_activity(q))
+    for phone, tenant_id in db.search_activity(q):
+        if allowed_tenant_ids is None or tenant_id in allowed_tenant_ids:
+            matches.add((phone, tenant_id))
 
     return jsonify([{"phone": phone, "tenant_id": tenant_id} for phone, tenant_id in matches])
 
@@ -355,7 +884,9 @@ VALID_LEAD_STATUSES = {"new", "contacted", "hot", "not_relevant", "reactivation"
 @app.route("/api/leads/status", methods=["POST"])
 def api_update_lead_status():
     """מעדכן lead_status ידנית מהדשבורד (שורת הטבלה או פאנל ההיסטוריה). זו רק עדכון
-    סטטוס ב-customers.json - לא הודעה, ולכן לא נרשם בטבלת messages."""
+    סטטוס ב-customers.json - לא הודעה, ולכן לא נרשם בטבלת messages.
+    שלב 6 (סגירת פיילוט): אוכף בעלות (tenant_id+client_id) לפני השינוי -
+    ראו _authorize_lead_access."""
     data = request.get_json(silent=True) or {}
     phone = (data.get("phone") or "").strip()
     tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
@@ -363,15 +894,20 @@ def api_update_lead_status():
 
     if not phone or status not in VALID_LEAD_STATUSES:
         return jsonify({"error": "טלפון או סטטוס לא תקינים"}), 400
+    _, err = _authorize_lead_access(phone, tenant_id)
+    if err:
+        return err
 
     card = update_lead_status(phone, status, tenant_id=tenant_id)
+    publish_event("lead_status_changed", {"phone": phone, "tenant_id": tenant_id, "status": status})
     return jsonify({"ok": True, "card": card})
 
 
 @app.route("/api/leads/category", methods=["POST"])
 def api_update_lead_category():
     """מעדכן קטגוריה חופשית לליד (לדוגמה: נדל"ן/פרטי/משפחה) - שדה סיווג ידני,
-    לא קשור ל-lead_status. category ריק ("") מנקה את השדה."""
+    לא קשור ל-lead_status. category ריק ("") מנקה את השדה.
+    שלב 6: אוכף בעלות - ראו _authorize_lead_access."""
     data = request.get_json(silent=True) or {}
     phone = (data.get("phone") or "").strip()
     tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
@@ -379,6 +915,9 @@ def api_update_lead_category():
 
     if not phone:
         return jsonify({"error": "חסר טלפון"}), 400
+    _, err = _authorize_lead_access(phone, tenant_id)
+    if err:
+        return err
 
     card = update_lead_category(phone, category, tenant_id=tenant_id)
     return jsonify({"ok": True, "card": card})
@@ -386,7 +925,8 @@ def api_update_lead_category():
 
 @app.route("/api/leads/agent", methods=["POST"])
 def api_update_lead_agent():
-    """מעדכן "סוכן מטפל" - שדה טקסט חופשי, מטא-דאטה בלבד (כמו /api/leads/category)."""
+    """מעדכן "סוכן מטפל" - שדה טקסט חופשי, מטא-דאטה בלבד (כמו /api/leads/category).
+    שלב 6: אוכף בעלות - ראו _authorize_lead_access."""
     data = request.get_json(silent=True) or {}
     phone = (data.get("phone") or "").strip()
     tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
@@ -394,8 +934,37 @@ def api_update_lead_agent():
 
     if not phone:
         return jsonify({"error": "חסר טלפון"}), 400
+    _, err = _authorize_lead_access(phone, tenant_id)
+    if err:
+        return err
 
     card = update_lead_agent(phone, agent, tenant_id=tenant_id)
+    return jsonify({"ok": True, "card": card})
+
+
+@app.route("/api/leads/ai-toggle", methods=["POST"])
+def api_update_lead_ai_enabled():
+    """מפעיל/מכבה מענה AI אוטומטי לליד ספציפי (שלב 5 - Enterprise Production
+    Readiness) - המתג ב-#panelChat/#inboxChat ב-index.html. כשכבוי: הודעות
+    נכנסות ממשיכות להירשם ולחלץ פרטים כרגיל (extract.process_message), אבל
+    לא מיוצרת/נשלחת תשובה אוטומטית - ראו _ai_enabled_for וההערה המלאה ב-
+    _process_incoming_message_job/webhook. מענה חוזר לפעול ידנית בלבד דרך
+    /api/messages/send, בדיוק כמו לפני שהייתה בכלל תשובה אוטומטית.
+    אוכף בעלות (tenant_id+client_id) - ראו _authorize_lead_access, שמאז שלב 6
+    משמשת גם את /api/leads/status,/category,/agent למעלה, לא רק את הנתיב הזה."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    ai_enabled = data.get("ai_enabled")
+
+    if not phone or not isinstance(ai_enabled, bool):
+        return jsonify({"error": "חסר טלפון, או ai_enabled לא תקין (בוליאני)"}), 400
+    _, err = _authorize_lead_access(phone, tenant_id)
+    if err:
+        return err
+
+    card = update_lead_ai_enabled(phone, ai_enabled, tenant_id=tenant_id)
+    publish_event("lead_updated", {"phone": phone, "tenant_id": tenant_id})
     return jsonify({"ok": True, "card": card})
 
 
@@ -413,22 +982,38 @@ IMPORT_FIELD_ALIASES = {
     "notes": {"notes", "note", "comments", "הערות", "הערה"},
 }
 
+# ייבוא קמפייני B2B (POST /api/campaigns/import, ראו outbound_engine.py) - מיפוי
+# נפרד מ-IMPORT_FIELD_ALIASES למעלה: שדות שונים (company/category, לא business_
+# name/lead_status/notes וכו' שרלוונטיים ספציפית לכרטיס ליד ב-customers.json).
+CAMPAIGN_FIELD_ALIASES = {
+    "phone": {"phone", "phone_number", "mobile", "טלפון", "מספר טלפון", "נייד", "מס' טלפון"},
+    "name": {"name", "full name", "contact", "שם", "שם איש קשר", "איש קשר"},
+    "company": {"company", "business", "organization", "חברה", "עסק", "ארגון"},
+    "category": {"category", "vertical", "industry", "קטגוריה", "ענף", "תחום"},
+}
+
 
 def _normalize_header(h) -> str:
     return str(h or "").strip().lower()
 
 
-def _map_import_row(raw_row: dict) -> dict:
-    """ממפה שורת CSV/Excel גולמית (עמודות בכל שם סביר, עברית או אנגלית) לשדות התקניים."""
+def _map_row(raw_row: dict, field_aliases: dict = IMPORT_FIELD_ALIASES) -> dict:
+    """ממפה שורת CSV/Excel גולמית (עמודות בכל שם סביר, עברית או אנגלית) לשדות
+    התקניים, לפי מילון aliases נתון - משותף לייבוא לידים (IMPORT_FIELD_ALIASES)
+    וגם לייבוא קמפייני B2B (CAMPAIGN_FIELD_ALIASES, ראו api_import_campaign)."""
     normalized = {_normalize_header(k): v for k, v in raw_row.items()}
     mapped = {}
-    for field, aliases in IMPORT_FIELD_ALIASES.items():
+    for field, aliases in field_aliases.items():
         for alias in aliases:
             value = normalized.get(_normalize_header(alias))
             if value not in (None, ""):
                 mapped[field] = str(value).strip()
                 break
     return mapped
+
+
+def _map_import_row(raw_row: dict) -> dict:
+    return _map_row(raw_row, IMPORT_FIELD_ALIASES)
 
 
 def _parse_import_csv(file_stream) -> list[dict]:
@@ -521,7 +1106,10 @@ EXPORT_COLUMNS = [
 def api_export_leads():
     """מייצא את כל הלידים (כולל ציון חום מחושב) ל-CSV נקי - "📤 ייצוא לידים" בדשבורד.
     העמודות תואמות בכוונה למה שנתמך גם בייבוא חזרה (IMPORT_FIELD_ALIASES) - חוץ
-    מ-score, שהוא שדה מחושב-נגזר (db.compute_lead_score) ולעולם לא נשמר/מיובא."""
+    מ-score, שהוא שדה מחושב-נגזר (db.compute_lead_score) ולעולם לא נשמר/מיובא.
+    בידוד Multi-Tenant (שלב 2): partner/client מייצאים רק את ה-tenant_ids
+    שהוקצו להם - ייצוא הוא בדיוק סוג "דליפת נתונים" שהבידוד נועד למנוע."""
+    allowed_tenant_ids = _effective_tenant_ids(request.args.get("tenant_id") or None)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(EXPORT_COLUMNS)
@@ -529,6 +1117,8 @@ def api_export_leads():
         tenant_id, _, key_phone = key.partition("::")
         phone = card.get("phone", key_phone)
         resolved_tenant_id = card.get("tenant_id", tenant_id)
+        if allowed_tenant_ids is not None and resolved_tenant_id not in allowed_tenant_ids:
+            continue
         score = db.compute_lead_score(phone, tenant_id=resolved_tenant_id)
         writer.writerow([
             card.get("customer_name") or "", phone, card.get("business_name") or "",
@@ -573,11 +1163,17 @@ def api_add_note():
     return jsonify({"ok": True})
 
 
-@app.route("/api/leads/objection-response", methods=["POST"])
-def api_objection_response():
-    """AI Sales Copilot - מציע מענה קצר להודעה האחרונה **שהתקבלה מהלקוח** (direction=
-    "in" - לא סתם ההודעה הכרונולוגית האחרונה, שיכולה להיות תגובה אוטומטית שלנו עצמנו).
-    לא שולח כלום - רק מחזיר טקסט מוצע; הנציג מחליט אם/איך להשתמש בו."""
+@app.route("/api/sales/suggest-reply", methods=["POST"])
+def api_sales_suggest_reply():
+    """סוכן מכירות והתנגדויות (sales_agent.py) - מציע עד 3 ניסוחי מענה + קטגוריית
+    התנגדות שזוהתה, להודעה האחרונה **שהתקבלה מהלקוח** (direction="in" - לא סתם
+    ההודעה הכרונולוגית האחרונה, שיכולה להיות תגובה אוטומטית שלנו עצמנו). מחליף
+    את /api/leads/objection-response הקודם (הצעה בודדת, בלי סיווג) - ראו הערת
+    ה-deprecation ב-extract.py.
+    **חוק בטיחות #1 (CLAUDE.md):** לא שולח כלום, לא כותב כלום ל-DB, לא סוגר
+    עסקה ולא מתחייב על מחיר (נאכף גם בתוך הפרומפט עצמו - ראו sales_agent.py) -
+    רק מחזיר טקסטים מוצעים; השליחה בפועל תמיד דרך POST /api/messages/send
+    הקיים, בלחיצה אנושית מפורשת על "✅ אישור ושליחה" בדשבורד."""
     data = request.get_json(silent=True) or {}
     phone = (data.get("phone") or "").strip()
     tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
@@ -589,9 +1185,26 @@ def api_objection_response():
     if not last_inbound:
         return jsonify({"error": "אין עדיין הודעה נכנסת מהלקוח להתייחס אליה"}), 400
 
+    # הקשר לניסוח - עד 10 ההודעות/אינטראקציות האחרונות (לא ההיסטוריה המלאה כמו
+    # בסיכום המנהלים; כאן צריך הקשר קרוב-לרגע, לא סקירה כוללת, ופחות טוקנים
+    # לקריאה שקורית תוך כדי שיחה חיה, לא פעם אחת בסופה).
+    recent = messages[-10:]
+    history_lines = [
+        f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
+        for m in recent
+    ]
+
     card = load_customers().get(f"{tenant_id}::{phone}", {})
-    response_text = generate_objection_response(last_inbound["message"], card)
-    return jsonify({"ok": True, "response": response_text, "based_on": last_inbound["message"]})
+    result = sales_agent.suggest_replies(
+        last_inbound["message"], card, history_text="\n".join(history_lines)
+    )
+    return jsonify({
+        "ok": True,
+        "category": result["category"],
+        "category_label": result["category_label"],
+        "replies": result["replies"],
+        "based_on": last_inbound["message"],
+    })
 
 
 @app.route("/api/leads/executive-summary", methods=["POST"])
@@ -616,6 +1229,35 @@ def api_executive_summary():
     card = load_customers().get(f"{tenant_id}::{phone}", {})
     summary_text = generate_executive_summary("\n".join(history_lines), card)
     return jsonify({"ok": True, "summary": summary_text})
+
+
+@app.route("/api/leads/missing-fields/suggest", methods=["POST"])
+def api_missing_fields_suggest():
+    """מציע הודעת פנייה עדינה לבקשת השלמת פרטים חסרים בכרטיס (ראו extract.
+    get_missing_fields/generate_missing_fields_message) - כפתור "🧩 הצע הודעת
+    השלמה" בפאנל ה-Timeline. דורש שכבר הייתה אינטראקציה עם הליד (היסטוריה
+    לא-ריקה) - אין טעם/זה לא אמור לפנות ליד קר שמעולם לא יצרנו איתו קשר בכלל.
+    **לא שולח כלום** - רק מחזיר טקסט מוצע; השליחה בפועל היא אך ורק דרך לחיצה
+    אנושית מפורשת על "✅ אישור ושליחה" בדשבורד, שקוראת ל-POST /api/messages/send
+    הקיים (אין נתיב שליחה נפרד/מקביל - חוק בטיחות #1 ב-CLAUDE.md)."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+
+    card = load_customers().get(f"{tenant_id}::{phone}")
+    if not card:
+        return jsonify({"error": "הליד לא נמצא"}), 404
+    if not card.get("history"):
+        return jsonify({"error": "אין עדיין אינטראקציה עם הליד הזה - אין טעם לבקש השלמת פרטים לפני יצירת קשר ראשוני"}), 400
+
+    missing_fields = get_missing_fields(card)
+    if not missing_fields:
+        return jsonify({"error": "אין שדות חסרים בכרטיס הליד הזה"}), 400
+
+    message_text = generate_missing_fields_message(card, missing_fields)
+    return jsonify({"ok": True, "missing_fields": missing_fields, "message": message_text})
 
 
 @app.route("/api/reactivate", methods=["POST"])
@@ -696,6 +1338,87 @@ def api_reactivate_eligible_count():
     return jsonify({"tenant_id": tenant_id, "days": days, "eligible_count": len(cold_leads)})
 
 
+# ---- קמפייני B2B Outbound (outbound_engine.py) - ייבוא + תור שליחה מבוקר-קצב ----
+
+@app.route("/api/campaigns/import", methods=["POST"])
+def api_campaigns_import():
+    """מייבא קובץ CSV/XLSX של אנשי קשר B2B ל-outbound_queue (ראו outbound_engine.
+    import_campaign_rows) - ממפה עמודות אוטומטית (עברית/אנגלית, CAMPAIGN_FIELD_
+    ALIASES) ומנרמל טלפון ל-E.164. **לא שולח שום דבר** - רק ממלא את התור
+    (status='queued'); השליחה בפועל דורשת קליק נפרד על POST /api/campaigns/
+    <id>/start (חוק בטיחות #1 ב-CLAUDE.md - פנייה יזומה ראשונה תמיד דורשת
+    אישור אנושי מפורש, לא רק ייבוא-אוטומטי-ואז-שליחה)."""
+    if "file" not in request.files:
+        return jsonify({"error": "לא צורף קובץ (שדה 'file')"}), 400
+
+    upload = request.files["file"]
+    ext = Path(upload.filename or "").suffix.lower()
+    if ext not in ALLOWED_IMPORT_EXTENSIONS:
+        return jsonify({"error": f"סוג קובץ לא נתמך: '{ext or 'ללא סיומת'}'. נתמכים: CSV, XLSX"}), 400
+
+    tenant_id = request.form.get("tenant_id") or DEFAULT_TENANT_ID
+    message_template = request.form.get("message_template") or None
+
+    try:
+        raw_rows = _parse_import_csv(upload.stream) if ext == ".csv" else _parse_import_excel(upload.stream)
+    except Exception as exc:
+        return jsonify({"error": f"שגיאה בקריאת הקובץ: {exc}"}), 400
+
+    mapped_rows = [_map_row(raw_row, CAMPAIGN_FIELD_ALIASES) for raw_row in raw_rows]
+    campaign_id = uuid.uuid4().hex[:12]
+    result = outbound_engine.import_campaign_rows(
+        mapped_rows, tenant_id=tenant_id, campaign_id=campaign_id, message_template=message_template
+    )
+    return jsonify({
+        "ok": True,
+        "campaign_id": campaign_id,
+        "total_rows": len(raw_rows),
+        "queued": result["queued"],
+        "skipped": result["skipped"],
+    })
+
+
+@app.route("/api/campaigns")
+def api_campaigns_list():
+    """רשימת קמפיינים מקובצת עם ספירות לפי סטטוס (queued/sent/simulated/failed/
+    skipped_quota) - ללשונית B2B Campaigns בדשבורד."""
+    tenant_id = request.args.get("tenant_id") or None
+    return jsonify(db.get_outbound_campaigns(tenant_id=tenant_id))
+
+
+@app.route("/api/campaigns/<campaign_id>/queue")
+def api_campaign_queue(campaign_id):
+    """תור השליחה החי של קמפיין ספציפי (כל הפריטים, כל הסטטוסים) - polling
+    מה-UI בזמן שהשליחה רצה ברקע, בדיוק כמו GET /api/reactivate/batches/<id>."""
+    tenant_id = request.args.get("tenant_id") or None
+    return jsonify(db.get_outbound_queue(tenant_id=tenant_id, campaign_id=campaign_id))
+
+
+@app.route("/api/campaigns/<campaign_id>/start", methods=["POST"])
+def api_campaign_start(campaign_id):
+    """מפעילה שליחה בפועל של קמפיין - **קליק אנושי מפורש הוא האישור הנדרש**
+    (חוק בטיחות #1). רצה ברקע (thread נפרד), לא סינכרונית בתוך הבקשה - מנוע
+    ה-Anti-Ban (outbound_engine.MIN/MAX_DELAY_SECONDS) משהה 45-90 שניות
+    רנדומליות בין הודעה להודעה, שיכול לארוך דקות/שעות לקמפיין גדול - יותר
+    מדי זמן להחזיק בקשת HTTP פתוחה. הנתיב מחזיר מיד; הדשבורד עוקב אחרי
+    ההתקדמות דרך GET /api/campaigns/<id>/queue (polling)."""
+    data = request.get_json(silent=True) or {}
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+
+    pending = db.get_outbound_queue(tenant_id=tenant_id, campaign_id=campaign_id, status="queued")
+    if not pending:
+        return jsonify({"error": "אין פריטים בסטטוס 'queued' לקמפיין הזה"}), 400
+
+    def _run_in_background():
+        try:
+            outbound_engine.run_campaign(tenant_id=tenant_id, campaign_id=campaign_id)
+        except Exception:
+            logger.exception("קמפיין B2B outbound (campaign_id=%s) נכשל ברקע", campaign_id)
+
+    threading.Thread(target=_run_in_background, daemon=True, name=f"outbound-campaign-{campaign_id}").start()
+    return jsonify({"ok": True, "campaign_id": campaign_id, "total_queued": len(pending), "status": "started"})
+
+
 @app.route("/api/tenant-settings")
 def api_get_tenant_settings():
     """הגדרות פר-tenant (כרגע רק reactivation_days) - קריאה בלבד, לשימוש פאנל
@@ -762,10 +1485,11 @@ def api_send_message():
 
     simulated = False
     sid = None
+    provider = get_provider()
     try:
-        sid = send_whatsapp_message(phone, message)
+        sid = provider.send_message(phone, message)
     except Exception as exc:
-        if not is_trial_restriction(exc):
+        if not provider.is_soft_failure(exc):
             return jsonify({"error": str(exc)}), 502
         # חשבון Twilio מסוג Trial חסם את השליחה בפועל (למשל נמען לא מאומת) - זו לא
         # שגיאת קוד; רושמים את ההודעה כ"מדומה" (simulated) כדי לאפשר לבדוק את חלון
@@ -774,6 +1498,7 @@ def api_send_message():
 
     card = log_manual_reply(phone, message, tenant_id=tenant_id, simulated=simulated)
     db.log_message(phone, message, direction="out", tenant_id=tenant_id, channel="whatsapp", simulated=simulated)
+    publish_event("message", {"phone": phone, "tenant_id": tenant_id, "direction": "out"})
 
     response = {"ok": True, "sid": sid, "card": card, "simulated": simulated}
     if simulated:
@@ -784,10 +1509,21 @@ def api_send_message():
     return jsonify(response)
 
 
+@app.route("/api/calls/config-status")
+def api_calls_config_status():
+    """בדיקת-תקינות מפורשת לתצורת Voice (AGENT_PHONE_NUMBER/PUBLIC_BASE_URL וכו',
+    ראו voice_call.get_missing_voice_config) - לפני שמנסים בכלל לחייג, לא רק
+    כתגובה לכישלון אחרי ניסיון. ה-UI קורא לזה כדי להציג לנציג מראש אם השיחה
+    הקרובה תהיה חיה או תסומן כסימולציה (ראו callConfigBadge ב-index.html) -
+    בדיקה קריאה-בלבד, לא נוגעת בכלום."""
+    missing = voice_call.get_missing_voice_config()
+    return jsonify({"configured": not missing, "missing": missing})
+
+
 @app.route("/api/calls/start", methods=["POST"])
 def api_calls_start():
     """יוזם Click-to-Call (גישור נציג→לקוח). אישור אנושי = הקליק על '📞 שיחה' בדשבורד.
-    כרגע (סביבת פיתוח) אין מספר Twilio Voice/PUBLIC_BASE_URL מוגדרים - זה ייתפס כאן
+    אם תצורת Voice חסרה ב-.env (ראו voice_call.get_missing_voice_config) - זה ייתפס כאן
     ויתנהג בדיוק כמו is_trial_restriction ב-/api/messages/send: נרשם כ-simulated,
     מוחזר 200 (לא 502), כדי לאפשר להמשיך ולבדוק את שאר הזרימה (הערות → תקציר → כרטיס)."""
     data = request.get_json(silent=True) or {}
@@ -815,6 +1551,18 @@ def api_calls_start():
             "נרשמה כסימולציה כדי לאפשר להמשיך למילוי הערות ותקציר."
         )
     return jsonify(response)
+
+
+@app.route("/api/calls/<int:call_id>")
+def api_call_get(call_id):
+    """מצב שיחה בודדת לפי id - לשימוש polling חי מה-UI (callPanel) בזמן שהגישור
+    בעיצומו: status מתעדכן אסינכרונית ע"י Twilio (POST /voice/status, ראו
+    db.update_call_status) - הפולינג הזה הוא הדרך שבה הדשבורד "רואה" מעברים
+    כמו ringing->in-progress->completed בזמן אמת, לא רק בהנחה אופטימית."""
+    call = db.get_call(call_id)
+    if not call:
+        return jsonify({"error": "שיחה לא נמצאה"}), 404
+    return jsonify(call)
 
 
 @app.route("/api/calls/<int:call_id>/notes", methods=["POST"])
@@ -898,7 +1646,16 @@ def api_call_transcribe_recording(call_id):
     היסטוריית השיחות (קליק על משפט קופץ לנקודת הזמן המתאימה בהקלטה). שונה
     מ-/api/calls/<id>/transcribe (זו לא הכתבה ידנית של קובץ שהועלה - זו ההקלטה
     שכבר קיימת על השיחה עצמה). 400 אם לשיחה הזו אין recording_url בכלל (עדיין
-    לא נתמכה - למשל שיחה simulated, או שהוקלטה עדיין לא הגיעה)."""
+    לא נתמכה - למשל שיחה simulated, או שהוקלטה עדיין לא הגיעה).
+
+    שלב 6 (סגירת פיילוט): מלבד חותמות-הזמן (transcript_segments, לנגן האינטראקטיבי),
+    התמליל **גם** משתקף להיסטוריית הליד - תקציר קצר (generate_call_summary, כמו
+    ב-/api/calls/<id>/notes) נכתב ל-messages/customers.json (channel="voice") -
+    כדי ששיחה שתומללה אוטומטית תופיע בצ'אט/Timeline הרגיל, לא רק בנגן התמליל.
+    בכוונה **לא** נוגע ב-calls.notes/summary עצמם (בניגוד ל-/notes) - אלה שדות
+    בבעלות זרימת ההקלדה הידנית; אם נציג כבר הקליד הערות לשיחה הזו, לא רוצים
+    לדרוס אותן בשקט רק כי מישהו לחץ "תמלל" אחר כך. כשל בשיקוף להיסטוריה (למשל
+    Claude API) לא מפיל את הבקשה - התמליל/חותמות הזמן כבר נשמרו בהצלחה למעלה."""
     call = db.get_call(call_id)
     if not call:
         return jsonify({"error": "שיחה לא נמצאה"}), 404
@@ -916,6 +1673,20 @@ def api_call_transcribe_recording(call_id):
         return jsonify({"error": f"תמלול נכשל: {exc}"}), 502
 
     updated_call = db.save_transcript_segments(call_id, result["segments"])
+
+    phone, tenant_id, simulated = call["phone"], call["tenant_id"], call["simulated"]
+    try:
+        card = load_customers().get(f"{tenant_id}::{phone}", {})
+        summary = generate_call_summary(result["text"], card)
+        log_call_summary(phone, summary, tenant_id=tenant_id, simulated=simulated)
+        db.log_message(phone, summary, direction="out", tenant_id=tenant_id, channel="voice", simulated=simulated)
+        publish_event("message", {"phone": phone, "tenant_id": tenant_id, "direction": "out"})
+    except Exception as exc:
+        logger.warning(
+            "שיקוף תמליל שיחה (call_id=%s) להיסטוריית הליד נכשל - התמליל/חותמות הזמן עצמם נשמרו בהצלחה: %s",
+            call_id, exc,
+        )
+
     return jsonify({"ok": True, "text": result["text"], "call": updated_call})
 
 
@@ -969,12 +1740,32 @@ def api_tasks():
     """משימות מעקב/תזכורות (follow-up) - לא קשור להודעות. GET עם ?phone=&tenant_id=
     מחזיר את המשימות של ליד ספציפי (לפאנל "📅 משימות"); GET בלי phone מחזיר את כל
     המשימות (אופציונלית מסונן ב-?tenant_id=&status=, לתצוגת "📅 יומן" הגלובלית).
-    POST יוצר משימה חדשה."""
+    POST יוצר משימה חדשה.
+
+    בידוד (שלב 5 - Enterprise Production Readiness, ראו api_leads לאותו רעיון
+    בדיוק): db.get_tasks עצמה לא יודעת כלום על RBAC - מסננים כאן, אחרי השליפה,
+    לפי tenant_id (שלב 2) וגם client_id (שלב 5, לפי הכרטיס ב-customers.json של
+    הליד שהמשימה שייכת לו - למשימות אין client_id משלהן). tenant_id ריק ("כל
+    הטננטים") לא נחסם ב-partner/client - מסונן בפועל לפי tenant_ids/client_id
+    שהוקצו להם, בדיוק כמו GET /api/leads."""
     if request.method == "GET":
         phone = request.args.get("phone") or None
         tenant_id = request.args.get("tenant_id") or None
         status = request.args.get("status") or None
-        return jsonify(db.get_tasks(phone=phone, tenant_id=tenant_id, status=status))
+        tasks = db.get_tasks(phone=phone, tenant_id=tenant_id, status=status)
+
+        allowed_tenant_ids = _effective_tenant_ids(tenant_id)
+        if allowed_tenant_ids is not None:
+            tasks = [t for t in tasks if t.get("tenant_id") in allowed_tenant_ids]
+        required_client_id = _effective_client_id()
+        if required_client_id is not None:
+            customers = load_customers()
+            tasks = [
+                t for t in tasks
+                if (customers.get(f"{t.get('tenant_id', DEFAULT_TENANT_ID)}::{t.get('phone')}") or {}).get("client_id")
+                == required_client_id
+            ]
+        return jsonify(tasks)
 
     data = request.get_json(silent=True) or {}
     phone = (data.get("phone") or "").strip()
@@ -994,15 +1785,47 @@ def api_tasks():
 @app.route("/api/tasks/<int:task_id>/status", methods=["POST"])
 def api_task_status(task_id):
     """מעדכן סטטוס משימה (pending/done/cancelled) - מהתגית "✓ בוצע"/"✗ בטל" בפאנל
-    המשימות או ביומן הגלובלי."""
+    המשימות או ביומן הגלובלי. **לא** לשימוש על הצעות אוטומטיות (status=
+    'pending_confirmation', ראו scheduling_agent.py) - נחסם במפורש (400) כדי
+    שלא לעקוף בטעות דרך הכפתור הכללי את הטיפול בפגישה המקורית (related_task_id)
+    שקורה בפועל רק דרך /confirm או /reject למטה."""
     data = request.get_json(silent=True) or {}
     status = data.get("status")
     if status not in VALID_TASK_STATUSES:
         return jsonify({"error": "סטטוס לא תקין"}), 400
 
+    existing = db.get_task(task_id)
+    if existing and existing["status"] == "pending_confirmation":
+        return jsonify({"error": "זו הצעה אוטומטית - יש לאשר (/confirm) או לדחות (/reject) אותה, לא לשנות סטטוס ישירות"}), 400
+
     task = db.update_task_status(task_id, status)
     if not task:
         return jsonify({"error": "משימה לא נמצאה"}), 404
+    return jsonify({"ok": True, "task": task})
+
+
+@app.route("/api/tasks/<int:task_id>/confirm", methods=["POST"])
+def api_task_confirm(task_id):
+    """מאשרת הצעת פגישה שזוהתה אוטומטית ע"י scheduling_agent - כפתור "✅ אשר"
+    ביומן/בפאנל המשימות. זו הפעולה היחידה שמפעילה בפועל הצעה: הופכת אותה
+    לפגישה אמיתית (intent="new"), או מבצעת את הביטול/הזזת המועד המבוקשים על
+    הפגישה המקורית (intent="cancel"/"reschedule", ראו db.confirm_task_proposal) -
+    **תמיד** מקליק נציג מפורש כאן, אף פעם לא אוטומטית (חוק בטיחות #1)."""
+    task = db.confirm_task_proposal(task_id)
+    if not task:
+        return jsonify({"error": "הצעה לא נמצאה, או שכבר טופלה"}), 404
+    publish_event("meeting_booked", {"phone": task["phone"], "tenant_id": task["tenant_id"], "task_id": task_id})
+    return jsonify({"ok": True, "task": task})
+
+
+@app.route("/api/tasks/<int:task_id>/reject", methods=["POST"])
+def api_task_reject(task_id):
+    """דוחה הצעת פגישה שזוהתה אוטומטית - כפתור "❌ דחה". לא נוגעת בשום פגישה
+    קיימת שההצעה הפנתה אליה (related_task_id, אם יש) - רק מסמנת את ההצעה
+    עצמה כמבוטלת."""
+    task = db.reject_task_proposal(task_id)
+    if not task:
+        return jsonify({"error": "הצעה לא נמצאה, או שכבר טופלה"}), 404
     return jsonify({"ok": True, "task": task})
 
 
@@ -1091,15 +1914,185 @@ def voice_recording_status():
     return Response(status=204)
 
 
+# ---- תור עיבוד AI אסינכרוני (שלב 3) ----
+# מפריד בין קבלת ה-webhook (מהיר: פענוח + רישום ההודעה הנכנסת + 200 מיידי)
+# לבין עיבוד ה-AI (חילוץ פרטים/מענה אוטומטי/זיהוי כוונת תזמון - קריאות Claude,
+# יכולות לארוך כמה שניות) - כדי שהספק (UltraMsg/Green API) לא יחכה על webhook
+# שתלוי בקריאת AI, ובלי טעם. **לא** חל על Twilio (TwiML): שם התשובה האוטומטית
+# חייבת להיכלל בגוף אותה תגובת HTTP עצמה (חוזה ה-webhook של Twilio) - אין דרך
+# "להחזיר קודם ולהשלים אחר כך" בלי לשנות את הפרוטוקול לגמרי, אז שם ממשיכים
+# סינכרוני בדיוק כמו קודם (ראו requires_twiml_reply למטה).
+#
+# worker יחיד (לא thread-pool) בכוונה: process_message_with_reply/extract.py
+# עושים read-modify-write גולמי על customers.json (בלי נעילת קובץ) - כמה
+# threads שכותבים בו-זמנית עלולים "לבלוע" עדכון אחד של השני (lost update).
+# תור FIFO עם צרכן יחיד משמר בדיוק את אותה סריאליזציה שכבר קיימת היום (בקשה
+# אחרי בקשה) - רק בלי לעכב את תגובת ה-webhook עצמה.
+#
+# ⚠️ worker תוך-process (thread), לא broker חיצוני (Redis/Celery) - תחת
+# Gunicorn עם כמה workers, לכל process יהיה תור/worker נפרדים משלו. זה *לא*
+# בעיה כאן (בשונה מ-scheduler.py, שהוא job מחזורי שהיה רץ כפול על כל worker) -
+# כל בקשת webhook מטופלת במלואה בתוך אותו worker process שקיבל אותה מלכתחילה,
+# אין צורך בתיאום בין processes בכלל.
+_webhook_job_queue: "queue_module.Queue" = queue_module.Queue()
+
+# ---- השהיה אקראית לפני שליחת מענה AI אוטומטי (שלב 5) ----
+# אנטי-זיהוי-אוטומציה: תשובה שחוזרת תוך שניות בודדות "נראית" בוט מובהק בעיני
+# WhatsApp/הלקוח - לא קשור למנגנון ה-Anti-Ban של outbound_engine.py (שם ההשהיה
+# היא בין הודעה להודעה ב*קמפיין* יזום ללקוחות חדשים; כאן זו השהיה לפני מענה
+# חוזר ל*אותו* לקוח שכבר כתב אלינו - שני מנגנונים נפרדים בכוונה, לא כפילות).
+AUTO_REPLY_MIN_DELAY_SECONDS = int(os.environ.get("AUTO_REPLY_MIN_DELAY_SECONDS", "35"))
+AUTO_REPLY_MAX_DELAY_SECONDS = int(os.environ.get("AUTO_REPLY_MAX_DELAY_SECONDS", "75"))
+
+
+def _send_auto_reply_after_delay(provider, contact_id: str, reply_text: str, tenant_id: str) -> None:
+    """שולחת תשובה אוטומטית אחרי השהיה רנדומלית (שלב 5) - רצה ב-thread נפרד
+    משלה (daemon, חד-פעמי) שנוצר ונשכח לכל הודעה - **לא** על ה-worker היחיד
+    של תור עיבוד ה-webhook (ראו הערת head-of-line blocking בקריאה למעלה).
+    ה-reply_text כבר נוצר, נרשם ב-customers.json/messages ופורסם ל-UI לפני
+    הקריאה הזו (ראו _process_incoming_message_job) - זו רק פעולת ה-API
+    החיצונית בפועל מול הספק, שמותר לה להתעכב בלי להשפיע על שום דבר אחר."""
+    time.sleep(random.randint(AUTO_REPLY_MIN_DELAY_SECONDS, AUTO_REPLY_MAX_DELAY_SECONDS))
+    try:
+        provider.send_message(contact_id, reply_text)
+    except Exception as exc:
+        logger.warning(
+            "שליחת תשובה אוטומטית נכשלה אחרי השהיה (ספק=%s, tenant=%s): %s",
+            type(provider).__name__, tenant_id, exc,
+        )
+
+
+def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id: str, source: str) -> None:
+    """מעבד הודעה נכנסת אחת ברקע - חילוץ פרטים/מענה אוטומטי, זיהוי כוונת
+    תזמון, ושליחת התשובה בפועל (לספקים בלי TwiML). רץ בתוך ה-worker thread
+    (ראו _webhook_worker_loop) - **לא** תלוי ב-Flask request context (אין כאן
+    גישה ל-request/g), רק בפרמטרים שהועברו במפורש בזמן ה-enqueue. הלוגיקה
+    עצמה זהה לגמרי למה שהיה סינכרוני בתוך webhook() לפני שלב 3 - הופרדה
+    לפונקציה, לא שוכתבה."""
+    provider = get_provider() if source == "whatsapp" else None
+    reply_text = None
+    try:
+        if source == "whatsapp" and _ai_enabled_for(contact_id, tenant_id):
+            # תגובה בתוך חלון השיחה שהלקוח פתח - לא הודעה יזומה - ולכן אינה
+            # דורשת הודעת-תבנית מאושרת מול מטא.
+            card, reply_text = process_message_with_reply(
+                contact_id, message_text, tenant_id=tenant_id, source_channel=source
+            )
+            db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
+            publish_event("message", {"phone": contact_id, "tenant_id": tenant_id, "direction": "out"})
+        else:
+            # ai_enabled=False (שלב 5) - עדיין מחלצים פרטים/מעדכנים כרטיס, אבל
+            # בלי לייצר/לשלוח תשובה אוטומטית (reply_text נשאר None) - מענה
+            # ידני בלבד דרך /api/messages/send. אותה פונקציה בדיוק שכבר
+            # משמשת לערוצים בלי מענה אוטומטי בכלל (instagram/facebook) - לא
+            # קוד כפול.
+            card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
+        logger.info("[תור רקע][tenant=%s] [%s] עודכן כרטיס לקוח: %s", tenant_id, source, card)
+        publish_event("lead_updated", {"phone": contact_id, "tenant_id": tenant_id})
+    except Exception as exc:
+        logger.error("שגיאה בעיבוד הודעה ברקע מ-%s (tenant=%s): %s", source, tenant_id, exc, exc_info=True)
+
+    # סוכן יומן (scheduling_agent.py) - מנתח את ההודעה ומזהה בקשת תיאום/ביטול/
+    # הזזת פגישה. try/except צר משלו, נפרד מהבלוק למעלה - כשל כאן לעולם לא
+    # אמור להשפיע על עיבוד ההודעה/התשובה האוטומטית. כותב לכל היותר שורת
+    # **הצעה** ל-calendar_tasks (status="pending_confirmation") - אף פעם לא
+    # משנה פגישה קיימת ישירות (ראו אזהרת הבטיחות ב-scheduling_agent.py).
+    try:
+        prior_messages = db.get_messages(contact_id, tenant_id=tenant_id)[:-1][-6:]
+        history_text = "\n".join(
+            f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
+            for m in prior_messages
+        )
+        intent_result = scheduling_agent.detect_scheduling_intent(message_text, history_text=history_text)
+        if intent_result["has_intent"]:
+            related_task = None
+            if intent_result["intent"] in ("cancel", "reschedule"):
+                related_task = scheduling_agent.find_related_task(contact_id, tenant_id)
+            scheduling_agent.create_scheduling_proposal(
+                contact_id, tenant_id, intent_result,
+                related_task_id=related_task["id"] if related_task else None,
+            )
+            publish_event("scheduling_proposal", {"phone": contact_id, "tenant_id": tenant_id})
+    except Exception as exc:
+        logger.warning("זיהוי כוונת תזמון (scheduling_agent, רקע) נכשל: %s", exc)
+
+    # ספקים בלי TwiML (UltraMsg/Green API/Mock) - התשובה האוטומטית נשלחת
+    # כקריאת API יזומה נפרדת, לא inline בתגובת ה-webhook (זו כבר נשלחה מזמן).
+    # כשל בשליחה נרשם כאזהרה - ההודעה הנכנסת כבר נרשמה בכל מקרה לפני ה-enqueue.
+    # ההשהיה האקראית (שלב 5, אנטי-זיהוי-אוטומציה - תשובה שמגיעה תוך אלפיות
+    # שנייה "נראית" רובוטית) רצה ב-thread נפרד משלה, **לא** כאן על ה-worker
+    # היחיד של תור העיבוד (_webhook_worker_thread) - אחרת השהיה של עד 75
+    # שניות הייתה חוסמת מאחוריה כל הודעה אחרת שממתינה בתור, בדיוק ה"ראש תור"
+    # (head-of-line blocking) שהתור האסינכרוני כולו (שלב 3) נועד למנוע.
+    if source == "whatsapp" and reply_text and provider is not None:
+        threading.Thread(
+            target=_send_auto_reply_after_delay,
+            args=(provider, contact_id, reply_text, tenant_id),
+            daemon=True, name=f"auto-reply-delay-{contact_id}",
+        ).start()
+
+
+def _webhook_worker_loop() -> None:
+    """הצרכן היחיד של _webhook_job_queue - רץ ברקע לכל אורך חיי התהליך
+    (thread daemon, מופעל ב-__main__ למטה). try/except צר סביב כל job בנפרד -
+    חריגה ב-job אחד לא אמורה "להרוג" את ה-worker ולהשאיר את כל התור תקוע
+    (בדיוק אותו עיקרון שכבר חוזר בכל מקום אחר בקוד - כשל מקומי לא מפיל הכל)."""
+    while True:
+        job = _webhook_job_queue.get()
+        try:
+            _process_incoming_message_job(*job)
+        except Exception:
+            logger.exception("job בתור עיבוד ה-webhook נכשל באופן בלתי-צפוי")
+        finally:
+            _webhook_job_queue.task_done()
+
+
+# מתחיל ברמת המודול (לא בתוך if __name__=="__main__") - בכוונה, כדי שיעבוד גם
+# תחת Gunicorn (שלא מריץ את בלוק ה-__main__ בכלל, ראו scheduler.start() למטה
+# להבדל). בניגוד ל-scheduler.py, worker לכל process הוא בדיוק ההתנהגות
+# הרצויה כאן (ראו ההערה המלאה מעל _webhook_job_queue) - לא צריך תיאום.
+_webhook_worker_thread = threading.Thread(target=_webhook_worker_loop, daemon=True, name="webhook-worker")
+_webhook_worker_thread.start()
+
+
+@app.route("/api/system/queue-status")
+def api_system_queue_status():
+    """גודל תור עיבוד ה-webhook כרגע + האם ה-worker thread חי - אדמין-בלבד,
+    לניטור/דיבוג (ראו _webhook_job_queue/_webhook_worker_loop)."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    return jsonify({
+        "queue_size": _webhook_job_queue.qsize(),
+        "worker_alive": _webhook_worker_thread.is_alive() if _webhook_worker_thread else False,
+        "sse_subscribers": len(_event_subscribers),
+    })
+
+
 @app.route("/webhook", methods=["POST"])
 @app.route("/webhook/<tenant_id>", methods=["POST"])
+# מכסה נפרדת ומחמירה יותר מברירת המחדל הגלובלית (RATELIMIT_DEFAULT): זה
+# הנתיב החשוף ביותר במערכת - ספקים בלי חתימת HMAC (UltraMsg/Green API, ראו
+# ההערה על _verify_twilio_request למטה) סומכים אך ורק על כך שכתובת ה-webhook
+# עצמה סודית, ולא על מפתח API (הנתיב הזה לא תחת /api/). כל בקשה שעוברת גם
+# עולה כסף בפועל (קריאת Claude ברקע, ראו _webhook_job_queue) - לא רק עומס.
+@limiter.limit(os.environ.get("RATELIMIT_WEBHOOK", "60 per minute"))
 def webhook(tenant_id: str = DEFAULT_TENANT_ID):
     # כל עסק (tenant) מקבל כתובת webhook משלו עם ה-tenant_id שלו בנתיב, למשל:
     # https://<ngrok-url>/webhook/business_a - כך שהנתונים של כל עסק מבודדים זה מזה.
 
-    # אימות Twilio חל רק על בקשות בפורמט Twilio האמיתי (form-encoded) - לא על
-    # ה-JSON הגנרי של instagram/facebook (PLACEHOLDER, לא תעבורת Twilio אמיתית).
-    if VERIFY_TWILIO_SIGNATURE and not request.is_json:
+    # parse_incoming קובע את ה-source הסופי (כולל override מגוף ה-JSON, ראו שם) -
+    # רק אחריו יודעים אם בכלל רלוונטי לבדוק Provider/חתימת Twilio. parse_incoming
+    # עצמו לא כותב כלום (לא DB, לא לוג) - בטוח לקרוא לו לפני אימות החתימה.
+    contact_id, message_text, source = parse_incoming()
+    provider = get_provider() if source == "whatsapp" else None
+
+    # אימות Twilio חל רק כש-source==whatsapp וה-Provider הפעיל הוא בפועל Twilio,
+    # על בקשות בפורמט Twilio האמיתי (form-encoded) - לא על ה-JSON הגנרי של
+    # instagram/facebook (PLACEHOLDER) ולא על ספקים אחרים (Green API/Mock, שאין
+    # להם מנגנון חתימת HMAC כזה - הם סומכים על כך שכתובת ה-webhook עצמה סודית,
+    # ראו WhatsAppProvider.verify_webhook).
+    if isinstance(provider, TwilioProvider) and VERIFY_TWILIO_SIGNATURE and not request.is_json:
         if not _verify_twilio_request(request):
             logger.warning(
                 "בקשת webhook נדחתה - חתימת X-Twilio-Signature לא תקינה/חסרה (מ-%s, tenant=%s)",
@@ -1107,19 +2100,20 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
             )
             return Response(status=403)
 
-    contact_id, message_text, source = parse_incoming()
-
-    # הודעה קולית נכנסת (WhatsApp voice note): Twilio שולח Body ריק ורק מדיה
-    # (NumMedia/MediaUrl0/MediaContentType0) - בלי הטיפול הזה message_text היה
-    # נשאר ריק וההודעה כולה נדחית ב-400 למטה, בלי להירשם בשום מקום ("נעלמת"
-    # מה-Inbox). מתמלל אוטומטית (transcription.transcribe_incoming_voice_message,
-    # OpenAI Whisper) ומשתמש בטקסט המתומלל בדיוק כמו הודעת טקסט רגילה מכאן והלאה -
-    # אותו צינור process_message_with_reply/db.log_message, בלי קוד כפול. אם
-    # התמלול עצמו נכשל (OPENAI_API_KEY לא מוגדר/לא תקין, שגיאת רשת/API) - עדיין
-    # מקבלים טקסט placeholder ברור (⚠️) במקום None, כדי שההודעה עדיין תירשם
-    # ותופיע ב-Inbox עם סימון שקרה כשל, לא תיעלם בשקט.
-    if not message_text and source == "whatsapp" and not request.is_json:
-        voice_result = transcription.transcribe_incoming_voice_message(request.form)
+    # הודעה קולית נכנסת (WhatsApp voice note): מגיעה בלי טקסט, רק מדיה - בלי
+    # הטיפול הזה message_text היה נשאר ריק וההודעה כולה נדחית ב-400 למטה, בלי
+    # להירשם בשום מקום ("נעלמת" מה-Inbox). provider.extract_voice_media מנרמל
+    # את הפורמט הגולמי הספציפי-ספק (form-encoded אצל Twilio, JSON אצל Green API)
+    # למבנה אחיד {"media_url","content_type"} - ראו whatsapp_provider.py; מכאן
+    # transcription.transcribe_incoming_voice_message מתמלל אוטומטית (OpenAI
+    # Whisper) ומשתמש בטקסט המתומלל בדיוק כמו הודעת טקסט רגילה מכאן והלאה - אותו
+    # צינור process_message_with_reply/db.log_message, בלי קוד כפול, לכל ספק.
+    # אם התמלול עצמו נכשל (OPENAI_API_KEY לא מוגדר/לא תקין, שגיאת רשת/API) -
+    # עדיין מקבלים טקסט placeholder ברור (⚠️) במקום None, כדי שההודעה עדיין
+    # תירשם ותופיע ב-Inbox עם סימון שקרה כשל, לא תיעלם בשקט.
+    if not message_text and provider is not None:
+        voice_media = provider.extract_voice_media(request)
+        voice_result = transcription.transcribe_incoming_voice_message(voice_media, provider.download_media)
         if voice_result:
             if voice_result["success"]:
                 message_text = f"🎙️ {voice_result['text']}"
@@ -1149,29 +2143,63 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
 
     _log_incoming_message(tenant_id, source, contact_id, message_text)
     db.log_message(contact_id, message_text, direction="in", tenant_id=tenant_id, channel=source)
+    publish_event("message", {"phone": contact_id, "tenant_id": tenant_id, "direction": "in"})
 
-    reply_text = None
-    try:
-        if source == "whatsapp":
-            # ל-whatsapp מייצרים גם תשובה אוטומטית ושולחים אותה חזרה ללקוח דרך TwiML.
-            # זו תגובה בתוך חלון השיחה שהלקוח פתח - לא הודעה יזומה - ולכן אינה דורשת
-            # הודעת-תבנית מאושרת מול מטא.
-            card, reply_text = process_message_with_reply(
-                contact_id, message_text, tenant_id=tenant_id, source_channel=source
+    # Twilio (TwiML): התשובה האוטומטית *חייבת* להיכלל בגוף אותה תגובת HTTP -
+    # אין אפשרות להחזיר 200 מיידי ולהשלים ברקע בלי לשבור את חוזה ה-webhook של
+    # Twilio (ראו ההערה המלאה מעל _webhook_job_queue). ממשיכים סינכרוני, בדיוק
+    # כמו לפני שלב 3 - שום שינוי התנהגות בנתיב הזה.
+    if source == "whatsapp" and provider.requires_twiml_reply():
+        reply_text = None
+        try:
+            if _ai_enabled_for(contact_id, tenant_id) and not DRY_RUN:
+                card, reply_text = process_message_with_reply(
+                    contact_id, message_text, tenant_id=tenant_id, source_channel=source
+                )
+                db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
+                publish_event("message", {"phone": contact_id, "tenant_id": tenant_id, "direction": "out"})
+            else:
+                # ai_enabled=False (שלב 5) או DRY_RUN=true (שלב 6) - בלי מענה
+                # אוטומטי; ה-TwiML למטה יחזור ריק (בלי <Message>), בדיוק כמו
+                # שהיה קורה אם לא הייתה תשובה בכלל. ל-Twilio אין "שלח אבל אל
+                # תשלח באמת" - התגובה הסינכרונית עצמה היא השליחה, ולכן ב-
+                # DRY_RUN פשוט לא מייצרים תשובה בכלל (בניגוד ל-UltraMsg/Green
+                # API, ששם DRY_RUN עדיין מייצר תשובה מדומה שנראית בהיסטוריה -
+                # ראו DryRunProviderProxy ב-whatsapp_provider.py). מענה ידני
+                # בלבד דרך /api/messages/send.
+                card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
+            logger.info("[tenant=%s] [%s] עודכן כרטיס לקוח: %s", tenant_id, source, card)
+        except Exception as exc:
+            logger.error("שגיאה בעיבוד הודעה מ-%s (tenant=%s): %s", source, tenant_id, exc, exc_info=True)
+
+        try:
+            prior_messages = db.get_messages(contact_id, tenant_id=tenant_id)[:-1][-6:]
+            history_text = "\n".join(
+                f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
+                for m in prior_messages
             )
-            db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
-        else:
-            card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
-        logger.info("[tenant=%s] [%s] עודכן כרטיס לקוח: %s", tenant_id, source, card)
-    except Exception as exc:
-        logger.error("שגיאה בעיבוד הודעה מ-%s (tenant=%s): %s", source, tenant_id, exc, exc_info=True)
+            intent_result = scheduling_agent.detect_scheduling_intent(message_text, history_text=history_text)
+            if intent_result["has_intent"]:
+                related_task = None
+                if intent_result["intent"] in ("cancel", "reschedule"):
+                    related_task = scheduling_agent.find_related_task(contact_id, tenant_id)
+                scheduling_agent.create_scheduling_proposal(
+                    contact_id, tenant_id, intent_result,
+                    related_task_id=related_task["id"] if related_task else None,
+                )
+                publish_event("scheduling_proposal", {"phone": contact_id, "tenant_id": tenant_id})
+        except Exception as exc:
+            logger.warning("זיהוי כוונת תזמון (scheduling_agent) נכשל: %s", exc)
 
-    if source == "whatsapp":
-        # Twilio מצפה לתגובת TwiML; <Message> בתוכה נשלח כתשובה בוואטסאפ ללקוח
         body = f"<Message>{escape(reply_text)}</Message>" if reply_text else ""
         twiml = f"<?xml version='1.0' encoding='UTF-8'?><Response>{body}</Response>"
         return Response(twiml, mimetype="text/xml")
 
+    # כל שאר הספקים/הערוצים (UltraMsg/Green API/Mock, instagram/facebook
+    # placeholder) - עיבוד ה-AI לא צריך להיכלל בתגובה הזו בכלל, אז מעבירים
+    # ל-worker ברקע (שלב 3) ומחזירים 200 מיידית. ההודעה הנכנסת כבר נרשמה
+    # למעלה בכל מקרה - גם אם ה-job ברקע ייכשל, שום דבר לא "נעלם".
+    _webhook_job_queue.put((contact_id, message_text, tenant_id, source))
     return Response(status=200)
 
 

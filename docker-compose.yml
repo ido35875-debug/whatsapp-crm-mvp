@@ -1,0 +1,92 @@
+# מריץ שני התהליכים המתועדים ב-Procfile/CLAUDE.md (web + clock) יחד, חולקים
+# את אותו volume קבוע - כדי ש-scheduler_worker.py (ה-clock) יראה בדיוק אותם
+# customers.json/crm_data.db/chat_history.txt כמו ה-web process, לא עותק נפרד.
+#
+# הרצה (sqlite - ברירת מחדל, בדיוק כמו קודם): docker compose up --build -d
+# הרצה עם Postgres מקומי לבדיקה (שלב 4 - לא נדרש ל-production אמיתי, ראו למטה):
+#   docker compose --profile postgres up --build -d
+# עצירה: docker compose down (בלי -v - זה ימחוק את ה-volumes הקבועים, כולל ה-DB!)
+#
+# --- אחסון מוצפן (שלב 4) ---
+# ל-Docker Compose עצמו (driver "local" של volumes) אין הצפנה מובנית - זו
+# אחריות שכבת האחסון שמתחתיו, לא של docker-compose.yml. ב-production אמיתי:
+# על ענן מנוהל (Render Persistent Disk/AWS EBS/GCP PD) ההצפנה-במנוחה כבר
+# מופעלת כברירת מחדל ברוב הפלטפורמות - יש לוודא זאת מפורשות בהגדרות הדיסק
+# בפלטפורמה, לא להסתמך על docker-compose.yml בשביל זה. באותו אופן, PostgreSQL
+# מנוהל (Render/Supabase/RDS) מגיע עם הצפנה-במנוחה מובנית - זו הסיבה
+# שההמלצה כאן היא DATABASE_URL חיצוני ל-DB מנוהל, לא בהכרח שירות ה-`db`
+# המקומי למטה (שמיועד לבדיקה בלבד, ראו ההערה על ה-profile).
+
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${PORT:-5000}:5000"
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /data
+      HOST: 0.0.0.0
+      PORT: "5000"
+      # DATABASE_URL: לא נדרש כאן - אם מוגדר ב-.env (postgres://... / ה-db
+      # המקומי למטה: postgresql://crm:crm@db:5432/crm_data) הוא זורם דרך
+      # env_file מעל בדיוק כמו ANTHROPIC_API_KEY/TWILIO_* - db.py קורא אותו
+      # ישירות (ראו db.py). לא מוגדר בכלל = sqlite תחת /data, כרגיל.
+    volumes:
+      - crm_data:/data
+    command: gunicorn server:app --bind 0.0.0.0:5000 --workers ${WEB_CONCURRENCY:-2} --timeout 60
+    healthcheck:
+      # /health (שלב 4) - בודק DB אמיתי + תור עיבוד ה-webhook, לא רק "התהליך עונה" (ראו server.py:api_health).
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # מנוע התזמון (reactivation + follow-up) - instance יחיד ונפרד מה-web workers
+  # בכוונה (ראו ההערה המלאה ב-scheduler_worker.py/Dockerfile) - לא מוכפל.
+  worker:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - crm_data:/data
+    command: python scheduler_worker.py
+
+  # --- PostgreSQL מקומי (שלב 4) - אופציונלי, מאחורי profile ייעודי ---
+  # לבדיקת נתיב ה-Postgres (db.py/DATABASE_URL) על המחשב המקומי בלבד, לפני
+  # פריסה בענן - **לא** מיועד ל-production אמיתי (שם המלצה היא DB מנוהל -
+  # Render/Supabase/RDS - עם גיבויים/הצפנה-במנוחה/HA מובנים, לא container
+  # יחיד בלי גיבוי כמו כאן). כדי להפעיל בפועל: להוסיף ל-.env
+  # DATABASE_URL=postgresql://crm:crm@db:5432/crm_data ולהריץ עם
+  # `--profile postgres` (ראו למעלה) - בלי זה השירות הזה כלל לא עולה, ו-web/
+  # worker ימשיכו ב-sqlite כרגיל.
+  db:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm
+      POSTGRES_DB: crm_data
+    volumes:
+      - crm_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm_data"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  # נפח קבוע יחיד המשותף ל-web/worker - כאן חיים customers.json/crm_data.db/
+  # chat_history.txt (מקור האמת של המערכת, ראו paths.py/CLAUDE.md) ששורדים
+  # הפעלות מחדש/דיפלויים חדשים, בניגוד לקוד/תמונה עצמם שמוחלפים בכל build.
+  # רלוונטי גם עם DATABASE_URL מוגדר: customers.json (מקור האמת ללידים)
+  # ממשיך לחיות כאן תמיד - Postgres/sqlite הם רק ל-messages/calls/tasks וכו'.
+  crm_data:
+  # נפח נפרד לנתוני ה-Postgres המקומי (שירות db למעלה, profile postgres בלבד).
+  crm_postgres_data:

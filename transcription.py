@@ -83,14 +83,19 @@ def download_twilio_media(media_url: str) -> bytes:
     return response.content
 
 
-def transcribe_incoming_voice_message(form) -> dict | None:
-    """בודק אם form-data נכנס מ-Twilio (הודעת webhook) הוא הודעה קולית -
-    NumMedia>=1 ו-MediaContentType0 מתחיל ב-"audio/" (כך WhatsApp voice notes
-    מגיעים - Body ריק, רק מדיה). אם כן - מוריד את המדיה (זמנית, לזיכרון בלבד -
-    לא נכתב לדיסק, אין צורך: transcribe_audio שולח את הבייטים ישירות ל-OpenAI)
-    ומתמלל אותה. מחזיר:
-    - None אם זו בכלל לא הודעה קולית (אין מדיה, או שהמדיה אינה audio/) - הקורא
-      (server.py /webhook) יודע להבדיל בין "לא היה מה לתמלל" ל"תמלול נכשל".
+def transcribe_incoming_voice_message(media_info: dict | None, download_fn) -> dict | None:
+    """מתמלל הודעה קולית נכנסת ממבנה נתונים אחיד - לא תלוי-ספק. media_info:
+    {"media_url": str, "content_type": str} כפי שמוחזר ע"י
+    WhatsAppProvider.extract_voice_media (ראו whatsapp_provider.py - שם מנורמל
+    הפורמט הגולמי הספציפי-ספק: form-encoded NumMedia/MediaContentType0/MediaUrl0
+    אצל Twilio, JSON typeMessage="audioMessage" אצל Green API), או None אם זו
+    בכלל לא הודעה קולית - הקורא (server.py /webhook) יודע להבדיל בין "לא היה
+    מה לתמלל" ל"תמלול נכשל". download_fn: provider.download_media - כל ספק
+    יודע להוריד את המדיה שלו (Twilio דורש Basic Auth, Green API לא).
+
+    מוריד את המדיה (זמנית, לזיכרון בלבד - לא נכתב לדיסק, אין צורך: transcribe_audio
+    שולח את הבייטים ישירות ל-OpenAI) ומתמלל אותה. מחזיר:
+    - None אם media_info הוא None.
     - {"success": True, "text": "<טקסט מתומלל גולמי>"} בהצלחה - בלי קידומת "🎙️";
       זו תוספת תצוגה שהקורא מוסיף, כדי ש-extract_voice_message_fields תקבל טקסט
       נקי לניתוח.
@@ -99,21 +104,15 @@ def transcribe_incoming_voice_message(form) -> dict | None:
       במקום "להיעלם" בשקט אם OPENAI_API_KEY לא מוגדר/לא תקין, המדיה לא זמינה,
       או שגיאת רשת/API כלשהי. success=False אומר לקורא גם לא לנסות לחלץ שדות
       (extract_voice_message_fields) מ-text - אין טקסט אמיתי לנתח."""
-    try:
-        num_media = int(form.get("NumMedia", "0") or "0")
-    except ValueError:
-        num_media = 0
-    if num_media < 1:
+    if media_info is None:
         return None
 
-    content_type = form.get("MediaContentType0", "")
-    if not content_type.startswith("audio/"):
-        return None
-
-    media_url = form.get("MediaUrl0", "")
+    media_url = media_info.get("media_url", "")
+    content_type = media_info.get("content_type", "")
     try:
-        audio_bytes = download_twilio_media(media_url)
-        filename = "voice_note." + (content_type.split("/")[-1] or "ogg")
+        audio_bytes = download_fn(media_url)
+        extension = content_type.split(";")[0].split("/")[-1].strip() or "ogg"
+        filename = f"voice_note.{extension}"
         text = transcribe_audio(audio_bytes, filename)
         return {"success": True, "text": text}
     except Exception as exc:

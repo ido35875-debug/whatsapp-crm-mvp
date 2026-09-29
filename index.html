@@ -6,7 +6,28 @@
 <title>CRM לידים</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;600;700&family=Heebo:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- Tailwind CDN (play-CDN script, לא build) - שכבת utility-classes לשלד החדש
+     (sidebar/header/stat cards/B2B campaigns) - העיצוב הקיים (panels/טבלה/צ'אט)
+     ממשיך לרוץ על מערכת CSS custom-properties הקיימת (var(--surface-1) וכו') -
+     שתי השכבות חיות זו לצד זו בכוונה, לא סתירה: Tailwind למבנה החדש, המשתנים
+     הקיימים משמשים כ-source-of-truth לצבע גם בתוך ה-Tailwind (ראו tailwind.config). -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        fontFamily: { sans: ["Heebo", "system-ui", "sans-serif"] },
+      },
+    },
+  };
+</script>
+<!-- Lucide Icons (CDN, ESM-free UMD build) - אייקונים קווי-דק לשלד החדש, לא
+     אימוג'ים - ראו lucide.createIcons() בתחתית ה-body. -->
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<!-- Chart.js (CDN) - גרף Analytics (נפח שיחות/פגישות/המרות לאורך זמן) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
 <style>
   /* זהות עיצובית: "כהה-פחם + זהב עמוק" (luxury מודגש, לבקשת המשתמש) - זו זהות
      המותג המכוונת של המערכת, לא "מצב כהה" מותנה-מערכת-הפעלה כמו קודם: ה-:root
@@ -16,71 +37,70 @@
      כמו קודם, רק גוונים מכוילים לקריאות על משטח כהה. */
   :root {
     color-scheme: dark;
-    --surface-1: #211d17;
-    --surface-2: #16130f;
-    --surface-3: #2c2620;
-    --text-primary: #f4ecdb;
-    --text-secondary: #cab999;
-    --text-muted: #8c8069;
-    --border: rgba(205,164,94,0.20);
-    --gridline: rgba(205,164,94,0.12);
-    --accent: #cda45e;
-    --accent-soft: rgba(205,164,94,0.16);
-    --status-good: #6cbf85;
-    --status-good-soft: rgba(108,191,133,0.14);
-    /* status-warning נשמר מרוחק בכוונה מ-accent (זהב) על גלגל הצבעים - כתום-אש
-       מובהק, לא זהב בהיר נוסף - כדי שתג "נוצר קשר" וסימון "🧪 סימולציה" (ראו
-       last-activity-cell) יישארו ברורים על רקע שכולו זהוב-מותגי עכשיו */
-    --status-warning: #e08a3c;
-    --status-warning-soft: rgba(224,138,60,0.16);
-    --status-serious: #e58f61;
-    --status-serious-soft: rgba(229,143,97,0.14);
-    --status-critical: #e2695f;
-    --status-critical-soft: rgba(226,105,95,0.16);
-    --shadow: 0 14px 34px rgba(0,0,0,0.45);
-    /* שדרוג "Luxury Dark Theme" (לבקשת המשתמש): glassmorphism + גבול-הילה זהב/פלטינה
-       דק על כרטיסים/כפתורים/טבלה, במקום משטח אטום שטוח. --glass-bg שקוף-חלקית
-       (לא אטום כמו surface-1) כדי שהילת הרקע (--page-bg-image, ראו body) תיראה
-       דרכו; --glass-border-grad מיושם כטבעת 1px דרך מסכת ::before (ראו .glass) */
-    --glass-bg: linear-gradient(155deg, rgba(48,42,32,0.70), rgba(19,16,12,0.62));
-    /* גרסה אטומה יותר ל-.panel/.modal-box - תוכן צפוף (צ'אט/טפסים) לאורך זמן דורש
-       קריאות גבוהה יותר מ"זכוכית אמיתית" - עדיין ניכר blur/הילה בקצוות, לא שטוח */
-    --glass-bg-solid: linear-gradient(155deg, rgba(41,36,28,0.95), rgba(19,16,12,0.94));
-    --glass-border-grad: linear-gradient(135deg, rgba(226,192,132,0.75), rgba(255,255,255,0.10) 35%, rgba(205,164,94,0.18) 65%, rgba(224,224,230,0.5));
-    --glass-shadow: 0 24px 60px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.05);
+    /* "Modern Premium Dark Mode" ברמת Stripe/Linear (לבקשת המשתמש, מחליף את
+       זהות "כהה-זהב" הקודמת) - פלטת slate/indigo קרה ומדויקת במקום זהב-חם.
+       אותה מערכת CSS custom-properties בדיוק כמו קודם (לא נגענו במבנה) - רק
+       ערכי הצבע השתנו, כך שכל הרכיבים הקיימים (badges/panels/טבלה) מקבלים את
+       השדרוג החזותי אוטומטית בלי לגעת בהם אחד-אחד. */
+    --surface-1: #0b1120;
+    --surface-2: #060a14;
+    --surface-3: #131b2e;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: rgba(148,163,184,0.16);
+    --gridline: rgba(148,163,184,0.10);
+    --accent: #6366f1;
+    --accent-soft: rgba(99,102,241,0.16);
+    --status-good: #34d399;
+    --status-good-soft: rgba(52,211,153,0.14);
+    --status-warning: #fb923c;
+    --status-warning-soft: rgba(251,146,60,0.16);
+    --status-serious: #f472b6;
+    --status-serious-soft: rgba(244,114,182,0.14);
+    --status-critical: #f87171;
+    --status-critical-soft: rgba(248,113,113,0.16);
+    --shadow: 0 14px 34px rgba(0,0,0,0.55);
+    /* Glassmorphism - זהה מבנית לקודם (--glass-bg שקוף-חלקית מעל --page-bg-image,
+       --glass-border-grad כטבעת 1px דרך מסכת ::before ב-.glass) - רק גוון indigo/
+       slate במקום זהב. */
+    --glass-bg: linear-gradient(155deg, rgba(19,27,46,0.72), rgba(6,10,20,0.64));
+    --glass-bg-solid: linear-gradient(155deg, rgba(15,23,42,0.96), rgba(6,10,20,0.95));
+    --glass-border-grad: linear-gradient(135deg, rgba(99,102,241,0.55), rgba(255,255,255,0.08) 35%, rgba(99,102,241,0.14) 65%, rgba(148,163,184,0.35));
+    --glass-shadow: 0 24px 60px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04);
     --page-bg-image:
-      radial-gradient(1100px 560px at 12% -8%, rgba(205,164,94,0.12), transparent 60%),
-      radial-gradient(900px 520px at 108% 8%, rgba(226,226,232,0.07), transparent 55%),
-      radial-gradient(1000px 680px at 50% 115%, rgba(205,164,94,0.06), transparent 60%);
+      radial-gradient(1100px 560px at 12% -8%, rgba(99,102,241,0.14), transparent 60%),
+      radial-gradient(900px 520px at 108% 8%, rgba(56,189,248,0.08), transparent 55%),
+      radial-gradient(1000px 680px at 50% 115%, rgba(99,102,241,0.06), transparent 60%);
   }
   [data-theme="light"] {
     color-scheme: light;
-    --surface-1: #fffdf8;
-    --surface-2: #f7f0e2;
-    --surface-3: #efe3cb;
-    --text-primary: #241f18;
-    --text-secondary: #5b5140;
-    --text-muted: #8c8270;
-    --border: rgba(36,31,24,0.12);
-    --gridline: #e8dcc4;
-    --accent: #a9782f;
-    --accent-soft: #f3e6cc;
-    --status-good: #2e8b4f;
-    --status-good-soft: #e3f3e6;
-    --status-warning: #b5590f;
-    --status-warning-soft: #fbe8d6;
-    --status-serious: #c05a30;
-    --status-serious-soft: #fbe6da;
-    --status-critical: #b23a34;
-    --status-critical-soft: #fae2e0;
-    --shadow: 0 8px 24px rgba(36,31,24,0.10);
-    --glass-bg: linear-gradient(155deg, rgba(255,253,248,0.78), rgba(247,240,226,0.62));
-    --glass-bg-solid: linear-gradient(155deg, rgba(255,253,248,0.97), rgba(250,244,232,0.96));
-    --glass-border-grad: linear-gradient(135deg, rgba(169,120,47,0.6), rgba(255,255,255,0.55) 35%, rgba(169,120,47,0.18) 65%, rgba(255,255,255,0.7));
-    --glass-shadow: 0 16px 40px rgba(36,31,24,0.14), inset 0 1px 0 rgba(255,255,255,0.6);
+    --surface-1: #ffffff;
+    --surface-2: #f8fafc;
+    --surface-3: #f1f5f9;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --border: rgba(15,23,42,0.10);
+    --gridline: #e2e8f0;
+    --accent: #4f46e5;
+    --accent-soft: #eef2ff;
+    --status-good: #059669;
+    --status-good-soft: #ecfdf5;
+    --status-warning: #ea580c;
+    --status-warning-soft: #fff7ed;
+    --status-serious: #db2777;
+    --status-serious-soft: #fdf2f8;
+    --status-critical: #dc2626;
+    --status-critical-soft: #fef2f2;
+    --shadow: 0 8px 24px rgba(15,23,42,0.08);
+    --glass-bg: linear-gradient(155deg, rgba(255,255,255,0.80), rgba(248,250,252,0.65));
+    --glass-bg-solid: linear-gradient(155deg, rgba(255,255,255,0.97), rgba(248,250,252,0.96));
+    --glass-border-grad: linear-gradient(135deg, rgba(79,70,229,0.35), rgba(255,255,255,0.6) 35%, rgba(79,70,229,0.12) 65%, rgba(255,255,255,0.8));
+    --glass-shadow: 0 16px 40px rgba(15,23,42,0.10), inset 0 1px 0 rgba(255,255,255,0.6);
     --page-bg-image:
-      radial-gradient(1100px 560px at 12% -8%, rgba(169,120,47,0.07), transparent 60%),
-      radial-gradient(900px 520px at 108% 8%, rgba(169,120,47,0.05), transparent 55%);
+      radial-gradient(1100px 560px at 12% -8%, rgba(79,70,229,0.05), transparent 60%),
+      radial-gradient(900px 520px at 108% 8%, rgba(56,189,248,0.04), transparent 55%);
   }
 
   * { box-sizing: border-box; }
@@ -95,11 +115,10 @@
     font-family: "Heebo", system-ui, -apple-system, "Segoe UI", sans-serif;
     min-height: 100vh;
   }
-  /* כותרות - Frank Ruhl Libre (serif עברי איכותי, נקרא ב-Haaretz ופרסומים
-     מובילים אחרים) - נותן תחושת יוקרה/עריכתיות, בניגוד לגוף הטקסט הצפוף (Heebo).
-     .cc-card h3 יוצא מהכלל בכוונה - ראו ההגדרה הייעודית שלו למטה ("תווית פרימיום"
-     קטנה/אחידה/tracked, לא כותרת serif) */
-  h1, h2, h3 { font-family: "Frank Ruhl Libre", serif; font-weight: 600; letter-spacing: 0.2px; }
+  /* כותרות - Heebo (סאן-סריף אחיד לכל הטקסט, בסגנון Stripe/Linear - לא סריף
+     עריכתי כמו הזהות הקודמת) - משקל גבוה + letter-spacing הדוק לתחושת מוצר-
+     טכנולוגי חד. .cc-card h3 יוצא מהכלל בכוונה - ראו ההגדרה הייעודית למטה. */
+  h1, h2, h3 { font-family: "Heebo", system-ui, sans-serif; font-weight: 700; letter-spacing: -0.2px; }
 
   /* === "זכוכית" - הטבעה חוזרת לכל כרטיס/משטח מרכזי (כרטיסי מרכז בקרה, אריחי
      סיכום, מיכל הטבלה, הפאנלים, המודאל): רקע שקוף-חלקית + blur (רואים את הילת
@@ -170,7 +189,7 @@
   /* כרטיס "🔥 החייאת לידים" - כמות זמינה (או התקדמות חיה אם קמפיין רץ), אותה
      שפת מספר-בגרדיאנט כמו .stat-tile .value, כדי שירגיש כמו חלק מאותה משפחה */
   .cc-card-reactivation .cc-reactivation-count {
-    font-size: 40px; font-weight: 700; font-family: "Frank Ruhl Libre", serif;
+    font-size: 40px; font-weight: 800; font-family: "Heebo", system-ui, sans-serif;
     line-height: 1.1; text-align: center;
     background: linear-gradient(135deg, var(--text-primary) 15%, var(--accent) 145%);
     -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
@@ -210,6 +229,15 @@
   }
   .property-badge.property-type { background: var(--accent-soft); color: var(--accent); }
   .property-badge.budget { background: var(--status-serious-soft); color: var(--status-serious); }
+
+  /* אינדיקטור "פרטים חסרים" בכרטיס (extract.get_missing_fields) - אותה שפת
+     badge כמו property-badge, בגוון warning (לא critical - זה לא באג, רק חוסר מידע) */
+  .missing-fields-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    white-space: nowrap; background: var(--status-warning-soft); color: var(--status-warning);
+  }
+  .panel-property-wrap .missing-fields-badge { font-size: 12.5px; padding: 4px 10px; }
 
   /* בחירת שורות מרובות (checkbox) + פס פעולות בצע-בצוותא */
   input.row-checkbox { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
@@ -298,8 +326,8 @@
      כמו מסגרת ההתחלה) לטקסט הראשי - "מספרים חדים ומרשימים" כפי שהתבקש, בלי
      לוותר על קידוד-הצבעים הקיים (חם=ירוק/נוצר קשר=כתום/לא רלוונטי=אדום) */
   .stat-tile .value {
-    font-size: 38px; font-weight: 700; font-variant-numeric: tabular-nums;
-    font-family: "Frank Ruhl Libre", serif; letter-spacing: 0.3px; line-height: 1.15;
+    font-size: 38px; font-weight: 800; font-variant-numeric: tabular-nums;
+    font-family: "Heebo", system-ui, sans-serif; letter-spacing: -0.5px; line-height: 1.15;
     background: linear-gradient(135deg, var(--text-primary) 15%, var(--tile-color, var(--accent)) 145%);
     -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
   }
@@ -318,7 +346,7 @@
   .toolbar input, .toolbar select {
     font-family: inherit; font-size: 13.5px; padding: 9px 12px;
     border-radius: 8px; border: 1px solid var(--border);
-    background: var(--surface-1); color: var(--text-primary);
+    background: var(--surface-1); color: var(--text-primary); text-align: right;
   }
   .toolbar input { flex: 1; min-width: 200px; }
 
@@ -377,6 +405,18 @@
   select.status-select.reactivation { background: var(--accent-soft); color: var(--accent); }
   select.status-select:disabled { opacity: .6; cursor: default; }
   .panel-status-wrap { margin-top: 8px; }
+
+  /* מתג מענה AI פעיל/ידני (שלב 5 - Enterprise Production Readiness) - אותה
+     שפה חזותית כמו status-select (גלולה, פונט/מרווח זהים) כדי שירגיש חלק
+     מאותה שורת בקרות, לא רכיב זר */
+  button.ai-toggle-btn {
+    border: none; border-radius: 999px; padding: 3px 10px; margin-inline-start: 6px;
+    font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+    outline: none;
+  }
+  button.ai-toggle-btn.on { background: var(--status-good-soft); color: var(--status-good); }
+  button.ai-toggle-btn.off { background: var(--status-warning-soft); color: var(--status-warning); }
+  button.ai-toggle-btn:disabled { opacity: .6; cursor: default; }
 
   /* ציון חום לליד: אדום=חם, כתום=פושר, כחול=קר */
   .score-badge {
@@ -559,9 +599,35 @@
   .ai-copilot-result-actions { display: flex; gap: 8px; margin-top: 10px; }
   .ai-copilot-result-actions button { font-size: 12px; padding: 5px 10px; }
 
+  /* "🎯 הצעות תגובה (סוכן מכירות)" - כרטיס נפרד לכל אחת מעד 3 ההצעות, כל אחד עם
+     כפתור "השתמש" משלו (ai-copilot-result יכול להכיל כמה כרטיסים כאלה) */
+  .sales-suggestion-card {
+    padding: 10px 12px; border-radius: 8px; background: var(--surface-1);
+    border: 1px solid var(--border); margin-top: 8px;
+  }
+  .sales-suggestion-text { font-size: 13px; line-height: 1.5; margin-bottom: 8px; white-space: pre-wrap; }
+  .sales-suggestion-card .ai-copilot-use-btn { font-size: 12px; padding: 5px 10px; }
+
+  /* "🧩 הצע השלמת פרטים" - טקסט ניתן לעריכה + סטטוס שליחה (בתוך אותו ai-copilot-result) */
+  .missing-fields-hint { font-size: 12px; font-weight: 700; color: var(--status-warning); margin-bottom: 6px; }
+  .ai-copilot-editable {
+    width: 100%; box-sizing: border-box; font-family: inherit; font-size: 13px; line-height: 1.5;
+    padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-1);
+    color: var(--text-primary); resize: vertical;
+  }
+  .ai-copilot-send-status { margin-top: 8px; font-size: 12.5px; font-weight: 600; }
+  .ai-copilot-send-status.loading { color: var(--text-secondary); }
+  .ai-copilot-send-status.success { color: var(--status-good); }
+  .ai-copilot-send-status.warning { color: var(--status-warning); }
+  .ai-copilot-send-status.error { color: var(--status-critical); }
+
   /* Click-to-Call */
   .call-btn { font-size: 12.5px; padding: 6px 12px; }
   .call-status-line { font-size: 13px; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .call-config-note {
+    font-size: 12px; color: var(--status-warning); background: var(--status-warning-soft);
+    border-radius: 8px; padding: 6px 10px; margin-bottom: 10px;
+  }
   .call-summary-box {
     border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
     font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; background: var(--surface-3);
@@ -633,6 +699,19 @@
   .task-row-actions button { font-size: 12px; padding: 4px 8px; }
   .feedback-row-desc { white-space: pre-wrap; line-height: 1.4; }
   .feedback-row-type { font-size: 12px; color: var(--text-muted); }
+
+  /* הצעות פגישה שזוהו אוטומטית (scheduling_agent) - ראו CLAUDE.md #5. מודגשות
+     בגוון warning כדי שיהיה ברור מיד שזו לא פגישה מאושרת, רק ממתינה להחלטה */
+  .calendar-section-title {
+    font-size: 12px; font-weight: 700; color: var(--status-warning); text-transform: uppercase;
+    letter-spacing: 0.6px; margin: 4px 0 10px;
+  }
+  .task-row.proposal { border-color: var(--status-warning); background: var(--status-warning-soft); }
+  .task-proposal-badge {
+    display: inline-block; font-size: 11px; font-weight: 700; color: var(--status-warning);
+    margin-bottom: 4px;
+  }
+  .task-row-notes { font-size: 12px; color: var(--text-secondary); }
 
   /* היסטוריית שיחות פר-ליד (📋) - כרטיס גבוה (לא שורה אופקית כמו task-row, כי
      יש כאן טקסט ארוך - הערות+תקציר), עם מצב עריכה שמחליף את התצוגה הרגילה */
@@ -771,43 +850,177 @@
     .inbox-layout { flex-direction: column; height: auto; }
     .inbox-list { width: 100%; max-height: 240px; border-inline-end: none; border-bottom: 1px solid var(--gridline); }
   }
+
+  /* ---- שלד Enterprise חדש (sidebar/header/sections) - גשר קטן בין ה-Tailwind
+     utility classes (ברוב המבנה) לבין הצבעים הקיימים (var(--accent) וכו'),
+     ובין מצבים דינמיים ש-JS מחליף (active/hidden) שקשה/מיותר לבטא כצירוף
+     utility classes ארוך בכל טעינה - לא מחליף את Tailwind, רק משלים אותו. */
+  .sidebar-nav-item.active {
+    background: linear-gradient(135deg, rgba(99,102,241,0.18), rgba(99,102,241,0.06));
+    color: var(--text-primary);
+    box-shadow: inset 0 0 0 1px rgba(99,102,241,0.35);
+  }
+  .app-section { animation: section-fade-in .25s ease; }
+  @keyframes section-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .quick-actions-menu[hidden] { display: none !important; }
+  .quick-actions-menu button, .quick-actions-menu a.btn-link {
+    width: 100%; text-align: start; justify-content: flex-start;
+  }
+
+  /* כרטיסי Overview (glassmorphism, ראו overviewGrid) - אותה שפה כמו .stat-tile
+     הקיים (מספר בגרדיאנט-טקסט) אבל מבנה חדש עם אייקון Lucide + מגמה */
+  .overview-card {
+    position: relative; border-radius: 18px; padding: 20px 22px; overflow: hidden;
+  }
+  .overview-card-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 38px; height: 38px; border-radius: 11px; margin-bottom: 14px;
+    background: var(--tile-color-soft, var(--accent-soft)); color: var(--tile-color, var(--accent));
+  }
+  .overview-card-value {
+    font-size: 32px; font-weight: 800; letter-spacing: -0.5px; line-height: 1.1;
+    background: linear-gradient(135deg, var(--text-primary) 15%, var(--tile-color, var(--accent)) 145%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
+  }
+  .overview-card-label { margin-top: 6px; font-size: 13px; color: var(--text-secondary); }
+  .overview-card-trend { margin-top: 10px; font-size: 12px; font-weight: 600; }
+
+  /* B2B Campaigns - תוצאת ייבוא + שורות תור */
+  .campaign-import-result { margin-top: 10px; font-size: 12.5px; line-height: 1.5; }
+  .campaign-import-result .ok-line { color: var(--status-good); font-weight: 600; }
+  .campaign-import-result .skip-line { color: var(--status-warning); }
+  .campaign-queue-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; margin-bottom: 6px; font-size: 12.5px;
+  }
+  .campaign-queue-row .cq-main { min-width: 0; }
+  .campaign-queue-row .cq-name { font-weight: 600; }
+  .campaign-queue-row .cq-phone { color: var(--text-muted); font-size: 11.5px; }
+  .campaign-status-badge {
+    font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+  }
+  .campaign-status-badge.queued { background: var(--surface-3); color: var(--text-secondary); }
+  .campaign-status-badge.sending { background: var(--accent-soft); color: var(--accent); }
+  .campaign-status-badge.sent { background: var(--status-good-soft); color: var(--status-good); }
+  .campaign-status-badge.simulated { background: var(--status-warning-soft); color: var(--status-warning); }
+  .campaign-status-badge.failed { background: var(--status-critical-soft); color: var(--status-critical); }
+  .campaign-status-badge.skipped_quota { background: var(--status-serious-soft); color: var(--status-serious); }
+  .campaign-row-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 0; border-bottom: 1px solid var(--gridline); font-size: 12.5px; cursor: pointer;
+  }
+  .campaign-row-item:last-child { border-bottom: none; }
+  .campaign-progress-bar { height: 5px; border-radius: 999px; background: var(--surface-3); overflow: hidden; margin-top: 6px; }
+  .campaign-progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), #22d3ee); }
 </style>
 </head>
-<body>
-<div class="page">
-  <header class="top">
-    <div>
-      <h1>CRM לידים</h1>
-      <p>כל הפניות שהתקבלו, הסטטוס שלהן, והיסטוריית ההודעות המלאה</p>
+<body class="font-sans">
+<div class="flex h-screen overflow-hidden" style="background:var(--surface-2);">
+  <!-- Sidebar (שלד חדש, Tailwind + Lucide) - ניווט בין 4 הבלוקים שהתבקשו -->
+  <aside class="hidden md:flex w-64 shrink-0 flex-col border-s border-slate-800/80 bg-slate-950/60 backdrop-blur-xl">
+    <div class="flex items-center gap-3 px-5 py-6">
+      <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-950/50">
+        <i data-lucide="sparkles" class="h-5 w-5"></i>
+      </div>
+      <div class="flex flex-col leading-tight">
+        <span class="text-sm font-bold text-slate-100">AI CRM</span>
+        <span class="text-[11px] font-medium tracking-wide text-indigo-400">ENTERPRISE</span>
+      </div>
     </div>
-    <div class="top-actions">
-      <button id="addLeadBtn" class="primary">➕ הוסף ליד</button>
-      <button id="importBtn">📥 ייבוא לידים</button>
-      <input type="file" id="importFileInput" accept=".csv,.xlsx" style="display:none">
-      <a href="/api/leads/export" class="btn-link" id="exportBtn">📤 ייצוא לידים</a>
-      <button id="reactivateBtn">🔥 החייאת לידים קרים</button>
-      <button id="calendarBtn">📅 יומן</button>
-      <button id="feedbackBtn">💡 משוב</button>
-      <button id="promptsBtn">🤖 תבניות וסוכנים</button>
-      <button id="themeToggle" title="החלף מצב תצוגה">🌓 מצב תצוגה</button>
-      <button id="refreshBtn">↻ רענון</button>
+    <div class="mx-4 flex items-center gap-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-3 py-2 text-xs font-medium text-slate-400" id="serverStatusIndicator" title="בדיקת חיבור לשרת">
+      <span class="relative flex h-2 w-2">
+        <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" id="serverPulseDot"></span>
+        <span class="relative inline-flex h-2 w-2 rounded-full bg-emerald-400"></span>
+      </span>
+      <span id="serverStatusText">בודק חיבור...</span>
     </div>
-  </header>
-  <div class="import-status" id="importStatus"></div>
+    <nav class="mt-6 flex flex-col gap-1 px-3">
+      <button type="button" class="sidebar-nav-item flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 transition hover:bg-slate-800/60 hover:text-slate-100" data-section="overview">
+        <i data-lucide="layout-dashboard" class="h-4 w-4"></i><span>תמונת מצב</span>
+      </button>
+      <button type="button" class="sidebar-nav-item flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 transition hover:bg-slate-800/60 hover:text-slate-100" data-section="crm">
+        <i data-lucide="users" class="h-4 w-4"></i><span>ניהול לידים ו-CRM</span>
+      </button>
+      <button type="button" class="sidebar-nav-item flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 transition hover:bg-slate-800/60 hover:text-slate-100" data-section="campaigns" data-roles="admin,partner">
+        <i data-lucide="send" class="h-4 w-4"></i><span>קמפיינים Outbound</span>
+      </button>
+      <button type="button" class="sidebar-nav-item flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 transition hover:bg-slate-800/60 hover:text-slate-100" data-section="ai-agents">
+        <i data-lucide="bot" class="h-4 w-4"></i><span>סוכני AI ויומן</span>
+      </button>
+      <button type="button" class="sidebar-nav-item flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 transition hover:bg-slate-800/60 hover:text-slate-100" data-section="analytics">
+        <i data-lucide="bar-chart-3" class="h-4 w-4"></i><span>אנליטיקה ו-ROI</span>
+      </button>
+    </nav>
+    <div class="mx-4 mb-3 flex items-center gap-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-3 py-2 text-xs" id="currentUserBadge">
+      <i data-lucide="user-circle" class="h-3.5 w-3.5 text-indigo-400"></i>
+      <span class="min-w-0 flex-1 truncate text-slate-300" id="currentUserName">טוען...</span>
+      <button type="button" id="switchUserBtn" class="text-slate-500 hover:text-indigo-400" title="החלף משתמש (מפתח API)"><i data-lucide="key-round" class="h-3.5 w-3.5"></i></button>
+    </div>
+    <div class="mt-auto border-t border-slate-800/80 p-3">
+      <button type="button" id="themeToggle" class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 transition hover:bg-slate-800/60 hover:text-slate-100" title="החלף מצב תצוגה">
+        <i data-lucide="moon-star" class="h-4 w-4"></i><span>מצב תצוגה</span>
+      </button>
+    </div>
+  </aside>
 
-  <div class="view-toggle">
-    <button type="button" id="tableViewBtn" class="view-tab active">📋 טבלה</button>
-    <button type="button" id="kanbanViewBtn" class="view-tab">🗂️ קנבן</button>
-    <button type="button" id="inboxViewBtn" class="view-tab">💬 Inbox</button>
-  </div>
+  <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
+    <!-- Header עליון (שלד חדש) - חיפוש מהיר, אינדיקטור API Key, Quick Actions -->
+    <header class="flex items-center gap-4 border-b border-slate-800/80 bg-slate-950/40 px-6 py-3.5 backdrop-blur-xl">
+      <div class="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-3 py-2 text-slate-400 focus-within:border-indigo-500/60">
+        <i data-lucide="search" class="h-4 w-4 shrink-0"></i>
+        <input id="globalSearchInput" type="text" dir="rtl" placeholder="חיפוש מהיר בשם, טלפון, עסק..."
+          class="w-full min-w-0 border-0 bg-transparent text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none text-right">
+      </div>
+      <div class="flex shrink-0 items-center gap-3">
+        <div class="hidden items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-400 sm:flex" title="בקשות /api/* מאובטחות ב-API Key">
+          <i data-lucide="shield-check" class="h-3.5 w-3.5"></i><span>API מאובטח</span>
+        </div>
+        <div class="relative">
+          <button type="button" id="quickActionsBtn" class="flex items-center gap-2 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 px-3.5 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-950/40 transition hover:opacity-90">
+            <i data-lucide="zap" class="h-4 w-4"></i><span>פעולות מהירות</span><i data-lucide="chevron-down" class="h-3.5 w-3.5"></i>
+          </button>
+          <div id="quickActionsMenu" hidden
+            class="quick-actions-menu absolute end-0 z-30 mt-2 flex w-64 flex-col gap-1.5 rounded-xl border border-slate-800 bg-slate-900/95 p-2 shadow-2xl backdrop-blur-xl">
+            <button id="addLeadBtn" class="primary">➕ הוסף ליד</button>
+            <button id="importBtn">📥 ייבוא לידים</button>
+            <input type="file" id="importFileInput" accept=".csv,.xlsx" style="display:none">
+            <a href="/api/leads/export" class="btn-link" id="exportBtn">📤 ייצוא לידים</a>
+            <button id="reactivateBtn">🔥 החייאת לידים קרים</button>
+            <button id="calendarBtn">📅 יומן</button>
+            <button id="feedbackBtn">💡 משוב</button>
+            <button id="promptsBtn">🤖 תבניות וסוכנים</button>
+            <button id="refreshBtn">↻ רענון</button>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="import-status" id="importStatus"></div>
 
-  <div id="tableView">
+    <main class="flex-1 overflow-y-auto p-6 lg:p-8">
+      <!-- ==== Overview - כרטיסי מטריקות Enterprise (glassmorphism) ==== -->
+      <section id="sectionOverview" class="app-section">
+        <div class="mb-6">
+          <h1 class="text-2xl font-bold text-slate-100">תמונת מצב</h1>
+          <p class="mt-1 text-sm text-slate-400">תמונת מצב כללית על הלידים, סוכני ה-AI, והביצועים</p>
+        </div>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4" id="overviewGrid"></div>
+      </section>
+
+      <!-- ==== Leads & CRM - הטבלה/קנבן/Inbox הקיימים (לא שונו פנימית) ==== -->
+      <section id="sectionCrm" class="app-section" style="display:none;">
+        <div class="view-toggle">
+          <button type="button" id="tableViewBtn" class="view-tab active">📋 טבלה</button>
+          <button type="button" id="kanbanViewBtn" class="view-tab">🗂️ קנבן</button>
+          <button type="button" id="inboxViewBtn" class="view-tab">💬 Inbox</button>
+        </div>
+
+        <div id="tableView">
     <div class="stat-grid" id="statGrid"></div>
 
     <div class="dashboard-layout">
       <div class="dashboard-main">
         <div class="toolbar">
-          <input id="searchInput" type="text" placeholder="חיפוש בשם, טלפון, עסק, מיקום, הערות והיסטוריה...">
+          <input id="searchInput" type="text" dir="rtl" placeholder="חיפוש בשם, טלפון, עסק, מיקום, הערות והיסטוריה...">
           <select id="statusFilter">
             <option value="">כל הסטטוסים</option>
             <option value="__new">חדש</option>
@@ -826,7 +1039,7 @@
             <option value="">כל הקטגוריות</option>
           </select>
           <select id="tenantFilter">
-            <option value="">כל העסקים (tenants)</option>
+            <option value="">כל העסקים</option>
           </select>
         </div>
 
@@ -884,8 +1097,10 @@
           </h2>
           <p id="inboxChatSub"></p>
           <div id="inboxChatStatusWrap" class="panel-status-wrap"></div>
+          <div id="inboxChatAiToggleWrap" class="panel-status-wrap"></div>
           <div id="inboxChatScoreWrap" class="panel-score-wrap"></div>
           <div id="inboxChatPropertyWrap" class="panel-property-wrap"></div>
+          <div id="inboxChatMissingFieldsWrap" class="panel-property-wrap"></div>
           <button type="button" class="call-btn" id="inboxCallBtn">📞 שיחה</button>
           <button type="button" class="call-btn" id="inboxTasksBtn">📅 משימות</button>
           <button type="button" class="call-btn" id="inboxCallHistoryBtn">📋 היסטוריית שיחות</button>
@@ -896,8 +1111,9 @@
         </div>
         <div class="ai-copilot" id="inboxAiCopilotWrap" style="display:none;">
           <div class="ai-copilot-buttons">
-            <button type="button" id="inboxObjectionBtn">💬 הצע מענה להתנגדות</button>
+            <button type="button" id="inboxObjectionBtn">🎯 הצעות תגובה (סוכן מכירות)</button>
             <button type="button" id="inboxExecSummaryBtn">📋 סיכום מנהלים</button>
+            <button type="button" id="inboxMissingFieldsBtn" style="display:none;">🧩 הצע השלמת פרטים</button>
           </div>
           <div class="ai-copilot-result" id="inboxAiCopilotResult" style="display:none;"></div>
         </div>
@@ -919,7 +1135,128 @@
   <div id="kanbanView" style="display:none;">
     <div class="kanban-board" id="kanbanBoard"></div>
   </div>
+      </section>
+
+      <!-- ==== B2B Campaigns (חדש) - ייבוא CSV/Excel, קצב שליחה, תור חי ==== -->
+      <section id="sectionCampaigns" class="app-section" style="display:none;">
+        <div class="mb-6">
+          <h1 class="text-2xl font-bold text-slate-100">קמפיינים Outbound</h1>
+          <p class="mt-1 text-sm text-slate-400">ייבוא רשימות B2B, קצב שליחה מבוקר (Anti-Ban), ותור שליחה חי</p>
+        </div>
+        <div class="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_320px]">
+          <div class="glass rounded-2xl p-5">
+            <h3 class="mb-3 flex items-center gap-2 text-sm font-bold text-slate-100"><i data-lucide="upload-cloud" class="h-4 w-4 text-indigo-400"></i> ייבוא קמפיין חדש</h3>
+            <form id="campaignImportForm" class="flex flex-col gap-3">
+              <label id="campaignFileDrop"
+                class="flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed border-slate-700 bg-slate-900/40 px-4 py-8 text-center text-sm text-slate-400 transition hover:border-indigo-500/60 hover:text-slate-200">
+                <input type="file" id="campaignFileInput" accept=".csv,.xlsx" hidden>
+                <i data-lucide="upload-cloud" class="h-6 w-6"></i>
+                <span id="campaignFileLabel">גררו קובץ CSV/XLSX לכאן, או לחצו לבחירה</span>
+              </label>
+              <textarea id="campaignMessageTemplate" rows="3"
+                placeholder="תבנית הודעה (אופציונלי) - {name} ו-{company} ימולאו אוטומטית לכל שורה"
+                class="w-full rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-200 placeholder:text-slate-500 focus:border-indigo-500/60 focus:outline-none"></textarea>
+              <button type="submit" class="primary self-start" id="campaignImportBtn">ייבא לתור</button>
+            </form>
+            <div class="campaign-import-result" id="campaignImportResult"></div>
+
+            <h3 class="mb-3 mt-6 flex items-center gap-2 text-sm font-bold text-slate-100"><i data-lucide="list-checks" class="h-4 w-4 text-indigo-400"></i> תור שליחה</h3>
+            <div class="mb-3 flex flex-wrap items-center gap-3">
+              <select id="campaignSelect" class="min-w-[220px]"><option value="">בחרו קמפיין...</option></select>
+              <span class="text-xs text-slate-500">קצב: 45-90 שנ' בין הודעה להודעה · מכסה יומית מוגדרת בשרת</span>
+              <button type="button" class="primary" id="campaignStartBtn" disabled>▶️ התחל שליחה</button>
+            </div>
+            <div id="campaignQueueWrap"></div>
+          </div>
+          <aside class="flex flex-col gap-4">
+            <div class="cc-card glass">
+              <h3>🛡️ הגנת קצב שליחה (Anti-Ban)</h3>
+              <p class="text-xs leading-relaxed text-slate-400">
+                השהיה רנדומלית של 45-90 שניות בין כל הודעה, ומכסה יומית פר-עסק -
+                מונע קצב שנראה כמו bulk-spam בעיני WhatsApp/UltraMsg.
+              </p>
+            </div>
+            <div class="cc-card glass">
+              <h3>📊 קמפיינים אחרונים</h3>
+              <div id="campaignsList"></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ==== AI Agents & Calendar (חדש) - יומן + פעילות סוכני AI בלייב ==== -->
+      <section id="sectionAiAgents" class="app-section" style="display:none;">
+        <div class="mb-6">
+          <h1 class="text-2xl font-bold text-slate-100">סוכני AI ויומן</h1>
+          <p class="mt-1 text-sm text-slate-400">הצעות פגישה שזוהו אוטומטית, משימות פתוחות, ופעילות סוכני ה-AI</p>
+        </div>
+        <div class="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_320px]">
+          <div class="glass rounded-2xl p-5">
+            <h3 class="mb-3 flex items-center gap-2 text-sm font-bold text-slate-100"><i data-lucide="calendar-clock" class="h-4 w-4 text-indigo-400"></i> יומן והצעות פגישה</h3>
+            <div id="aiAgentsCalendarBody"></div>
+          </div>
+          <aside class="flex flex-col gap-4">
+            <div class="cc-card glass">
+              <h3>🎯 סוכני AI פעילים</h3>
+              <div id="aiAgentsSummary"></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ==== Analytics - ROI, מטריקות, וגרף חי (חדש, שלב 2) ==== -->
+      <section id="sectionAnalytics" class="app-section" style="display:none;">
+        <div class="mb-6">
+          <h1 class="text-2xl font-bold text-slate-100">אנליטיקה ו-ROI</h1>
+          <p class="mt-1 text-sm text-slate-400">ROI, זמן שנחסך, והמרות - לצורך הצגה ללקוחות B2B ולשותפים</p>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <!-- Time Saved Calculator - אינטראקטיבי, לבזק בדמו -->
+          <div class="glass rounded-2xl p-5">
+            <h3 class="mb-3 flex items-center gap-2 text-sm font-bold text-slate-100"><i data-lucide="clock" class="h-4 w-4 text-indigo-400"></i> Time Saved Calculator</h3>
+            <div class="overview-card-value" id="timeSavedValue" style="--tile-color:#22d3ee;">0</div>
+            <div class="overview-card-label">שעות עבודה שנחסכו לנציגים</div>
+            <div class="mt-4 flex flex-col gap-2 text-xs text-slate-400">
+              <label class="flex items-center justify-between gap-2">דק' לכל החייאת AI <input type="number" id="tsReactivationMin" value="5" min="0" class="w-16 rounded border border-slate-700 bg-slate-900/60 px-2 py-1 text-slate-200"></label>
+              <label class="flex items-center justify-between gap-2">דק' לכל פגישה שזוהתה <input type="number" id="tsMeetingMin" value="3" min="0" class="w-16 rounded border border-slate-700 bg-slate-900/60 px-2 py-1 text-slate-200"></label>
+              <label class="flex items-center justify-between gap-2">דק' לכל ליד שנרשם <input type="number" id="tsLeadMin" value="1" min="0" class="w-16 rounded border border-slate-700 bg-slate-900/60 px-2 py-1 text-slate-200"></label>
+            </div>
+          </div>
+
+          <!-- Reactivation Conversion Rate -->
+          <div class="glass rounded-2xl p-5">
+            <h3 class="mb-3 flex items-center gap-2 text-sm font-bold text-slate-100"><i data-lucide="repeat" class="h-4 w-4 text-emerald-400"></i> Reactivation Conversion Rate</h3>
+            <div class="overview-card-value" id="reactivationRateValue" style="--tile-color:var(--status-good);">0%</div>
+            <div class="overview-card-label" id="reactivationRateLabel">מבין כלל הלידים במערכת</div>
+          </div>
+
+          <!-- Revenue Forecast - role-aware (partner: עמלה אישית; admin: סכום כל השותפים) -->
+          <div class="glass rounded-2xl p-5" id="revenueForecastCard">
+            <h3 class="mb-3 flex items-center gap-2 text-sm font-bold text-slate-100"><i data-lucide="banknote" class="h-4 w-4 text-amber-400"></i> Revenue Forecast</h3>
+            <div id="revenueForecastBody"><div class="loading">טוען...</div></div>
+          </div>
+        </div>
+
+        <div class="glass mt-5 rounded-2xl p-5">
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="flex items-center gap-2 text-sm font-bold text-slate-100"><i data-lucide="line-chart" class="h-4 w-4 text-indigo-400"></i> נפח שיחות, פגישות והמרות</h3>
+            <select id="analyticsDaysSelect">
+              <option value="7">7 ימים</option>
+              <option value="14" selected>14 ימים</option>
+              <option value="30">30 ימים</option>
+              <option value="90">90 ימים</option>
+            </select>
+          </div>
+          <div style="position:relative; height:320px;"><canvas id="analyticsChart"></canvas></div>
+        </div>
+      </section>
+    </main>
+  </div>
 </div>
+
+<!-- Live toast notifications (שלב 3 - SSE) -->
+<div id="liveToastWrap" class="fixed bottom-5 left-5 z-50 flex flex-col gap-2" style="pointer-events:none;"></div>
 
 <div class="overlay" id="overlay"></div>
 <aside class="panel glass" id="panel">
@@ -931,8 +1268,10 @@
       </h2>
       <p id="panelSub"></p>
       <div id="panelStatusWrap" class="panel-status-wrap"></div>
+      <div id="panelAiToggleWrap" class="panel-status-wrap"></div>
       <div id="panelScoreWrap" class="panel-score-wrap"></div>
       <div id="panelPropertyWrap" class="panel-property-wrap"></div>
+      <div id="panelMissingFieldsWrap" class="panel-property-wrap"></div>
       <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
       <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
       <button type="button" class="call-btn" id="panelCallHistoryBtn">📋 היסטוריית שיחות</button>
@@ -943,8 +1282,9 @@
   <div class="panel-body" id="panelBody"></div>
   <div class="ai-copilot" id="aiCopilotWrap">
     <div class="ai-copilot-buttons">
-      <button type="button" id="objectionBtn">💬 הצע מענה להתנגדות</button>
+      <button type="button" id="objectionBtn">🎯 הצעות תגובה (סוכן מכירות)</button>
       <button type="button" id="execSummaryBtn">📋 סיכום מנהלים</button>
+      <button type="button" id="missingFieldsBtn" style="display:none;">🧩 הצע השלמת פרטים</button>
     </div>
     <div class="ai-copilot-result" id="aiCopilotResult" style="display:none;"></div>
   </div>
@@ -1141,6 +1481,36 @@
 </aside>
 
 <script>
+// שער אימות API (שלב 6 - CLAUDE.md) - עוטף את fetch הגלובלי פעם אחת במקום לגעת
+// בעשרות קריאות fetch("/api/...") מפוזרות בקובץ הזה, כדי שאף קריאה לא תישכח
+// בטעות. window.__API_KEY__ מוזרק ע"י השרת בזמן הגשת GET / (ראו server.py:
+// index()) - זה תמיד המפתח הראשי (אדמין) - לא שמור בקובץ הזה עצמו (שנמצא
+// ב-git) כדי שהמפתח לא ידלוף להיסטוריית ה-repo.
+//
+// RBAC (שלב 2): "🔑 החלף משתמש" בסיידבר שומר override ב-localStorage (מפתח
+// API של partner/client) - אם קיים, הוא גובר על window.__API_KEY__ להדגמה/
+// בדיקה של תפקידים שונים באותו דפדפן בלי דף login נפרד. localStorage הוא
+// per-browser בלבד (לא per-server-session) - זו נוחות הדגמה, לא מנגנון אימות
+// אמיתי בפני עצמו (המפתח עדיין מאומת בשרת בכל בקשה, ראו _require_api_key).
+function activeApiKey() {
+  try {
+    return localStorage.getItem("crm_api_key_override") || window.__API_KEY__ || "";
+  } catch (e) {
+    return window.__API_KEY__ || "";
+  }
+}
+
+(function () {
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const url = typeof input === "string" ? input : (input && input.url) || "";
+    if (url.startsWith("/api/")) {
+      init = { ...init, headers: { ...(init.headers || {}), "X-API-Key": activeApiKey() } };
+    }
+    return originalFetch(input, init);
+  };
+})();
+
 const STATUS_META = {
   hot:           { label: "חם",         cls: "hot" },
   contacted:     { label: "נוצר קשר",   cls: "contacted" },
@@ -1164,6 +1534,18 @@ function statusSelectHtml(phone, tenantId, currentStatus) {
 }
 function findLead(phone, tenantId) {
   return allLeads.find(l => l.phone === phone && (l.tenant_id || "default") === tenantId);
+}
+
+// מתג מענה AI פעיל/ידני לליד (שלב 5 - Enterprise Production Readiness). ברירת
+// מחדל (aiEnabled===undefined, כרטיס בלי השדה בכלל) = פעיל - תואם בדיוק את
+// server.py._ai_enabled_for (שדה חסר נחשב True, לא צריך מיגרציה ללידים קיימים).
+function aiToggleHtml(phone, tenantId, aiEnabled) {
+  const enabled = aiEnabled !== false;
+  const label = enabled ? "🤖 מענה AI פעיל" : "✋ מענה ידני";
+  const nextLabel = enabled ? "מענה ידני" : "מענה AI אוטומטי";
+  return `<button type="button" class="ai-toggle-btn ${enabled ? "on" : "off"}"
+    data-phone="${escapeHtml(phone)}" data-tenant="${escapeHtml(tenantId)}" data-enabled="${enabled ? "1" : "0"}"
+    title="לחץ כדי לעבור ל${nextLabel}">${label}</button>`;
 }
 
 // ציון חום (1-100, מחושב בשרת - ראו db.compute_lead_score): אדום=חם, כתום=פושר, כחול=קר
@@ -1191,6 +1573,17 @@ function propertyBadgeChips(lead) {
 function propertyBadgesHtml(lead, wrapperClass) {
   const chips = propertyBadgeChips(lead);
   return chips ? `<div class="${wrapperClass}">${chips}</div>` : "";
+}
+
+// שדות "חובה" חסרים בכרטיס (ראו extract.REQUIRED_LEAD_FIELDS/get_missing_fields
+// ב-server.py - lead.missing_fields מגיע מוכן מ-GET /api/leads). התוויות כאן
+// כפולות במכוון מול extract.py (אין endpoint ייעודי לתוויות) - אותו דפוס כמו
+// STATUS_META הקיים, שגם הוא מתרגם ערכי-שרת לתוויות עברית בצד הלקוח.
+const MISSING_FIELD_LABELS = { customer_name: "שם", location: "מיקום" };
+function missingFieldsBadgeHtml(lead) {
+  if (!lead || !lead.missing_fields || lead.missing_fields.length === 0) return "";
+  const labels = lead.missing_fields.map(f => MISSING_FIELD_LABELS[f] || f).join(", ");
+  return `<span class="missing-fields-badge" title="פרטים חסרים: ${escapeHtml(labels)}">🧩 חסרים פרטים</span>`;
 }
 
 // אווטאר עגול: ראשי תיבות (משם, או שתי הספרות האחרונות בטלפון אם אין שם) + צבע
@@ -1271,7 +1664,7 @@ function populateTenantFilter() {
   const select = document.getElementById("tenantFilter");
   const current = select.value;
   const tenants = [...new Set(allLeads.map(l => l.tenant_id).filter(Boolean))].sort();
-  select.innerHTML = '<option value="">כל העסקים (tenants)</option>' +
+  select.innerHTML = '<option value="">כל העסקים</option>' +
     tenants.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("");
   select.value = current;
 }
@@ -1305,6 +1698,47 @@ function renderStats() {
       <div class="label">${t.label}</div>
     </div>
   `).join("");
+}
+
+// כרטיסי מטריקות Enterprise ללשונית Overview - 4 המדדים שהתבקשו במפורש. שלושה
+// מחושבים מיד מ-allLeads הטעון (בלי בקשת שרת נוספת); "Booked Meetings" דורש
+// GET /api/tasks בנפרד (המשימות/פגישות המאושרות, לא allLeads).
+async function renderOverviewCards() {
+  const grid = document.getElementById("overviewGrid");
+  if (!grid || typeof allLeads === "undefined") return;
+
+  const total = allLeads.length;
+  const notRelevant = allLeads.filter(l => l.lead_status === "not_relevant").length;
+  const activeLeads = total - notRelevant;
+  const aiReactivations = allLeads.filter(l => l.lead_status === "reactivation").length;
+  // "המרה" מוגדרת כאן כ-% מהלידים שהגיעו למעורבות חיובית כלשהי (נוצר קשר/חם/
+  // החייאת לידים) מתוך הסה"כ - הגדרה פשוטה ושקופה, לא "conversion" משפטי/כספי.
+  const engagedStatuses = new Set(["contacted", "hot", "reactivation"]);
+  const engaged = allLeads.filter(l => engagedStatuses.has(l.lead_status)).length;
+  const conversionRate = total > 0 ? Math.round((engaged / total) * 1000) / 10 : 0;
+
+  let bookedMeetings = "—";
+  try {
+    const res = await fetch("/api/tasks?status=pending");
+    if (res.ok) bookedMeetings = (await res.json()).length;
+  } catch (err) {
+    // משאירים "—" - לא מפילים את שאר הכרטיסים בגלל בקשה אחת שנכשלה
+  }
+
+  const cards = [
+    { icon: "users", label: "Active Leads", value: activeLeads, color: "var(--accent)", soft: "var(--accent-soft)" },
+    { icon: "refresh-cw", label: "AI Reactivations", value: aiReactivations, color: "var(--status-good)", soft: "var(--status-good-soft)" },
+    { icon: "calendar-check", label: "Booked Meetings", value: bookedMeetings, color: "var(--status-warning)", soft: "var(--status-warning-soft)" },
+    { icon: "trending-up", label: "Conversion Rate", value: conversionRate + "%", color: "#22d3ee", soft: "rgba(34,211,238,0.16)" },
+  ];
+  grid.innerHTML = cards.map(c => `
+    <div class="glass overview-card" style="--tile-color:${c.color}; --tile-color-soft:${c.soft};">
+      <div class="overview-card-icon"><i data-lucide="${c.icon}"></i></div>
+      <div class="overview-card-value">${c.value}</div>
+      <div class="overview-card-label">${c.label}</div>
+    </div>
+  `).join("");
+  refreshIcons();
 }
 
 function getFilteredLeads() {
@@ -1364,6 +1798,7 @@ function renderTable() {
               <div class="name-cell-primary">${escapeHtml(lead.customer_name || "ללא שם")}</div>
               ${secondary ? `<div class="name-cell-secondary">${escapeHtml(secondary)}</div>` : ""}
               ${propertyBadgesHtml(lead, "name-cell-property")}
+              ${missingFieldsBadgeHtml(lead) ? `<div class="name-cell-property">${missingFieldsBadgeHtml(lead)}</div>` : ""}
             </div>
           </div>
         </td>
@@ -1392,7 +1827,7 @@ function renderTable() {
         <tr>
           <th><input type="checkbox" class="row-checkbox" id="selectAllCheckbox" ${allVisibleSelected ? "checked" : ""}></th>
           <th>#</th><th>שם</th><th>טלפון</th><th>סוכן מטפל</th><th>ערוץ</th><th>סטטוס</th>
-          <th>ציון חום</th><th>פעילות אחרונה</th><th>קטגוריה</th><th>Tenant</th><th></th>
+          <th>ציון חום</th><th>פעילות אחרונה</th><th>קטגוריה</th><th>עסק</th><th></th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -1460,6 +1895,7 @@ function kanbanCardHtml(lead) {
         </div>
       </div>
       ${scoreBadgeHtml(lead.score)}
+      ${missingFieldsBadgeHtml(lead)}
     </div>
   `;
 }
@@ -1605,11 +2041,28 @@ function createChatController(ids) {
     const lead = findLead(currentLead.phone, currentLead.tenantId);
     document.getElementById(ids.statusWrap).innerHTML =
       statusSelectHtml(currentLead.phone, currentLead.tenantId, lead ? lead.lead_status : null);
+    if (ids.aiToggleWrap) {
+      document.getElementById(ids.aiToggleWrap).innerHTML =
+        aiToggleHtml(currentLead.phone, currentLead.tenantId, lead ? lead.ai_enabled : true);
+    }
     if (ids.scoreWrap) {
       document.getElementById(ids.scoreWrap).innerHTML = scoreBadgeHtml(lead ? lead.score : null);
     }
     if (ids.propertyWrap) {
       document.getElementById(ids.propertyWrap).innerHTML = propertyBadgeChips(lead);
+    }
+    if (ids.missingFieldsWrap) {
+      document.getElementById(ids.missingFieldsWrap).innerHTML = missingFieldsBadgeHtml(lead);
+    }
+    if (ids.missingFieldsBtn) {
+      // "לאחר אינטראקציה" (לא לפני יצירת קשר ראשוני כלשהו) - lead.last_message_at
+      // מגיע מ-GET /api/leads?include_last_message=1 (allLeads תמיד נטען עם זה,
+      // ראו loadLeads) ומשמש כאן כפרוקסי זול ל"יש היסטוריה" בלי לבדוק DOM/לטעון
+      // היסטוריה מלאה. השרת אוכף את אותו תנאי בפועל (400 בלי היסטוריה) - זו רק
+      // מניעת קליק-מיותר בצד הלקוח.
+      const hasHistory = !!(lead && lead.last_message_at);
+      const hasMissing = !!(lead && lead.missing_fields && lead.missing_fields.length > 0);
+      document.getElementById(ids.missingFieldsBtn).style.display = (hasMissing && hasHistory) ? "" : "none";
     }
   }
 
@@ -1764,9 +2217,11 @@ function createChatController(ids) {
     });
   }
 
-  // AI Sales Copilot - שני כפתורים משותפים ל-helper אחד (אותו טעינה/שגיאה/ביטול-
+  // AI Sales Copilot - כמה כפתורים משותפים ל-helper אחד (אותו טעינה/שגיאה/ביטול-
   // נעילה) - כל כפתור מזין endpoint + render-תוצאה משלו. לא שולח כלום בעצמו -
-  // "↩️ השתמש בהודעה" (רק במענה-להתנגדות) ממלא את הקומפוזר הקיים, לא שולח ישירות.
+  // "↩️ השתמש בהודעה" (סוכן מכירות/סיכום מנהלים) ממלא את הקומפוזר הקיים, לא
+  // שולח ישירות; "🧩 הצע השלמת פרטים" שונה בכוונה - יש לו כפתור "אישור ושליחה"
+  // ייעודי משלו (ראו למטה), כי כך ביקש המשתמש עבור הפיצ'ר הזה במפורש.
   async function runAiCopilot(btnId, endpoint, loadingText, onSuccess) {
     if (!currentLead || !ids.aiCopilotResult) return;
     const btn = document.getElementById(btnId);
@@ -1789,20 +2244,33 @@ function createChatController(ids) {
     }
   }
 
+  // סוכן מכירות והתנגדויות (sales_agent.py, POST /api/sales/suggest-reply) - עד 3
+  // ניסוחי מענה + קטגוריית ההתנגדות שזוהתה. read-only לגמרי כמו שני הכפתורים
+  // האחרים - "↩️ השתמש בהודעה" רק ממלא את הקומפוזר הקיים, לא שולח בעצמו; אישור
+  // הנציג הוא הקליק הנפרד על "שלח" בקומפוזר אחרי סקירה/עריכה (חוק בטיחות #1).
   if (ids.objectionBtn) {
     document.getElementById(ids.objectionBtn).addEventListener("click", () => {
-      runAiCopilot(ids.objectionBtn, "/api/leads/objection-response", "חושב על מענה...", (data, resultEl) => {
+      runAiCopilot(ids.objectionBtn, "/api/sales/suggest-reply", "מנתח את ההודעה ומכין הצעות...", (data, resultEl) => {
+        const suggestions = (data.replies && data.replies.length > 0) ? data.replies : ["(לא התקבלה הצעה - נסה שוב)"];
+        const cards = suggestions.map((text, idx) => `
+          <div class="sales-suggestion-card">
+            <div class="sales-suggestion-text">${escapeHtml(text)}</div>
+            <button type="button" class="ai-copilot-use-btn" data-idx="${idx}">↩️ השתמש בהודעה</button>
+          </div>
+        `).join("");
         resultEl.innerHTML = `
-          ${escapeHtml(data.response)}
+          <div class="missing-fields-hint">קטגוריית התנגדות שזוהתה: ${escapeHtml(data.category_label || "")}</div>
+          ${cards}
           <div class="ai-copilot-result-actions">
-            <button type="button" class="primary ai-copilot-use-btn">↩️ השתמש בהודעה</button>
             <button type="button" class="ai-copilot-dismiss-btn">✕ סגור</button>
           </div>
         `;
-        resultEl.querySelector(".ai-copilot-use-btn").addEventListener("click", () => {
-          composerInputEl().value = data.response;
-          composerInputEl().focus();
-          resultEl.style.display = "none";
+        resultEl.querySelectorAll(".ai-copilot-use-btn").forEach(btn => {
+          btn.addEventListener("click", () => {
+            composerInputEl().value = suggestions[Number(btn.dataset.idx)];
+            composerInputEl().focus();
+            resultEl.style.display = "none";
+          });
         });
         resultEl.querySelector(".ai-copilot-dismiss-btn").addEventListener("click", () => { resultEl.style.display = "none"; });
       });
@@ -1821,29 +2289,91 @@ function createChatController(ids) {
       });
     });
   }
+  // "🧩 הצע השלמת פרטים" - שונה משני הכפתורים למעלה: הם read-only לגמרי (הנציג
+  // מעתיק/משתמש דרך הקומפוזר הרגיל). כאן המשתמש ביקש מפורשות Preview עם כפתור
+  // "✅ אישור ושליחה" ייעודי - עדיין לא שולח שום דבר בעצמו עד הקליק המפורש הזה
+  // (חוק בטיחות #1), והשליחה בפועל קוראת ל-POST /api/messages/send הקיים - אין
+  // נתיב שליחה נפרד/מקביל. הטקסט ניתן לעריכה (textarea) לפני האישור, כדי
+  // שהאישור האנושי יהיה סקירה אמיתית, לא רק אישור-עיוור.
+  if (ids.missingFieldsBtn) {
+    document.getElementById(ids.missingFieldsBtn).addEventListener("click", () => {
+      runAiCopilot(ids.missingFieldsBtn, "/api/leads/missing-fields/suggest", "מכין הצעת פנייה...", (data, resultEl) => {
+        const labels = data.missing_fields.map(f => MISSING_FIELD_LABELS[f] || f).join(", ");
+        resultEl.innerHTML = `
+          <div class="missing-fields-hint">שדות חסרים: ${escapeHtml(labels)}</div>
+          <textarea class="ai-copilot-editable" rows="3">${escapeHtml(data.message)}</textarea>
+          <div class="ai-copilot-result-actions">
+            <button type="button" class="primary ai-copilot-approve-send-btn">✅ אישור ושליחה</button>
+            <button type="button" class="ai-copilot-dismiss-btn">✕ סגור</button>
+          </div>
+          <div class="ai-copilot-send-status" style="display:none;"></div>
+        `;
+        const textarea = resultEl.querySelector(".ai-copilot-editable");
+        const sendBtn = resultEl.querySelector(".ai-copilot-approve-send-btn");
+        const statusEl = resultEl.querySelector(".ai-copilot-send-status");
+
+        sendBtn.addEventListener("click", async () => {
+          const text = textarea.value.trim();
+          if (!text || !currentLead) return;
+          sendBtn.disabled = true;
+          statusEl.style.display = "block";
+          statusEl.className = "ai-copilot-send-status loading";
+          statusEl.textContent = "שולח...";
+          try {
+            const res = await fetch("/api/messages/send", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ phone: currentLead.phone, tenant_id: currentLead.tenantId, message: text }),
+            });
+            const sendData = await res.json();
+            if (!res.ok) throw new Error(sendData.error || ("HTTP " + res.status));
+            // מציגים דרך pollForNew, בדיוק כמו הקומפוזר הרגיל - לא בועה "אופטימית"
+            // מקומית, כדי לא ליצור כפילות בין תצוגה מקומית לבין מה שבאמת נשמר.
+            await pollForNew();
+            if (sendData.simulated) {
+              statusEl.className = "ai-copilot-send-status warning";
+              statusEl.textContent = sendData.warning || "ההודעה נרשמה כסימולציה - לא נשלחה בפועל.";
+            } else {
+              statusEl.className = "ai-copilot-send-status success";
+              statusEl.textContent = "✅ נשלח בהצלחה.";
+              setTimeout(() => { resultEl.style.display = "none"; }, 2500);
+            }
+          } catch (err) {
+            statusEl.className = "ai-copilot-send-status error";
+            statusEl.textContent = "שליחה נכשלה: " + err.message;
+          } finally {
+            sendBtn.disabled = false;
+          }
+        });
+        resultEl.querySelector(".ai-copilot-dismiss-btn").addEventListener("click", () => { resultEl.style.display = "none"; });
+      });
+    });
+  }
 
   return {
     open, close, syncStatus,
+    pollNow: pollForNew, // נחשף ל-SSE (שלב 3) - מרענן מיידית את הצ'אט הפתוח כשמגיע אירוע חי במקום לחכות למחזור ה-polling הבא
     get currentLead() { return currentLead; },
   };
 }
 
 const panelChat = createChatController({
   body: "panelBody", name: "panelName", sub: "panelSub", statusWrap: "panelStatusWrap", scoreWrap: "panelScoreWrap",
-  propertyWrap: "panelPropertyWrap",
+  propertyWrap: "panelPropertyWrap", missingFieldsWrap: "panelMissingFieldsWrap", aiToggleWrap: "panelAiToggleWrap",
   composerForm: "composerForm", composerInput: "composerInput",
   composerSend: "composerSend", composerError: "composerError",
   noteForm: "noteForm", noteInput: "noteInput",
-  objectionBtn: "objectionBtn", execSummaryBtn: "execSummaryBtn", aiCopilotResult: "aiCopilotResult",
+  objectionBtn: "objectionBtn", execSummaryBtn: "execSummaryBtn", missingFieldsBtn: "missingFieldsBtn",
+  aiCopilotResult: "aiCopilotResult",
 });
 
 const inboxChat = createChatController({
   body: "inboxChatBody", name: "inboxChatName", sub: "inboxChatSub", statusWrap: "inboxChatStatusWrap", scoreWrap: "inboxChatScoreWrap",
-  propertyWrap: "inboxChatPropertyWrap",
+  propertyWrap: "inboxChatPropertyWrap", missingFieldsWrap: "inboxChatMissingFieldsWrap", aiToggleWrap: "inboxChatAiToggleWrap",
   composerForm: "inboxComposerForm", composerInput: "inboxComposerInput",
   composerSend: "inboxComposerSend", composerError: "inboxComposerError",
   noteForm: "inboxNoteForm", noteInput: "inboxNoteInput",
-  objectionBtn: "inboxObjectionBtn", execSummaryBtn: "inboxExecSummaryBtn", aiCopilotResult: "inboxAiCopilotResult",
+  objectionBtn: "inboxObjectionBtn", execSummaryBtn: "inboxExecSummaryBtn", missingFieldsBtn: "inboxMissingFieldsBtn",
+  aiCopilotResult: "inboxAiCopilotResult",
   onOpen: () => {
     document.getElementById("inboxChatHeader").style.display = "";
     document.getElementById("inboxComposerWrap").style.display = "";
@@ -1908,17 +2438,83 @@ function renderCallPanelCalling() {
   renderCallBody('<div class="call-status-line">📞 מתקשר לנציג...</div>');
 }
 
-function renderCallPanelInProgress(data) {
+// מיפוי CallStatus האמיתי שמגיע מ-Twilio (POST /voice/status, ראו db.update_call_
+// status) לתווית עברית ברורה - "in-progress" כאן פירושו שהנציג (הרגל הראשונה של
+// הגישור) ענה; אין callback נפרד לרגל השנייה (הלקוח, ראו voice_call.start_bridge_
+// call/dial.number) אז זו ההערכה הכי מדויקת שיש לנו בזמן אמת.
+const CALL_STATUS_LABELS = {
+  initiated: "📞 מחייגים לנציג...",
+  queued: "📞 בתור לחיוג...",
+  ringing: "🔔 מצלצל אצל הנציג...",
+  "in-progress": "🟢 השיחה חיה - הנציג ענה, מגשרים ללקוח",
+  completed: "✅ השיחה הסתיימה",
+  busy: "📵 הנציג היה תפוס",
+  "no-answer": "🔕 הנציג לא ענה",
+  failed: "❌ השיחה נכשלה",
+  canceled: "🚫 השיחה בוטלה",
+};
+const CALL_TERMINAL_STATUSES = new Set(["completed", "busy", "no-answer", "failed", "canceled"]);
+
+let callStatusPollTimer = null;
+
+function stopCallStatusPolling() {
+  if (callStatusPollTimer) { clearInterval(callStatusPollTimer); callStatusPollTimer = null; }
+}
+
+// polling חי (כל 2 שניות) על מצב שיחה בודדת - כך שהדשבורד משקף בזמן אמת את
+// המעברים ringing->in-progress->completed שמגיעים אסינכרונית מ-Twilio, במקום
+// הודעת "בעיצומה" סטטית שלא באמת יודעת מה קורה. עוצר את עצמו אוטומטית במעבר
+// לסטטוס סופי (ואז עובר לטופס הערות לבד, בלי קליק ידני) - ראו activeCall.callId
+// כמנגנון-הגנה מפני race במעבר מהיר בין שיחות בתור (dial queue).
+function startCallStatusPolling(callId) {
+  stopCallStatusPolling();
+  callStatusPollTimer = setInterval(async () => {
+    if (!activeCall || activeCall.callId !== callId) { stopCallStatusPolling(); return; }
+    try {
+      const res = await fetch(`/api/calls/${callId}`);
+      if (!res.ok) return;
+      const call = await res.json();
+      if (!activeCall || activeCall.callId !== callId) { stopCallStatusPolling(); return; }
+      const textEl = document.getElementById("callLiveStatusText");
+      const badgeEl = document.getElementById("callLiveBadge");
+      if (!textEl) return; // הפאנל כבר עבר למצב אחר (למשל טופס הערות) - אין מה לעדכן
+      textEl.textContent = CALL_STATUS_LABELS[call.status] || `סטטוס: ${call.status}`;
+      if (badgeEl) badgeEl.style.display = call.status === "in-progress" ? "" : "none";
+      if (CALL_TERMINAL_STATUSES.has(call.status)) {
+        stopCallStatusPolling();
+        renderCallNotesForm();
+      }
+    } catch (err) {
+      console.error("בדיקת סטטוס שיחה נכשלה:", err);
+    }
+  }, 2000);
+}
+
+function renderCallPanelInProgress(data, config) {
   if (data.simulated) {
     renderCallBody(`<div class="call-status-line">⚠️ ${escapeHtml(data.warning || "שיחה לא בוצעה בפועל - מצב סימולציה")}</div>`);
     renderCallNotesForm();
     return;
   }
+  // תצורת Voice חסרה חלקית - GET /api/calls/config-status (נבדק בזמן פתיחת הפאנל,
+  // במקביל ל-/api/calls/start) - הערה בלבד, לא חוסמת (start_bridge_call כבר הצליח
+  // בפועל כאן, אחרת data.simulated היה true למעלה).
+  const configNote = (config && !config.configured)
+    ? `<div class="call-config-note">⚙️ תצורת Voice לא מלאה (${escapeHtml(config.missing.join(", "))}) - ייתכן שהשיחה תיכשל</div>`
+    : "";
   renderCallBody(`
-    <div class="call-status-line">📞 השיחה בעיצומה...</div>
-    <button type="button" class="primary" id="callEndedBtn">השיחה הסתיימה - הזן הערות</button>
+    ${configNote}
+    <div class="call-status-line">
+      <span id="callLiveStatusText">${escapeHtml(CALL_STATUS_LABELS[data.status] || "📞 מחייגים לנציג...")}</span>
+      <span class="live-badge" id="callLiveBadge" style="display:none;">🟢 חי</span>
+    </div>
+    <button type="button" id="callEndedBtn">✍️ הזן הערות (בלי לחכות לסיום)</button>
   `);
-  document.getElementById("callEndedBtn").addEventListener("click", renderCallNotesForm);
+  document.getElementById("callEndedBtn").addEventListener("click", () => {
+    stopCallStatusPolling();
+    renderCallNotesForm();
+  });
+  startCallStatusPolling(data.call_id);
 }
 
 function renderCallNotesForm() {
@@ -1990,16 +2586,23 @@ async function openCallPanel(phone, tenantId, name) {
   renderCallPanelCalling();
 
   try {
-    const res = await fetch("/api/calls/start", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone, tenant_id: tenantId }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    // config-status נבדק במקביל (לא ברצף) - לא אמור לעכב את יזום השיחה בפועל,
+    // רק להוסיף הקשר לתצוגה; כשל בקריאה הזו (למשל timeout) לא אמור להפיל את
+    // הזרימה העיקרית - נבלע ל-null ופשוט לא מוצגת ההערה.
+    const [configRes, startRes] = await Promise.all([
+      fetch("/api/calls/config-status").catch(() => null),
+      fetch("/api/calls/start", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, tenant_id: tenantId }),
+      }),
+    ]);
+    const config = (configRes && configRes.ok) ? await configRes.json() : null;
+    const data = await startRes.json();
+    if (!startRes.ok) throw new Error(data.error || ("HTTP " + startRes.status));
     if (!activeCall) return; // הפאנל נסגר בזמן ההמתנה לתשובה
     activeCall.callId = data.call_id;
     activeCall.simulated = data.simulated;
-    renderCallPanelInProgress(data);
+    renderCallPanelInProgress(data, config);
   } catch (err) {
     if (!activeCall) return;
     renderCallBody('<div class="error">שגיאה ביזום השיחה: ' + escapeHtml(err.message) + "</div>");
@@ -2007,6 +2610,7 @@ async function openCallPanel(phone, tenantId, name) {
 }
 
 async function submitCallNotes(notesText) {
+  stopCallStatusPolling();
   renderCallSummarizing();
   try {
     const res = await fetch(`/api/calls/${activeCall.callId}/notes`, {
@@ -2067,6 +2671,7 @@ function closeSubPanel(id) {
 }
 
 function closeCallPanel() {
+  stopCallStatusPolling();
   closeSubPanel("callPanel");
   activeCall = null;
   dialQueue = null; // סגירת הפאנל ידנית עוצרת גם תור פעיל - לא ממשיכים "ברקע"
@@ -2089,11 +2694,38 @@ function taskDueLabel(t) {
   return t.due_time ? `${t.due_date} · ${t.due_time}` : t.due_date;
 }
 
+// תוויות אנושיות לכוונה שזיהה scheduling_agent - מוצג על כרטיסי הצעה
+const SCHEDULING_INTENT_LABELS = { new: "פגישה חדשה", cancel: "בקשת ביטול", reschedule: "בקשת שינוי מועד" };
+
 function renderTaskRow(t, { showLead = false } = {}) {
   const lead = showLead ? findLead(t.phone, t.tenant_id) : null;
   const leadLine = showLead
     ? `<div class="task-row-lead">${escapeHtml(lead ? (lead.customer_name || t.phone) : t.phone)}</div>`
     : "";
+  const isProposal = t.status === "pending_confirmation";
+
+  // הצעה אוטומטית (scheduling_agent) - לא פגישה אמיתית עד אישור נציג מפורש
+  // (ראו CLAUDE.md #5/scheduling_agent.py) - "✅ אשר"/"❌ דחה" במקום "✓ בוצע"/
+  // "✗ בטל" הרגילים, כדי שלא יהיה אפשר "לטעות" ולהתייחס אליה כמשימה רגילה.
+  if (isProposal) {
+    const intentLabel = SCHEDULING_INTENT_LABELS[t.intent] || "בקשת תזמון";
+    return `
+      <div class="task-row proposal${showLead ? " clickable" : ""}" data-task-id="${t.id}" data-phone="${escapeHtml(t.phone)}" data-tenant="${escapeHtml(t.tenant_id)}">
+        <div class="task-row-main">
+          <span class="task-proposal-badge">🤖 ${escapeHtml(intentLabel)} - ממתין לאישור</span>
+          <div class="task-row-title">${escapeHtml(t.title)}</div>
+          <div class="task-row-due">📅 ${escapeHtml(taskDueLabel(t))}</div>
+          ${t.notes ? `<div class="task-row-notes">${escapeHtml(t.notes)}</div>` : ""}
+          ${leadLine}
+        </div>
+        <div class="task-row-actions">
+          <button type="button" class="primary task-confirm-btn">✅ אשר</button>
+          <button type="button" class="task-reject-btn">❌ דחה</button>
+        </div>
+      </div>
+    `;
+  }
+
   return `
     <div class="task-row${t.status === "done" ? " done" : ""}${showLead ? " clickable" : ""}" data-task-id="${t.id}" data-phone="${escapeHtml(t.phone)}" data-tenant="${escapeHtml(t.tenant_id)}">
       <div class="task-row-main">
@@ -2107,6 +2739,10 @@ function renderTaskRow(t, { showLead = false } = {}) {
       </div>
     </div>
   `;
+}
+
+async function setTaskProposalDecision(taskId, decision) {
+  await fetch(`/api/tasks/${taskId}/${decision}`, { method: "POST" });
 }
 
 async function loadTasksPanel() {
@@ -2188,6 +2824,14 @@ document.getElementById("tasksPanelBody").addEventListener("click", async (e) =>
     loadControlCenter();
   } else if (e.target.classList.contains("task-cancel-btn")) {
     await setTaskStatus(row.dataset.taskId, "cancelled");
+    loadTasksPanel();
+    loadControlCenter();
+  } else if (e.target.classList.contains("task-confirm-btn")) {
+    await setTaskProposalDecision(row.dataset.taskId, "confirm");
+    loadTasksPanel();
+    loadControlCenter();
+  } else if (e.target.classList.contains("task-reject-btn")) {
+    await setTaskProposalDecision(row.dataset.taskId, "reject");
     loadTasksPanel();
     loadControlCenter();
   }
@@ -2397,20 +3041,32 @@ document.getElementById("callHistoryPanelBody").addEventListener("submit", async
   }
 });
 
-// ---- יומן גלובלי - כל המשימות הפתוחות, מהקרובה ביותר ----
+// ---- יומן גלובלי - הצעות ממתינות לאישור (scheduling_agent) + כל המשימות
+// הפתוחות, מהקרובה ביותר ----
 async function loadCalendarPanel() {
   const body = document.getElementById("calendarPanelBody");
   body.innerHTML = '<div class="loading">טוען יומן...</div>';
   try {
     const tenantId = document.getElementById("tenantFilter").value;
-    let url = "/api/tasks?status=pending";
-    if (tenantId) url += `&tenant_id=${encodeURIComponent(tenantId)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const tasks = await res.json();
-    body.innerHTML = tasks.length
+    const tenantQS = tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : "";
+    const [proposalsRes, tasksRes] = await Promise.all([
+      fetch(`/api/tasks?status=pending_confirmation${tenantQS}`),
+      fetch(`/api/tasks?status=pending${tenantQS}`),
+    ]);
+    if (!proposalsRes.ok) throw new Error("HTTP " + proposalsRes.status);
+    if (!tasksRes.ok) throw new Error("HTTP " + tasksRes.status);
+    const proposals = await proposalsRes.json();
+    const tasks = await tasksRes.json();
+
+    const proposalsSection = proposals.length ? `
+      <div class="calendar-section-title">🤖 הצעות ממתינות לאישור (${proposals.length})</div>
+      ${proposals.map(t => renderTaskRow(t, { showLead: true })).join("")}
+    ` : "";
+    const tasksSection = tasks.length
       ? tasks.map(t => renderTaskRow(t, { showLead: true })).join("")
       : '<div class="empty">אין משימות פתוחות ✅</div>';
+
+    body.innerHTML = proposalsSection + tasksSection;
   } catch (err) {
     body.innerHTML = '<div class="error">שגיאה בטעינת היומן: ' + escapeHtml(err.message) + "</div>";
   }
@@ -2437,6 +3093,18 @@ document.getElementById("calendarPanelBody").addEventListener("click", async (e)
   }
   if (e.target.classList.contains("task-cancel-btn")) {
     await setTaskStatus(row.dataset.taskId, "cancelled");
+    loadCalendarPanel();
+    loadControlCenter();
+    return;
+  }
+  if (e.target.classList.contains("task-confirm-btn")) {
+    await setTaskProposalDecision(row.dataset.taskId, "confirm");
+    loadCalendarPanel();
+    loadControlCenter();
+    return;
+  }
+  if (e.target.classList.contains("task-reject-btn")) {
+    await setTaskProposalDecision(row.dataset.taskId, "reject");
     loadCalendarPanel();
     loadControlCenter();
     return;
@@ -2729,6 +3397,532 @@ function renderInboxList() {
   });
 }
 
+// ---- שלד Enterprise חדש: ניווט בין 4 הבלוקים (Overview/Leads & CRM/B2B
+// Campaigns/AI Agents & Calendar), Quick Actions dropdown, אינדיקטור שרת חי ----
+
+function refreshIcons() {
+  if (typeof lucide !== "undefined") lucide.createIcons();
+}
+
+const APP_SECTIONS = ["overview", "crm", "campaigns", "ai-agents", "analytics"];
+const SECTION_EL_IDS = {
+  "overview": "sectionOverview", "crm": "sectionCrm",
+  "campaigns": "sectionCampaigns", "ai-agents": "sectionAiAgents",
+  "analytics": "sectionAnalytics",
+};
+let currentSection = "overview";
+
+function switchSection(section) {
+  if (!APP_SECTIONS.includes(section)) return;
+  currentSection = section;
+  APP_SECTIONS.forEach(s => {
+    document.getElementById(SECTION_EL_IDS[s]).style.display = s === section ? "" : "none";
+  });
+  document.querySelectorAll(".sidebar-nav-item").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.section === section);
+  });
+  // כל בלוק טוען/מרענן את עצמו רק כשנכנסים אליו בפועל - לא בכל טעינת עמוד
+  if (section === "overview") renderOverviewCards();
+  if (section === "campaigns") { loadCampaignsList(); }
+  if (section === "ai-agents") { loadAiAgentsSection(); }
+  if (section === "analytics") { loadAnalyticsSection(); }
+}
+document.querySelectorAll(".sidebar-nav-item[data-section]").forEach(btn => {
+  btn.addEventListener("click", () => switchSection(btn.dataset.section));
+});
+
+// ---- RBAC (שלב 2) - זהות המשתמש הנוכחי (GET /api/me) קובעת אילו לשוניות
+// מוצגות (data-roles על כפתורי הניווט) ומאפשרת "🔑 החלף משתמש" להדגמה חיה ----
+let currentUser = null;
+
+async function loadCurrentUser() {
+  try {
+    const res = await fetch("/api/me");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    currentUser = await res.json();
+  } catch (err) {
+    currentUser = { role: "admin", name: "לא זוהה", tenant_ids: [] };
+  }
+  document.getElementById("currentUserName").textContent = `${currentUser.name} · ${currentUser.role}`;
+  document.querySelectorAll(".sidebar-nav-item[data-roles]").forEach(btn => {
+    const allowedRoles = btn.dataset.roles.split(",");
+    const visible = allowedRoles.includes(currentUser.role);
+    btn.style.display = visible ? "" : "none";
+    if (!visible && currentSection === btn.dataset.section) switchSection("overview");
+  });
+}
+
+document.getElementById("switchUserBtn").addEventListener("click", () => {
+  const current = (() => { try { return localStorage.getItem("crm_api_key_override") || ""; } catch (e) { return ""; } })();
+  const next = window.prompt(
+    "הדבק מפתח API של משתמש (partner/client) כדי להתחזות לתצוגה שלו, או השאר ריק כדי לחזור לאדמין הראשי:",
+    current
+  );
+  if (next === null) return; // ביטול
+  try {
+    if (next.trim()) localStorage.setItem("crm_api_key_override", next.trim());
+    else localStorage.removeItem("crm_api_key_override");
+  } catch (e) { /* localStorage לא זמין - מתעלמים, נשארים על המפתח הראשי */ }
+  location.reload();
+});
+
+// Quick Actions dropdown - נסגר בקליק מחוץ לתפריט או ב-Escape
+const quickActionsBtn = document.getElementById("quickActionsBtn");
+const quickActionsMenu = document.getElementById("quickActionsMenu");
+quickActionsBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  quickActionsMenu.hidden = !quickActionsMenu.hidden;
+});
+document.addEventListener("click", (e) => {
+  if (!quickActionsMenu.hidden && !quickActionsMenu.contains(e.target) && e.target !== quickActionsBtn) {
+    quickActionsMenu.hidden = true;
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") quickActionsMenu.hidden = true;
+});
+// כל קליק בתוך התפריט (על אחד הכפתורים הקיימים) סוגר אותו אחרי הפעולה - UX נקי יותר
+quickActionsMenu.addEventListener("click", (e) => {
+  if (e.target.closest("button, a")) quickActionsMenu.hidden = true;
+});
+
+// חיפוש מהיר בהדר - מראה את #searchInput הקיים בלשונית Leads & CRM (לא לוגיקת
+// סינון כפולה) ועובר אוטומטית ללשונית הזו כשמתחילים להקליד, כדי שהתוצאות ייראו.
+document.getElementById("globalSearchInput").addEventListener("input", (e) => {
+  const value = e.target.value;
+  if (currentSection !== "crm" && value.trim()) switchSection("crm");
+  const crmSearch = document.getElementById("searchInput");
+  if (crmSearch.value !== value) {
+    crmSearch.value = value;
+    crmSearch.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+});
+
+// אינדיקטור שרת חי (Sidebar) - בדיקת חיבור קלה (GET /api/calls/config-status,
+// קריא-בלבד וזול) כל 20 שניות; ⚠️ סימון אדום אם הבקשה נכשלת (השרת לא מגיב).
+async function checkServerStatus() {
+  const dot = document.getElementById("serverPulseDot");
+  const text = document.getElementById("serverStatusText");
+  try {
+    const res = await fetch("/api/calls/config-status");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    text.textContent = "השרת פעיל";
+    dot.classList.remove("bg-rose-400");
+  } catch (err) {
+    text.textContent = "אין חיבור לשרת";
+    dot.classList.add("bg-rose-400");
+  }
+}
+checkServerStatus();
+setInterval(checkServerStatus, 20000);
+
+// ---- עדכוני בזמן אמת (SSE, שלב 3) - GET /api/events ----
+// **לא** מחליף את ה-polling הקיים (חלון צ'אט/Inbox/יומן) - משלים אותו: מריץ
+// רענון מיידי (panelChat.pollNow/loadLeads/וכו') ברגע שמגיע אירוע, במקום
+// לחכות למחזור ה-polling הבא. אם החיבור נופל, ה-polling הקיים ממשיך לעבוד
+// כרגיל כרשת ביטחון - שום פיצ'ר לא תלוי אך ורק ב-SSE.
+let liveEventSource = null;
+
+function showLiveToast(text, icon) {
+  const wrap = document.getElementById("liveToastWrap");
+  if (!wrap) return;
+  const el = document.createElement("div");
+  el.className = "glass flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm text-slate-200 shadow-2xl";
+  el.style.cssText = "opacity:0; transform:translateY(8px); transition:opacity .3s, transform .3s;";
+  el.innerHTML = `<i data-lucide="${icon || "bell"}" class="h-4 w-4 text-indigo-400"></i><span>${escapeHtml(text)}</span>`;
+  wrap.appendChild(el);
+  refreshIcons();
+  requestAnimationFrame(() => { el.style.opacity = "1"; el.style.transform = "none"; });
+  setTimeout(() => {
+    el.style.opacity = "0";
+    el.style.transform = "translateY(8px)";
+    setTimeout(() => el.remove(), 350);
+  }, 4000);
+}
+
+function handleLiveEvent(evt) {
+  if (!evt || !evt.type) return;
+
+  if (evt.type === "message") {
+    const isOpenChat = (chat) => chat.currentLead && chat.currentLead.phone === evt.phone && chat.currentLead.tenantId === evt.tenant_id;
+    if (isOpenChat(panelChat)) panelChat.pollNow();
+    if (isOpenChat(inboxChat)) inboxChat.pollNow();
+    if (evt.direction === "in") showLiveToast("💬 הודעה חדשה התקבלה", "message-circle");
+    loadLeads().then(() => { if (currentSection === "overview") renderOverviewCards(); });
+    if (currentSection === "crm" && document.getElementById("inboxView").style.display !== "none") renderInboxList();
+  } else if (evt.type === "lead_status_changed" || evt.type === "lead_updated") {
+    loadLeads().then(() => { if (currentSection === "overview") renderOverviewCards(); });
+  } else if (evt.type === "scheduling_proposal") {
+    showLiveToast("🤖 זוהתה בקשת פגישה חדשה - ממתינה לאישור", "calendar-clock");
+    if (currentSection === "ai-agents") loadAiAgentsSection();
+  } else if (evt.type === "meeting_booked") {
+    showLiveToast("📅 פגישה אושרה", "calendar-check");
+    if (currentSection === "ai-agents") loadAiAgentsSection();
+    if (currentSection === "overview") renderOverviewCards();
+  }
+}
+
+function wireLiveEvents() {
+  if (typeof EventSource === "undefined") return; // דפדפן ללא תמיכה - נשארים על polling בלבד, בלי לקרוס
+  if (liveEventSource) liveEventSource.close();
+  liveEventSource = new EventSource(`/api/events?api_key=${encodeURIComponent(activeApiKey())}`);
+  liveEventSource.onmessage = (e) => {
+    let evt;
+    try { evt = JSON.parse(e.data); } catch (err) { return; }
+    handleLiveEvent(evt);
+  };
+  // EventSource מתאושש אוטומטית (auto-reconnect מובנה בפרוטוקול הדפדפן) -
+  // אין צורך בלוגיקת retry ידנית כאן.
+  liveEventSource.onerror = () => {};
+}
+
+// ---- B2B Campaigns (outbound_engine.py) - ייבוא CSV/Excel, תור שליחה חי,
+// הפעלת שליחה (עם קליק אנושי מפורש - חוק בטיחות #1) ----
+let selectedCampaignFile = null;
+let selectedCampaignId = null;
+let campaignQueuePollTimer = null;
+
+const CAMPAIGN_STATUS_LABELS = {
+  queued: "בתור", sending: "נשלח כעת...", sent: "✓ נשלח", simulated: "🧪 סימולציה",
+  failed: "✗ נכשל", skipped_quota: "⏸ מכסה יומית",
+};
+
+function campaignFileSelected(file) {
+  selectedCampaignFile = file;
+  document.getElementById("campaignFileLabel").textContent = file ? `📄 ${file.name}` : "גררו קובץ CSV/XLSX לכאן, או לחצו לבחירה";
+}
+
+const campaignFileDrop = document.getElementById("campaignFileDrop");
+const campaignFileInput = document.getElementById("campaignFileInput");
+campaignFileDrop.addEventListener("click", () => campaignFileInput.click());
+campaignFileInput.addEventListener("change", () => campaignFileSelected(campaignFileInput.files[0] || null));
+campaignFileDrop.addEventListener("dragover", (e) => { e.preventDefault(); campaignFileDrop.classList.add("border-indigo-500"); });
+campaignFileDrop.addEventListener("dragleave", () => campaignFileDrop.classList.remove("border-indigo-500"));
+campaignFileDrop.addEventListener("drop", (e) => {
+  e.preventDefault();
+  campaignFileDrop.classList.remove("border-indigo-500");
+  const file = e.dataTransfer.files[0];
+  if (file) { campaignFileSelected(file); campaignFileInput.files = e.dataTransfer.files; }
+});
+
+document.getElementById("campaignImportForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const resultEl = document.getElementById("campaignImportResult");
+  if (!selectedCampaignFile) {
+    resultEl.innerHTML = '<div class="skip-line">בחרו קובץ CSV/XLSX קודם</div>';
+    return;
+  }
+  const btn = document.getElementById("campaignImportBtn");
+  btn.disabled = true;
+  resultEl.innerHTML = '<div class="loading">מייבא...</div>';
+  try {
+    const formData = new FormData();
+    formData.append("file", selectedCampaignFile);
+    formData.append("tenant_id", document.getElementById("tenantFilter").value || "default");
+    const template = document.getElementById("campaignMessageTemplate").value.trim();
+    if (template) formData.append("message_template", template);
+
+    const res = await fetch("/api/campaigns/import", { method: "POST", body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+
+    const skipLine = data.skipped.length
+      ? `<div class="skip-line">${data.skipped.length} שורות דולגו (טלפון חסר/לא תקין)</div>` : "";
+    resultEl.innerHTML = `<div class="ok-line">✓ ${data.queued} אנשי קשר יובאו לתור (מתוך ${data.total_rows} שורות)</div>${skipLine}`;
+
+    selectedCampaignFile = null;
+    campaignFileInput.value = "";
+    document.getElementById("campaignFileLabel").textContent = "גררו קובץ CSV/XLSX לכאן, או לחצו לבחירה";
+    document.getElementById("campaignMessageTemplate").value = "";
+
+    await loadCampaignsList();
+    document.getElementById("campaignSelect").value = data.campaign_id;
+    selectCampaign(data.campaign_id);
+  } catch (err) {
+    resultEl.innerHTML = '<div class="error">שגיאה בייבוא: ' + escapeHtml(err.message) + "</div>";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function campaignQueueRowHtml(item) {
+  return `
+    <div class="campaign-queue-row">
+      <div class="cq-main">
+        <div class="cq-name">${escapeHtml(item.name || item.phone)}${item.company ? " · " + escapeHtml(item.company) : ""}</div>
+        <div class="cq-phone">${escapeHtml(item.phone)}</div>
+      </div>
+      <span class="campaign-status-badge ${item.status}">${CAMPAIGN_STATUS_LABELS[item.status] || item.status}</span>
+    </div>
+  `;
+}
+
+async function loadCampaignQueue(campaignId) {
+  const wrap = document.getElementById("campaignQueueWrap");
+  try {
+    const res = await fetch(`/api/campaigns/${campaignId}/queue`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const items = await res.json();
+    wrap.innerHTML = items.length
+      ? items.map(campaignQueueRowHtml).join("")
+      : '<div class="empty">אין פריטים בתור</div>';
+
+    const stillActive = items.some(i => i.status === "queued" || i.status === "sending");
+    document.getElementById("campaignStartBtn").disabled = !items.some(i => i.status === "queued");
+    if (stillActive && currentSection === "campaigns") {
+      clearTimeout(campaignQueuePollTimer);
+      campaignQueuePollTimer = setTimeout(() => loadCampaignQueue(campaignId), 4000);
+    } else if (!stillActive) {
+      loadCampaignsList(); // מרענן את הסיכום ברשימת הקמפיינים כשההרצה מסתיימת
+    }
+  } catch (err) {
+    wrap.innerHTML = '<div class="error">שגיאה בטעינת התור: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function selectCampaign(campaignId) {
+  clearTimeout(campaignQueuePollTimer);
+  selectedCampaignId = campaignId;
+  if (!campaignId) {
+    document.getElementById("campaignQueueWrap").innerHTML = "";
+    document.getElementById("campaignStartBtn").disabled = true;
+    return;
+  }
+  loadCampaignQueue(campaignId);
+}
+document.getElementById("campaignSelect").addEventListener("change", (e) => selectCampaign(e.target.value));
+
+document.getElementById("campaignStartBtn").addEventListener("click", async () => {
+  if (!selectedCampaignId) return;
+  const btn = document.getElementById("campaignStartBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ מתחיל...";
+  try {
+    const res = await fetch(`/api/campaigns/${selectedCampaignId}/start`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenant_id: document.getElementById("tenantFilter").value || "default" }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    loadCampaignQueue(selectedCampaignId);
+  } catch (err) {
+    alert("הפעלת השליחה נכשלה: " + err.message);
+  } finally {
+    btn.textContent = "▶️ התחל שליחה";
+  }
+});
+
+function campaignRowHtml(c) {
+  const progressPct = c.total > 0 ? Math.round(((c.sent + c.simulated + c.failed) / c.total) * 100) : 0;
+  return `
+    <div class="campaign-row-item" data-campaign-id="${escapeHtml(c.campaign_id)}">
+      <div style="flex:1; min-width:0;">
+        <div>${c.total} אנשי קשר</div>
+        <div class="campaign-progress-bar"><div class="campaign-progress-bar-fill" style="width:${progressPct}%;"></div></div>
+      </div>
+      <span class="muted" style="font-size:11px;">${c.sent + c.simulated}/${c.total}</span>
+    </div>
+  `;
+}
+
+async function loadCampaignsList() {
+  const listEl = document.getElementById("campaignsList");
+  const selectEl = document.getElementById("campaignSelect");
+  try {
+    const tenantId = document.getElementById("tenantFilter").value;
+    const url = tenantId ? `/api/campaigns?tenant_id=${encodeURIComponent(tenantId)}` : "/api/campaigns";
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const campaigns = await res.json();
+
+    listEl.innerHTML = campaigns.length
+      ? campaigns.map(campaignRowHtml).join("")
+      : '<div class="empty" style="padding:12px 0;">אין עדיין קמפיינים</div>';
+    listEl.querySelectorAll(".campaign-row-item").forEach(row => {
+      row.addEventListener("click", () => {
+        selectEl.value = row.dataset.campaignId;
+        selectCampaign(row.dataset.campaignId);
+      });
+    });
+
+    const previousValue = selectEl.value;
+    selectEl.innerHTML = '<option value="">בחרו קמפיין...</option>' +
+      campaigns.map(c => `<option value="${escapeHtml(c.campaign_id)}">${c.campaign_id} (${c.total} אנשי קשר)</option>`).join("");
+    if (campaigns.some(c => c.campaign_id === previousValue)) selectEl.value = previousValue;
+  } catch (err) {
+    listEl.innerHTML = '<div class="error">שגיאה בטעינת קמפיינים: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+// ---- AI Agents & Calendar - הצעות scheduling_agent + משימות + סיכום פעילות ----
+async function loadAiAgentsSection() {
+  const body = document.getElementById("aiAgentsCalendarBody");
+  const summary = document.getElementById("aiAgentsSummary");
+  body.innerHTML = '<div class="loading">טוען יומן...</div>';
+  try {
+    const tenantId = document.getElementById("tenantFilter").value;
+    const tenantQS = tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : "";
+    const [proposalsRes, tasksRes] = await Promise.all([
+      fetch(`/api/tasks?status=pending_confirmation${tenantQS}`),
+      fetch(`/api/tasks?status=pending${tenantQS}`),
+    ]);
+    const proposals = proposalsRes.ok ? await proposalsRes.json() : [];
+    const tasks = tasksRes.ok ? await tasksRes.json() : [];
+
+    const proposalsSection = proposals.length ? `
+      <div class="calendar-section-title">🤖 הצעות ממתינות לאישור (${proposals.length})</div>
+      ${proposals.map(t => renderTaskRow(t, { showLead: true })).join("")}
+    ` : "";
+    body.innerHTML = proposalsSection + (tasks.length
+      ? tasks.map(t => renderTaskRow(t, { showLead: true })).join("")
+      : '<div class="empty">אין משימות פתוחות ✅</div>');
+    body.querySelectorAll(".task-confirm-btn, .task-reject-btn, .task-done-btn, .task-cancel-btn").forEach(btn => {
+      btn.addEventListener("click", async (e) => {
+        const row = e.target.closest(".task-row");
+        if (btn.classList.contains("task-confirm-btn")) await setTaskProposalDecision(row.dataset.taskId, "confirm");
+        else if (btn.classList.contains("task-reject-btn")) await setTaskProposalDecision(row.dataset.taskId, "reject");
+        else if (btn.classList.contains("task-done-btn")) await setTaskStatus(row.dataset.taskId, "done");
+        else if (btn.classList.contains("task-cancel-btn")) await setTaskStatus(row.dataset.taskId, "cancelled");
+        loadAiAgentsSection();
+        loadControlCenter();
+      });
+    });
+    // קליק על השורה עצמה (לא על כפתור) פותח את הצ'אט של הליד - עקבי עם היומן הגלובלי
+    body.querySelectorAll(".task-row.clickable").forEach(row => {
+      row.addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        const lead = findLead(row.dataset.phone, row.dataset.tenant);
+        openHistory(row.dataset.phone, row.dataset.tenant, lead ? (lead.customer_name || row.dataset.phone) : row.dataset.phone);
+      });
+    });
+
+    const hotLeadsCount = allLeads.filter(l => (l.score || 0) >= 70).length;
+    summary.innerHTML = `
+      <div class="cc-stat-row"><span>🤖 הצעות פגישה ממתינות</span><span class="cc-count">${proposals.length}</span></div>
+      <div class="cc-stat-row"><span>📅 פגישות/משימות מאושרות</span><span class="cc-count">${tasks.length}</span></div>
+      <div class="cc-stat-row"><span>🔴 לידים חמים (ציון ≥70)</span><span class="cc-count">${hotLeadsCount}</span></div>
+    `;
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה בטעינת היומן: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+// ---- Analytics (שלב 2) - ROI, Time Saved Calculator, גרף Chart.js ----
+let analyticsChartInstance = null;
+
+function computeTimeSaved() {
+  if (typeof allLeads === "undefined") return;
+  const reactivationMin = Number(document.getElementById("tsReactivationMin").value) || 0;
+  const meetingMin = Number(document.getElementById("tsMeetingMin").value) || 0;
+  const leadMin = Number(document.getElementById("tsLeadMin").value) || 0;
+
+  const aiReactivations = allLeads.filter(l => l.lead_status === "reactivation").length;
+  const totalLeads = allLeads.length;
+  const bookedMeetings = window.__analyticsBookedMeetingsCount || 0;
+
+  const totalMinutes = (aiReactivations * reactivationMin) + (bookedMeetings * meetingMin) + (totalLeads * leadMin);
+  document.getElementById("timeSavedValue").textContent = (totalMinutes / 60).toFixed(1);
+}
+
+async function loadRevenueForecast() {
+  const body = document.getElementById("revenueForecastBody");
+  const card = document.getElementById("revenueForecastCard");
+  if (!currentUser) return;
+
+  if (currentUser.role === "client") {
+    card.style.display = "none"; // לא רלוונטי ללקוח - זה נתון עסקי-פנימי של בעל המערכת/השותפים
+    return;
+  }
+  card.style.display = "";
+  body.innerHTML = '<div class="loading">טוען...</div>';
+  try {
+    if (currentUser.role === "partner") {
+      const res = await fetch("/api/partner/commissions");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      body.innerHTML = `
+        <div class="overview-card-value" style="--tile-color:#fbbf24;">$${data.estimated_commission.toLocaleString()}</div>
+        <div class="overview-card-label">עמלה משוערת (${data.conversions} המרות × $${data.avg_deal_value} × ${Math.round(data.commission_rate * 100)}%)</div>
+      `;
+    } else {
+      const res = await fetch("/api/admin/revenue-forecast");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      const rows = data.partners.length
+        ? data.partners.map(p => `<div class="cc-stat-row"><span>${escapeHtml(p.name)}</span><span class="cc-count">$${p.estimated_commission.toLocaleString()}</span></div>`).join("")
+        : '<div class="empty" style="padding:8px 0;">אין עדיין שותפים מוגדרים</div>';
+      body.innerHTML = `
+        <div class="overview-card-value" style="--tile-color:#fbbf24;">$${data.total_estimated_commission.toLocaleString()}</div>
+        <div class="overview-card-label">סה"כ עמלות שותפים משוערות</div>
+        <div class="mt-3">${rows}</div>
+      `;
+    }
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+async function loadAnalyticsChart() {
+  const days = document.getElementById("analyticsDaysSelect").value;
+  try {
+    const res = await fetch(`/api/analytics/timeseries?days=${days}`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+
+    const ctx = document.getElementById("analyticsChart").getContext("2d");
+    if (analyticsChartInstance) analyticsChartInstance.destroy();
+    const gridColor = "rgba(148,163,184,0.12)";
+    const textColor = "#94a3b8";
+    analyticsChartInstance = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: data.labels,
+        datasets: [
+          { label: "שיחות", data: data.calls, borderColor: "#6366f1", backgroundColor: "rgba(99,102,241,0.15)", tension: 0.35, fill: true },
+          { label: "פגישות/משימות", data: data.meetings, borderColor: "#fb923c", backgroundColor: "rgba(251,146,60,0.12)", tension: 0.35, fill: true },
+          { label: "המרות", data: data.conversions, borderColor: "#34d399", backgroundColor: "rgba(52,211,153,0.12)", tension: 0.35, fill: true },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: textColor } } },
+        scales: {
+          x: { ticks: { color: textColor }, grid: { color: gridColor } },
+          y: { beginAtZero: true, ticks: { color: textColor, precision: 0 }, grid: { color: gridColor } },
+        },
+      },
+    });
+  } catch (err) {
+    console.error("טעינת גרף Analytics נכשלה:", err);
+  }
+}
+
+async function loadAnalyticsSection() {
+  // Reactivation Conversion Rate - אותה הגדרה בדיוק כמו Overview (engaged/total),
+  // רק ממוסגר כאן כ"אחוז המרה" ייעודי ללשונית Analytics.
+  if (typeof allLeads !== "undefined") {
+    const total = allLeads.length;
+    const engagedStatuses = new Set(["contacted", "hot", "reactivation"]);
+    const engaged = allLeads.filter(l => engagedStatuses.has(l.lead_status)).length;
+    const rate = total > 0 ? Math.round((engaged / total) * 1000) / 10 : 0;
+    document.getElementById("reactivationRateValue").textContent = rate + "%";
+  }
+
+  try {
+    const res = await fetch("/api/tasks?status=pending");
+    if (res.ok) window.__analyticsBookedMeetingsCount = (await res.json()).length;
+  } catch (err) { window.__analyticsBookedMeetingsCount = 0; }
+  computeTimeSaved();
+
+  loadRevenueForecast();
+  loadAnalyticsChart();
+}
+
+["tsReactivationMin", "tsMeetingMin", "tsLeadMin"].forEach(id => {
+  document.getElementById(id).addEventListener("input", computeTimeSaved);
+});
+document.getElementById("analyticsDaysSelect").addEventListener("change", loadAnalyticsChart);
+
 function switchView(view) {
   const isInbox = view === "inbox";
   const isKanban = view === "kanban";
@@ -2818,6 +4012,34 @@ document.addEventListener("change", async (e) => {
   } catch (err) {
     alert("עדכון סטטוס נכשל: " + err.message);
     await loadLeads(); // משחזר את הבחירה הקודמת מהשרת
+  }
+});
+
+// מתג מענה AI פעיל/ידני לליד (שלב 5) - קליק הופך את המצב הנוכחי (data-enabled)
+// למצב ההפוך, בדיוק כמו status-select אבל click במקום change (זה כפתור, לא select).
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".ai-toggle-btn");
+  if (!btn) return;
+
+  const phone = btn.dataset.phone;
+  const tenantId = btn.dataset.tenant;
+  const nextEnabled = btn.dataset.enabled !== "1";
+  btn.disabled = true;
+
+  try {
+    const res = await fetch("/api/leads/ai-toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, tenant_id: tenantId, ai_enabled: nextEnabled }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    await loadLeads();
+    panelChat.syncStatus();
+    inboxChat.syncStatus();
+  } catch (err) {
+    alert("עדכון מענה AI נכשל: " + err.message);
+    btn.disabled = false;
   }
 });
 
@@ -3386,7 +4608,10 @@ try {
   if (saved) document.documentElement.setAttribute("data-theme", saved);
 } catch (e) {}
 
-loadLeads();
+loadCurrentUser();
+loadLeads().then(() => renderOverviewCards());
+wireLiveEvents();
+refreshIcons();
 </script>
 </body>
 </html>

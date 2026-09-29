@@ -1,0 +1,41 @@
+# סודות/תצורה מקומית - אף פעם לא נכנסים לתמונה; ב-production מזריקים משתני
+# סביבה אמיתיים דרך docker-compose/הפלטפורמה (env_file/secret manager), לא קובץ
+# בתוך ה-image עצמו.
+.env
+.env.*
+!.env.example
+
+# נתוני runtime מקומיים (נוצרים בזמן ריצה, חיים ב-volume ב-production - ראו
+# paths.py/docker-compose.yml) - לא חלק מהקוד, ולא רוצים לאפות state ישן לתוך
+# ה-image.
+*.db
+*.sqlite
+*.sqlite3
+crm_data.db
+customers.json
+customers.backup_*.json
+chat_history.txt
+*.log
+running_pids.txt
+
+# --- Python ---
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# --- גרסאות/IDE ---
+.git/
+.gitignore
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- קבצי בדיקה/כלים חד-פעמיים - לא חלק מהאפליקציה הרצה ---
+cleaned_leads.xlsx
+ngrok-v3-stable-windows-amd64.zip
+ngrok.exe

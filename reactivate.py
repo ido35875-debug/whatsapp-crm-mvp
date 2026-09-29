@@ -26,7 +26,7 @@ import db
 import prompts
 import tenant_settings
 from extract import DEFAULT_TENANT_ID, _customer_key, extract_safe_first_name, last_contact_at, load_customers, update_lead_status
-from whatsapp_send import is_trial_restriction, send_whatsapp_message
+from whatsapp_provider import get_provider
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
 
@@ -34,7 +34,7 @@ client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 CONTACTS_FILE = Path(__file__).parent / "contacts.csv"
 # "reactivation" (החייאת לידים) - סטטוס ייעודי שהוקצה לליד שנשלחה אליו הודעת החייאה
-# (אמיתית או מדומה - ראו is_trial_restriction למטה), נפרד מ-"contacted" הכללי -
+# (אמיתית או מדומה - ראו provider.is_soft_failure למטה), נפרד מ-"contacted" הכללי -
 # כך שההבחנה "פנינו מחדש ליד קר" נשארת גלויה ולא נבלעת בתוך "נוצר קשר" הרגיל.
 # נכלל גם ב-ALREADY_HANDLED_STATUSES כדי שליד לא יטופל שוב מיד בהרצה הבאה.
 ALREADY_HANDLED_STATUSES = {"contacted", "hot", "not_relevant", "reactivation"}
@@ -190,6 +190,11 @@ def run_reactivation_campaign(
 
 
 def _run_campaign_loop(cold_leads, tenant_id, send, batch_id, results):
+    # ה-Provider נבחר פעם אחת לכל הקמפיין (לא פר-הודעה) - לפי WHATSAPP_PROVIDER
+    # ב-.env (ראו whatsapp_provider.get_provider), בדיוק כמו server.py. נקרא רק
+    # כש-send=True - קמפיין תצוגה-מקדימה (dry-run) לא צריך ספק שליחה בכלל, כך
+    # שהוא ממשיך לעבוד גם בלי שום פרטי חיבור מוגדרים ב-.env.
+    provider = get_provider() if send else None
     for i, contact in enumerate(cold_leads):
         message = generate_outreach_message(contact["name"], contact.get("business", ""), vertical=contact.get("vertical"))
         entry = {
@@ -206,16 +211,18 @@ def _run_campaign_loop(cold_leads, tenant_id, send, batch_id, results):
 
         if send:
             try:
-                entry["sid"] = send_whatsapp_message(contact["phone"], message)
+                entry["sid"] = provider.send_message(contact["phone"], message)
                 entry["sent"] = True
             except Exception as exc:
-                if is_trial_restriction(exc):
-                    # חשבון Twilio מסוג Trial חסם את השליחה בפועל (ראו whatsapp_send.
-                    # is_trial_restriction - נמען לא מאומת, גם אחרי הצטרפות ל-Sandbox) -
-                    # זו לא שגיאת קוד; ממשיכים לעדכן סטטוס/היסטוריה/משימת מעקב בדיוק
-                    # כמו שליחה מוצלחת (מסומן simulated=True בכל מקום), כדי לאפשר לבדוק
-                    # שכל שאר הצינור - שליפת נתונים מה-CRM, ניסוח ההודעה, עדכון הסטטוס,
-                    # המשימה האוטומטית - מתפקד באופן מלא גם בלי לצאת מ-Trial.
+                if provider.is_soft_failure(exc):
+                    # כשל "ידוע ותקין" של הספק הפעיל (למשל חסימת Trial ב-Twilio -
+                    # נמען לא מאומת, גם אחרי הצטרפות ל-Sandbox; ספקים אחרים כמו
+                    # Green API/Mock מחזירים False כברירת מחדל - כל שגיאה שלהם
+                    # אמיתית) - לא שגיאת קוד; ממשיכים לעדכן סטטוס/היסטוריה/משימת
+                    # מעקב בדיוק כמו שליחה מוצלחת (מסומן simulated=True בכל
+                    # מקום), כדי לאפשר לבדוק שכל שאר הצינור - שליפת נתונים
+                    # מה-CRM, ניסוח ההודעה, עדכון הסטטוס, המשימה האוטומטית -
+                    # מתפקד באופן מלא גם בלי ספק שליחה פעיל במלואו.
                     entry["simulated"] = True
                 else:
                     entry["error"] = str(exc)

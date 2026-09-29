@@ -8,9 +8,15 @@ JSON הוא מקור האמת בזמן ריצה, קבוע בקוד (DEFAULT_REAC
 """
 
 import json
-from pathlib import Path
 
-SETTINGS_FILE = Path(__file__).parent / "tenant_settings.json"
+from paths import DATA_DIR
+
+# state שמשתנה בזמן ריצה (נערך חי מפאנל ההחייאה - "💾 שמור כברירת מחדל") - עובר
+# דרך DATA_DIR (ראו paths.py) בדיוק כמו customers.json/crm_data.db, כדי לשרוד
+# הפעלות מחדש/דיפלויים חדשים ב-production על filesystem ephemeral (Docker/
+# Render) - ברירת המחדל בלי DATA_DIR מוגדר היא תיקיית הפרויקט, זהה להתנהגות
+# הקודמת בהרצה מקומית.
+SETTINGS_FILE = DATA_DIR / "tenant_settings.json"
 DEFAULT_REACTIVATION_DAYS = 30  # "לא נוצר קשר מעל X ימים" - ברירת המחדל לכל tenant שלא הגדיר בעצמו
 
 

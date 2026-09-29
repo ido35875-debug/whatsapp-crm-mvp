@@ -251,42 +251,10 @@ def generate_call_summary(notes: str, card: dict) -> str:
 # ---- AI Sales Copilot (בתוך פאנל ה-Timeline) - אותו דפוס בדיוק כמו generate_reply/
 # generate_call_summary למעלה: קבוע כברירת מחדל בקוד + prompts.get_prompt כמקור
 # אמת בזמן ריצה (עריכה חיה מ-"🤖 תבניות וסוכנים", בלי לגעת בקוד) ----
-
-OBJECTION_RESPONSE_PROMPT = """\
-אתה נציג מכירות מנוסה שעוזר לענות בצורה משכנעת אך לא לוחצת להודעה האחרונה שהתקבלה
-מלקוח פוטנציאלי בוואטסאפ (שיכולה להיות התנגדות, שאלה, או היסוס).
-פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}, מיקום - {location}.
-
-ההודעה האחרונה מהלקוח:
-"{last_message}"
-
-כתוב הצעת מענה קצרה בעברית (2-3 משפטים) שמתייחסת ישירות למה שהלקוח כתב, מפוגגת
-חשש/היסוס בעדינות (בלי להיות תוקפני או מתנצל יתר על המידה), ומזמינה להמשך שיחה.
-אל תמציא פרטים/מבצעים/הבטחות שלא ניתנו. החזר רק את טקסט ההודעה המוצעת, בלי מרכאות
-ובלי הסברים נוספים.
-"""
-
-
-def generate_objection_response(last_message: str, card: dict) -> str:
-    """מציע מענה מהיר להתנגדות/הודעה אחרונה מהלקוח - כפתור "💬 הצע מענה להתנגדות"
-    בפאנל ה-Timeline. לא שולח כלום בעצמו - רק מנסח הצעה שהנציג יכול להעתיק/לערוך
-    לפני שליחה בפועל דרך הקומפוזר הרגיל (POST /api/messages/send)."""
-    prompt_template = prompts.get_prompt("objection_response", OBJECTION_RESPONSE_PROMPT)
-    prompt = prompt_template.format(
-        last_message=last_message,
-        customer_name=card.get("customer_name") or "לא ידוע",
-        business_name=card.get("business_name") or "לא ידוע",
-        location=card.get("location") or "לא ידוע",
-    )
-    response = client.messages.create(
-        model="claude-opus-5",
-        max_tokens=200,
-        thinking={"type": "disabled"},
-        output_config={"effort": "low"},
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return next(block.text for block in response.content if block.type == "text").strip()
-
+#
+# הצעת מענה להתנגדות עברה ל-sales_agent.py (מודול ייעודי לסוכן המכירות/התנגדויות -
+# ראו "חלוקת סוכנים" ב-CLAUDE.md) - suggest_replies שם מחליפה את generate_
+# objection_response שהיה כאן קודם (הצעה בודדת, בלי סיווג התנגדות/עד 3 חלופות).
 
 EXECUTIVE_SUMMARY_PROMPT = """\
 אתה עוזר שמסכם עבור מנהל מכירות עסוק את כל ההיסטוריה מול ליד מסוים, בקצרה וממוקד.
@@ -323,6 +291,69 @@ def generate_followup_message(card: dict) -> str:
     prompt = prompt_template.format(
         customer_name=card.get("customer_name") or "לא ידוע",
         business_name=card.get("business_name") or "לא ידוע",
+    )
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=150,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return next(block.text for block in response.content if block.type == "text").strip()
+
+
+# שדות שנחשבים "חובה" להשלמה בכרטיס ליד - קבועה ניתנת להרחבה. תקציב/סוג-נכס
+# (property_type/budget) לא נכללים בברירת המחדל בכוונה: הם רלוונטיים רק לוורטיקל
+# נדל"ן ומתמלאים כמעט אך ורק מחילוץ הודעה קולית (update_lead_voice_extraction) -
+# ברוב מוחלט של הלידים הקיימים בפועל (רובם עסקי-קמעונאות, לא נדל"ן) budget חסר
+# כמעט תמיד, כך שהכללתו כ"חובה" הייתה מסמנת כמעט כל ליד ומרוקנת את האינדיקטור
+# ממשמעות. email לא נכלל - השדה הזה לא קיים בשום מקום בסכמה של הפרויקט (לא
+# נאסף בשום טופס/webhook/חילוץ) - יש להוסיף רק אחרי שייבנה מנגנון איסוף אמיתי.
+REQUIRED_LEAD_FIELDS: dict[str, str] = {
+    "customer_name": "שם",
+    "location": "מיקום",
+}
+
+
+def get_missing_fields(lead_data: dict) -> list[str]:
+    """מחזיר את מפתחות השדות (מתוך REQUIRED_LEAD_FIELDS) שריקים/חסרים בכרטיס -
+    מחרוזת ריקה/רק-רווחים/None נחשבים "חסר". סדר יציב (לפי סדר ההגדרה למעלה).
+    משמש הן לזיהוי מועמדים לפנייה (GET /api/leads - שדה missing_fields לכל ליד,
+    ואינדיקטור בדשבורד) והן לניסוח הודעת ההשלמה (generate_missing_fields_message)."""
+    missing = []
+    for field in REQUIRED_LEAD_FIELDS:
+        value = lead_data.get(field)
+        if not value or not str(value).strip():
+            missing.append(field)
+    return missing
+
+
+MISSING_FIELDS_PROMPT = """\
+אתה כותב הודעת וואטסאפ קצרה וטבעית בעברית ללקוח שכבר בקשר איתנו, כדי לבקש ממנו
+בעדינות להשלים פרט אחד או שניים שעדיין חסרים לנו אצלו.
+פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}.
+הפרטים החסרים שצריך לבקש: {missing_labels}.
+
+כתוב הודעה קצרה (1-2 משפטים), עדינה ולא פולשנית, שמסבירה בטבעיות שרוצים להכיר
+אותו טוב יותר / להתאים את השירות אליו, ומבקשת רק את הפרטים החסרים שצוינו למעלה -
+בלי לנחש/להמציא פרטים אחרים, ובלי לחזור על מידע שכבר ידוע. החזר רק את טקסט
+ההודעה, בלי מרכאות ובלי הסברים נוספים.
+"""
+
+
+def generate_missing_fields_message(card: dict, missing_fields: list[str]) -> str:
+    """מנסחת הודעת פנייה עדינה לבקשת השלמת פרטים חסרים (ראו get_missing_fields) -
+    כפתור "🧩 הצע הודעת השלמה" בפאנל ה-Timeline. בדיוק כמו generate_objection_
+    response/generate_executive_summary - לעולם לא שולחת בעצמה, רק מחזירה טקסט
+    מוצע (POST /api/leads/missing-fields/suggest); השליחה בפועל תמיד דרך לחיצה
+    אנושית מפורשת על "אישור ושליחה" בדשבורד -> אותו נתיב קיים POST /api/messages/
+    send (חוק בטיחות #1 ב-CLAUDE.md - לא נבנה מסלול שליחה מקביל/נוסף)."""
+    labels = [REQUIRED_LEAD_FIELDS.get(field, field) for field in missing_fields]
+    prompt_template = prompts.get_prompt("missing_fields_outreach", MISSING_FIELDS_PROMPT)
+    prompt = prompt_template.format(
+        customer_name=card.get("customer_name") or "לא ידוע",
+        business_name=card.get("business_name") or "לא ידוע",
+        missing_labels=", ".join(labels),
     )
     response = client.messages.create(
         model="claude-opus-5",
@@ -425,11 +456,14 @@ def import_lead(
     category: str | None = None,
     agent: str | None = None,
     notes: str | None = None,
+    client_id: str | None = None,
 ) -> tuple[dict, bool]:
     """יוצר/מעדכן כרטיס לקוח - מייבוא CSV/Excel (ראו /api/leads/import) או מהוספת
     ליד בודד ידנית (POST /api/leads) ב-server.py. לא הודעה - אין רישום ב-history.
     Upsert לפי phone+tenant_id (מונע כפילויות). מחזיר (card, is_new) - is_new=True
-    אם זה ליד חדש שלא היה קיים קודם."""
+    אם זה ליד חדש שלא היה קיים קודם. client_id (שלב 5, אופציונלי) - ראו
+    update_lead_fields; ai_enabled לא מוגדר כאן בכוונה (ברירת המחדל True נאכפת
+    ב-server.py._ai_enabled_for בקריאה, לא צריך לכתוב אותה מפורשות בכל כרטיס)."""
     customers = load_customers()
     key = _customer_key(tenant_id, phone)
     is_new = key not in customers
@@ -450,6 +484,8 @@ def import_lead(
         card["agent"] = agent
     if notes:
         card["notes"] = notes
+    if client_id:
+        card["client_id"] = client_id
     customers[key] = card
     save_customers(customers)
     return card, is_new
@@ -482,6 +518,22 @@ def update_lead_agent(phone: str, agent: str, tenant_id: str = DEFAULT_TENANT_ID
         card["agent"] = agent
     else:
         card.pop("agent", None)
+    customers[key] = card
+    save_customers(customers)
+    return card
+
+
+def update_lead_ai_enabled(phone: str, ai_enabled: bool, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
+    """מפעיל/מכבה מענה AI אוטומטי לליד ספציפי (שלב 5 - Enterprise Production
+    Readiness). ai_enabled=False: הודעות נכנסות ימשיכו להירשם ולחלץ פרטים
+    כרגיל (ראו process_message ב-server.py._ai_enabled_for) - רק לא תיווצר/
+    תישלח תשובה אוטומטית; מענה ייעשה ידנית בלבד דרך /api/messages/send.
+    שדה חסר על כרטיס קיים נחשב True (ברירת המחדל) - ראו _ai_enabled_for,
+    כך שאין צורך במיגרציה ל-378 הלידים הקיימים."""
+    customers = load_customers()
+    key = _customer_key(tenant_id, phone)
+    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+    card["ai_enabled"] = bool(ai_enabled)
     customers[key] = card
     save_customers(customers)
     return card
@@ -558,13 +610,18 @@ def update_lead_fields(
     agent: str | None = None,
     category: str | None = None,
     notes: str | None = None,
+    client_id: str | None = None,
 ) -> dict:
     """שמירה מלאה מפאנל עריכת ליד (#editLeadPanel ב-index.html) - בניגוד ל-
     import_lead/upsert_customer (שאף פעם לא מוחקים שדה, רק מוסיפים/דורסים ערך
     לא-ריק), זו פונקציית טופס-עריכה מפורש: None = השדה לא נשלח בכלל (לא נוגעים
     בו), "" = המשתמש ניקה את השדה בפועל בטופס - השדה נמחק מהכרטיס (מראה
     update_lead_category/update_lead_agent). לא נוגעת ב-phone עצמו - לשינוי
-    מספר טלפון ראו rekey_lead (rekey מלא, לא רק דריסת ערך)."""
+    מספר טלפון ראו rekey_lead (rekey מלא, לא רק דריסת ערך).
+    client_id (שלב 5): מזהה "בעלים" הליד (user_id של משתמש RBAC בתפקיד client)
+    לבידוד קשיח - ראו server.py._effective_client_id. הקורא (server.py) אחראי
+    להגביל מי מותר לו בכלל להעביר ערך לפרמטר הזה (admin/partner בלבד) - הפונקציה
+    כאן לא בודקת הרשאות, כמו כל שאר extract.py."""
     customers = load_customers()
     key = _customer_key(tenant_id, phone)
     card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
@@ -584,6 +641,7 @@ def update_lead_fields(
     _set("agent", agent)
     _set("category", category)
     _set("notes", notes)
+    _set("client_id", client_id)
     if lead_status:
         card["lead_status"] = lead_status
 

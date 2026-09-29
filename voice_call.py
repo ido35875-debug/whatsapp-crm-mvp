@@ -28,13 +28,13 @@ AGENT_PHONE_NUMBER = os.environ.get("AGENT_PHONE_NUMBER")   # מספר הנצי�
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL")         # https://... בלי / בסוף - נדרש כי Calls.create צריך URL ל-TwiML
 
 
-def start_bridge_call(customer_phone: str, tenant_id: str = "default") -> str:
-    """יוזם שיחת גישור: Twilio מתקשר קודם ל-AGENT_PHONE_NUMBER, ולאחר מענה TwiML
-    (/voice/connect) מגשר ללקוח. מחזיר call_sid בהצלחה. מעלה RuntimeError אם תצורה
-    חסרה, או TwilioRestException אם Twilio עצמו דחה את הבקשה - שני המקרים מטופלים
-    בנפרד ב-/api/calls/start (server.py), בדיוק כמו send_whatsapp_message +
-    _is_trial_restriction."""
-    missing = [
+def get_missing_voice_config() -> list[str]:
+    """בודקת אילו ממשתני הסביבה הנדרשים לשיחות Voice חסרים ב-.env, בלי להעלות
+    חריגה - שאילתה-בלבד. משמשת גם את start_bridge_call למטה (מקור אמת יחיד
+    לרשימת המשתנים הנדרשים - לא כפולה) וגם את GET /api/calls/config-status
+    ב-server.py (בדיקת-תקינות מפורשת שה-UI יכול לקרוא לה *לפני* ניסיון חיוג,
+    לא רק לגלות את זה מתוך תגובת שגיאה אחרי שכבר ניסו)."""
+    return [
         name for name, value in (
             ("TWILIO_ACCOUNT_SID", TWILIO_ACCOUNT_SID),
             ("TWILIO_AUTH_TOKEN", TWILIO_AUTH_TOKEN),
@@ -43,6 +43,15 @@ def start_bridge_call(customer_phone: str, tenant_id: str = "default") -> str:
             ("PUBLIC_BASE_URL", PUBLIC_BASE_URL),
         ) if not value
     ]
+
+
+def start_bridge_call(customer_phone: str, tenant_id: str = "default") -> str:
+    """יוזם שיחת גישור: Twilio מתקשר קודם ל-AGENT_PHONE_NUMBER, ולאחר מענה TwiML
+    (/voice/connect) מגשר ללקוח. מחזיר call_sid בהצלחה. מעלה RuntimeError אם תצורה
+    חסרה, או TwilioRestException אם Twilio עצמו דחה את הבקשה - שני המקרים מטופלים
+    בנפרד ב-/api/calls/start (server.py), בדיוק כמו send_whatsapp_message +
+    _is_trial_restriction."""
+    missing = get_missing_voice_config()
     if missing:
         raise RuntimeError(f"חסרים משתני סביבה לשיחות Voice ב-.env: {', '.join(missing)}")
 

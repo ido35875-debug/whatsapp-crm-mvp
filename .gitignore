@@ -18,12 +18,14 @@ __pycache__/
 *.sqlite3
 crm_data.db
 customers.json
+customers.backup_*.json
 chat_history.txt
 
 # --- לוגים ---
 *.log
 server_out.log
 server_error.log
+server_err.log
 ngrok_out.log
 ngrok_err.log
 
@@ -33,6 +35,31 @@ running_pids.txt
 # --- כלים חיצוניים שהורדו (לא חלק מהקוד) ---
 ngrok-v3-stable-windows-amd64.zip
 ngrok.exe
+
+# --- קבצי עזר/בדיקה חד-פעמיים (סקריפטי ניפוי-שגיאות/ייבוא/ניתוח ידניים -
+# לא חלק מהרצת השרת עצמה, ולא נחוצים ב-deployment בענן. נשארים על הדיסק
+# המקומי לשימוש עתידי אם צריך - רק לא נכנסים ל-git/לפריסה) ---
+_debug_payload.py
+_pilot_reset_status.py
+_pilot_run.py
+analyze_simulation.py
+create_db.py
+debug_twilio.py
+deduplicate_customers.py
+import_leads.py
+make_doc.py
+send_bulk.py
+simulate_webhook.py
+simulate_webhook_results.json
+simulation_analysis.json
+test_green_api.py
+test_suite.py
+test_ultramsg_send.py
+green_api_qr.png
+qr.html
+
+# --- נתוני seed/גיבוי חד-פעמיים (לא קוד, לא נחוצים להרצת השרת) ---
+cleaned_leads.xlsx
 
 # --- מערכת הפעלה / IDE ---
 .DS_Store
