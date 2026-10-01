@@ -434,19 +434,32 @@ def api_events():
     משתמשים מחוברים בו-זמנית ב-production אמיתי נדרש gevent/eventlet worker
     class (או broker חיצוני כמו Redis pub/sub) - לא רק התור התוך-process הזה.
     בהרצה מקומית (python server.py, process יחיד, משתמש אחד/מעטים) זו לא
-    מגבלה מעשית."""
+    מגבלה מעשית.
+
+    הגבלת אורך חיים (שלב 7 - חוסן ב-Render): ה-finally למטה כן מנקה את המנוי
+    מ-_event_subscribers בניתוק רגיל, אבל ניתוק client לא תמיד מתגלה מיד -
+    מאחורי reverse proxy (כמו ב-Render) ניתוק "שקט" (לא FIN/RST נקי) יכול
+    להשאיר generator+queue תקועים הרבה מעבר למצופה, ולצבור עם הזמן (ריענוני
+    EventSource חוזרים לאורך ימים של פיילוט חי). לכן הלולאה עצמה מוגבלת ל-48
+    מחזורים (≈20 דקות ב-worst-case, 48×25 שנ' timeout) ויוצאת בעצמה גם בלי
+    ניתוק אמיתי - ה-finally עדיין רץ (יציאה רגילה מה-try, לא רק משגיאה) ומנקה
+    את המנוי. ל-EventSource בצד הלקוח (index.html) זה נראה כניתוק רגיל - הוא
+    כבר מוגדר להתחבר מחדש אוטומטית (retry: 3000 למטה), בלי קוד נוסף בצד
+    הלקוח. maxsize=20 (ירד מ-50) - תור קטן יותר פר-מנוי, אותה עקרון."""
     def stream():
-        client_queue: "queue_module.Queue" = queue_module.Queue(maxsize=50)
+        client_queue: "queue_module.Queue" = queue_module.Queue(maxsize=20)
         with _event_subscribers_lock:
             _event_subscribers.append(client_queue)
         try:
             yield "retry: 3000\n\n"
-            while True:
+            iterations = 0
+            while iterations < 48:
                 try:
                     payload = client_queue.get(timeout=25)
                     yield f"data: {payload}\n\n"
                 except queue_module.Empty:
                     yield ": heartbeat\n\n"  # שורת-הערה בפרוטוקול SSE - שומרת את החיבור פתוח בלי אירוע אמיתי
+                iterations += 1
         finally:
             with _event_subscribers_lock:
                 if client_queue in _event_subscribers:
