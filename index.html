@@ -1266,8 +1266,6 @@
   </div>
 </div>
 
-<!-- Live toast notifications (שלב 3 - SSE) -->
-<div id="liveToastWrap" class="fixed bottom-5 left-5 z-50 flex flex-col gap-2" style="pointer-events:none;"></div>
 
 <div class="overlay" id="overlay"></div>
 <aside class="panel glass" id="panel">
@@ -2362,7 +2360,6 @@ function createChatController(ids) {
 
   return {
     open, close, syncStatus,
-    pollNow: pollForNew, // נחשף ל-SSE (שלב 3) - מרענן מיידית את הצ'אט הפתוח כשמגיע אירוע חי במקום לחכות למחזור ה-polling הבא
     get currentLead() { return currentLead; },
   };
 }
@@ -3536,65 +3533,36 @@ async function checkServerStatus() {
 checkServerStatus();
 setInterval(checkServerStatus, 20000);
 
-// ---- עדכוני בזמן אמת (SSE, שלב 3) - GET /api/events ----
-// **לא** מחליף את ה-polling הקיים (חלון צ'אט/Inbox/יומן) - משלים אותו: מריץ
-// רענון מיידי (panelChat.pollNow/loadLeads/וכו') ברגע שמגיע אירוע, במקום
-// לחכות למחזור ה-polling הבא. אם החיבור נופל, ה-polling הקיים ממשיך לעבוד
-// כרגיל כרשת ביטחון - שום פיצ'ר לא תלוי אך ורק ב-SSE.
-let liveEventSource = null;
+// ---- רענון תקופתי של הדשבורד (Polling פשוט, שלב 8) ----
+// מחליף לחלוטין את מנגנון ה-SSE הקודם (GET /api/events, EventSource) - חיבורים
+// פתוחים וממושכים תחת Gunicorn sync workers התבררו כמסוכנים ב-Render (כל חיבור
+// SSE תופס worker שלם לכל אורך חייו; ניתוק "שקט" מאחורי ה-reverse proxy יכול
+// להשאיר אותו תקוע הרבה מעבר למצופה, עד כדי צבירה שמסתיימת ב-SIGKILL/OOM).
+// fetch רגיל כל 5 שניות הוא "stateless" לגמרי מצד השרת - אין חיבור שנשאר פתוח,
+// אין worker שנחסם, אין מה שיכול "לדלוף" עם הזמן.
+//
+// isPolling מונע בקשות חופפות: אם loadLeads (שיכולה לקחת כמה שניות על מאות
+// לידים עם ?include_score=1) עדיין לא חזרה כשה-tick הבא מגיע, ה-tick הזה
+// פשוט מדלג - בלי זה, טיק כל 5 שניות על בקשה שלוקחת יותר מ-5 שניות היה יוצר
+// עומס מצטבר בלי סוף על השרת, בדיוק ההפך ממה שהמעבר הזה נועד למנוע.
+// חלון הצ'אט (panelChat/inboxChat) כבר פולל בנפרד כל 3 שניות - לא תלוי בזה.
+let dashboardPollInFlight = false;
 
-function showLiveToast(text, icon) {
-  const wrap = document.getElementById("liveToastWrap");
-  if (!wrap) return;
-  const el = document.createElement("div");
-  el.className = "glass flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm text-slate-200 shadow-2xl";
-  el.style.cssText = "opacity:0; transform:translateY(8px); transition:opacity .3s, transform .3s;";
-  el.innerHTML = `<i data-lucide="${icon || "bell"}" class="h-4 w-4 text-indigo-400"></i><span>${escapeHtml(text)}</span>`;
-  wrap.appendChild(el);
-  refreshIcons();
-  requestAnimationFrame(() => { el.style.opacity = "1"; el.style.transform = "none"; });
-  setTimeout(() => {
-    el.style.opacity = "0";
-    el.style.transform = "translateY(8px)";
-    setTimeout(() => el.remove(), 350);
-  }, 4000);
-}
-
-function handleLiveEvent(evt) {
-  if (!evt || !evt.type) return;
-
-  if (evt.type === "message") {
-    const isOpenChat = (chat) => chat.currentLead && chat.currentLead.phone === evt.phone && chat.currentLead.tenantId === evt.tenant_id;
-    if (isOpenChat(panelChat)) panelChat.pollNow();
-    if (isOpenChat(inboxChat)) inboxChat.pollNow();
-    if (evt.direction === "in") showLiveToast("💬 הודעה חדשה התקבלה", "message-circle");
-    loadLeads().then(() => { if (currentSection === "overview") renderOverviewCards(); });
-    if (currentSection === "crm" && document.getElementById("inboxView").style.display !== "none") renderInboxList();
-  } else if (evt.type === "lead_status_changed" || evt.type === "lead_updated") {
-    loadLeads().then(() => { if (currentSection === "overview") renderOverviewCards(); });
-  } else if (evt.type === "scheduling_proposal") {
-    showLiveToast("🤖 זוהתה בקשת פגישה חדשה - ממתינה לאישור", "calendar-clock");
-    if (currentSection === "ai-agents") loadAiAgentsSection();
-  } else if (evt.type === "meeting_booked") {
-    showLiveToast("📅 פגישה אושרה", "calendar-check");
-    if (currentSection === "ai-agents") loadAiAgentsSection();
+async function pollDashboardUpdates() {
+  if (dashboardPollInFlight) return;
+  dashboardPollInFlight = true;
+  try {
+    await loadLeads();
     if (currentSection === "overview") renderOverviewCards();
+    if (currentSection === "ai-agents") loadAiAgentsSection();
+    if (currentSection === "crm" && document.getElementById("inboxView").style.display !== "none") renderInboxList();
+  } catch (err) {
+    console.error("רענון תקופתי של הדשבורד נכשל:", err);
+  } finally {
+    dashboardPollInFlight = false;
   }
 }
-
-function wireLiveEvents() {
-  if (typeof EventSource === "undefined") return; // דפדפן ללא תמיכה - נשארים על polling בלבד, בלי לקרוס
-  if (liveEventSource) liveEventSource.close();
-  liveEventSource = new EventSource(`/api/events?api_key=${encodeURIComponent(activeApiKey())}`);
-  liveEventSource.onmessage = (e) => {
-    let evt;
-    try { evt = JSON.parse(e.data); } catch (err) { return; }
-    handleLiveEvent(evt);
-  };
-  // EventSource מתאושש אוטומטית (auto-reconnect מובנה בפרוטוקול הדפדפן) -
-  // אין צורך בלוגיקת retry ידנית כאן.
-  liveEventSource.onerror = () => {};
-}
+setInterval(pollDashboardUpdates, 5000);
 
 // ---- B2B Campaigns (outbound_engine.py) - ייבוא CSV/Excel, תור שליחה חי,
 // הפעלת שליחה (עם קליק אנושי מפורש - חוק בטיחות #1) ----
@@ -4640,7 +4608,6 @@ checkApiKeyConfigured();
 
 loadCurrentUser();
 loadLeads().then(() => renderOverviewCards());
-wireLiveEvents();
 refreshIcons();
 </script>
 </body>

@@ -282,10 +282,13 @@ def _require_api_key():
     יש להם אימות חתימה משלהם) - אלו כלל לא מתחילים ב-/api/, כך שהבדיקה למטה
     מדלגת עליהם מאליה.
 
-    מקבל את המפתח דרך X-API-Key **או** Authorization: Bearer <key> **או**
-    ?api_key= ב-query string (רק כשאין header - ראו הערה בהמשך). המשתמש
+    מקבל את המפתח דרך X-API-Key **או** Authorization: Bearer <key>. המשתמש
     שזוהה נשמר ב-g.current_user לכל משך הבקשה - endpoints שצריכים לסנן לפי
     tenant/role (ראו _effective_tenant_ids) קוראים אותו משם, לא בודקים בעצמם.
+    (עד שלב 8: הייתה כאן גם נפילה-חזרה ל-?api_key= ב-query string, נחוצה
+    ל-EventSource של ה-SSE הישן (GET /api/events, בוטל לגמרי לטובת polling
+    פשוט - ראו pollDashboardUpdates ב-index.html) - כל שאר ה-UI תמיד שולח
+    header, לא היה תלוי בה.)
 
     ⚠️ אם אף מפתח לא זוהה (לא API_SECRET_KEY, לא משתמש RBAC) - חוסם הכל
     (fail-closed), לא פותח את השער בשקט - "אימות שדולג עליו בטעות" הוא בדיוק
@@ -298,12 +301,6 @@ def _require_api_key():
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             provided = auth_header[len("Bearer "):].strip()
-    if not provided:
-        # EventSource (SSE, GET /api/events - שלב 3) לא תומך ב-headers מותאמים
-        # אישית בכלל - query string היא הדרך המעשית היחידה להעביר אימות אליו.
-        # נבדק אחרון בכוונה (רק כשאין header בכלל) - כדי לא לעודד מפתחות ב-URL
-        # (שיכולים להישמר בלוגים/היסטוריית דפדפן) לנתיבים שכן יכולים להשתמש ב-header.
-        provided = request.args.get("api_key")
 
     user = _resolve_user(provided)
     if not user:
@@ -397,78 +394,6 @@ def api_me():
         "commission_rate": user.get("commission_rate"),
         "avg_deal_value": user.get("avg_deal_value"),
     })
-
-
-_event_subscribers: list = []
-_event_subscribers_lock = threading.Lock()
-
-
-def publish_event(event_type: str, data: dict) -> None:
-    """משדרת אירוע לכל לקוחות ה-SSE המחוברים כרגע (GET /api/events, שלב 3) -
-    קוראים לזה מכל מקום שמשנה state שה-UI צריך לשקף בלייב (הודעה נכנסת/יוצאת,
-    עדכון כרטיס ליד, הצעת פגישה חדשה, אישור/דחיית משימה). לא חוסם: כל מנוי
-    מקבל תור-בגודל-מוגבל משלו (ראו api_events) - לקוח איטי/תקוע פשוט מפסיד
-    אירוע (put_nowait נכשל בשקט), לא עוצר את שאר המנויים או את הקוד הקורא."""
-    payload = json.dumps(
-        {"type": event_type, "ts": datetime.now(timezone.utc).isoformat(), **data}, ensure_ascii=False
-    )
-    with _event_subscribers_lock:
-        subscribers = list(_event_subscribers)
-    for q in subscribers:
-        try:
-            q.put_nowait(payload)
-        except queue_module.Full:
-            pass
-
-
-@app.route("/api/events")
-def api_events():
-    """Server-Sent Events - זרם עדכונים חי ל-UI (שלב 3): הודעה נכנסת/יוצאת,
-    עדכון כרטיס ליד, הצעת פגישה חדשה מסוכן היומן. index.html נרשם עם
-    EventSource ומרענן רכיבים ספציפיים בתגובה (wireLiveEvents/handleLiveEvent),
-    כתחליף/השלמה ל-polling הקבוע - בלי לגעת בפועל ב-polling הקיים (נשאר כרשת
-    ביטחון אם SSE מתנתק).
-
-    ⚠️ מגבלה אמיתית תחת Gunicorn מרובה-workers: כל חיבור SSE "תופס" worker
-    שלם למשך כל החיבור (workers סינכרוניים, לא asyncio) - למספר גדול של
-    משתמשים מחוברים בו-זמנית ב-production אמיתי נדרש gevent/eventlet worker
-    class (או broker חיצוני כמו Redis pub/sub) - לא רק התור התוך-process הזה.
-    בהרצה מקומית (python server.py, process יחיד, משתמש אחד/מעטים) זו לא
-    מגבלה מעשית.
-
-    הגבלת אורך חיים (שלב 7 - חוסן ב-Render): ה-finally למטה כן מנקה את המנוי
-    מ-_event_subscribers בניתוק רגיל, אבל ניתוק client לא תמיד מתגלה מיד -
-    מאחורי reverse proxy (כמו ב-Render) ניתוק "שקט" (לא FIN/RST נקי) יכול
-    להשאיר generator+queue תקועים הרבה מעבר למצופה, ולצבור עם הזמן (ריענוני
-    EventSource חוזרים לאורך ימים של פיילוט חי). לכן הלולאה עצמה מוגבלת ל-48
-    מחזורים (≈20 דקות ב-worst-case, 48×25 שנ' timeout) ויוצאת בעצמה גם בלי
-    ניתוק אמיתי - ה-finally עדיין רץ (יציאה רגילה מה-try, לא רק משגיאה) ומנקה
-    את המנוי. ל-EventSource בצד הלקוח (index.html) זה נראה כניתוק רגיל - הוא
-    כבר מוגדר להתחבר מחדש אוטומטית (retry: 3000 למטה), בלי קוד נוסף בצד
-    הלקוח. maxsize=20 (ירד מ-50) - תור קטן יותר פר-מנוי, אותה עקרון."""
-    def stream():
-        client_queue: "queue_module.Queue" = queue_module.Queue(maxsize=20)
-        with _event_subscribers_lock:
-            _event_subscribers.append(client_queue)
-        try:
-            yield "retry: 3000\n\n"
-            iterations = 0
-            while iterations < 48:
-                try:
-                    payload = client_queue.get(timeout=25)
-                    yield f"data: {payload}\n\n"
-                except queue_module.Empty:
-                    yield ": heartbeat\n\n"  # שורת-הערה בפרוטוקול SSE - שומרת את החיבור פתוח בלי אירוע אמיתי
-                iterations += 1
-        finally:
-            with _event_subscribers_lock:
-                if client_queue in _event_subscribers:
-                    _event_subscribers.remove(client_queue)
-
-    return Response(
-        stream(), mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
 
 
 @app.route("/api/admin/users", methods=["GET"])
@@ -925,7 +850,6 @@ def api_update_lead_status():
         return err
 
     card = update_lead_status(phone, status, tenant_id=tenant_id)
-    publish_event("lead_status_changed", {"phone": phone, "tenant_id": tenant_id, "status": status})
     return jsonify({"ok": True, "card": card})
 
 
@@ -990,7 +914,6 @@ def api_update_lead_ai_enabled():
         return err
 
     card = update_lead_ai_enabled(phone, ai_enabled, tenant_id=tenant_id)
-    publish_event("lead_updated", {"phone": phone, "tenant_id": tenant_id})
     return jsonify({"ok": True, "card": card})
 
 
@@ -1524,7 +1447,6 @@ def api_send_message():
 
     card = log_manual_reply(phone, message, tenant_id=tenant_id, simulated=simulated)
     db.log_message(phone, message, direction="out", tenant_id=tenant_id, channel="whatsapp", simulated=simulated)
-    publish_event("message", {"phone": phone, "tenant_id": tenant_id, "direction": "out"})
 
     response = {"ok": True, "sid": sid, "card": card, "simulated": simulated}
     if simulated:
@@ -1706,7 +1628,6 @@ def api_call_transcribe_recording(call_id):
         summary = generate_call_summary(result["text"], card)
         log_call_summary(phone, summary, tenant_id=tenant_id, simulated=simulated)
         db.log_message(phone, summary, direction="out", tenant_id=tenant_id, channel="voice", simulated=simulated)
-        publish_event("message", {"phone": phone, "tenant_id": tenant_id, "direction": "out"})
     except Exception as exc:
         logger.warning(
             "שיקוף תמליל שיחה (call_id=%s) להיסטוריית הליד נכשל - התמליל/חותמות הזמן עצמם נשמרו בהצלחה: %s",
@@ -1840,7 +1761,6 @@ def api_task_confirm(task_id):
     task = db.confirm_task_proposal(task_id)
     if not task:
         return jsonify({"error": "הצעה לא נמצאה, או שכבר טופלה"}), 404
-    publish_event("meeting_booked", {"phone": task["phone"], "tenant_id": task["tenant_id"], "task_id": task_id})
     return jsonify({"ok": True, "task": task})
 
 
@@ -2005,7 +1925,6 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
                 contact_id, message_text, tenant_id=tenant_id, source_channel=source
             )
             db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
-            publish_event("message", {"phone": contact_id, "tenant_id": tenant_id, "direction": "out"})
         else:
             # ai_enabled=False (שלב 5) - עדיין מחלצים פרטים/מעדכנים כרטיס, אבל
             # בלי לייצר/לשלוח תשובה אוטומטית (reply_text נשאר None) - מענה
@@ -2014,7 +1933,6 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
             # קוד כפול.
             card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
         logger.info("[תור רקע][tenant=%s] [%s] עודכן כרטיס לקוח: %s", tenant_id, source, card)
-        publish_event("lead_updated", {"phone": contact_id, "tenant_id": tenant_id})
     except Exception as exc:
         logger.error("שגיאה בעיבוד הודעה ברקע מ-%s (tenant=%s): %s", source, tenant_id, exc, exc_info=True)
 
@@ -2038,7 +1956,6 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
                 contact_id, tenant_id, intent_result,
                 related_task_id=related_task["id"] if related_task else None,
             )
-            publish_event("scheduling_proposal", {"phone": contact_id, "tenant_id": tenant_id})
     except Exception as exc:
         logger.warning("זיהוי כוונת תזמון (scheduling_agent, רקע) נכשל: %s", exc)
 
@@ -2091,7 +2008,6 @@ def api_system_queue_status():
     return jsonify({
         "queue_size": _webhook_job_queue.qsize(),
         "worker_alive": _webhook_worker_thread.is_alive() if _webhook_worker_thread else False,
-        "sse_subscribers": len(_event_subscribers),
     })
 
 
@@ -2169,7 +2085,6 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
 
     _log_incoming_message(tenant_id, source, contact_id, message_text)
     db.log_message(contact_id, message_text, direction="in", tenant_id=tenant_id, channel=source)
-    publish_event("message", {"phone": contact_id, "tenant_id": tenant_id, "direction": "in"})
 
     # Twilio (TwiML): התשובה האוטומטית *חייבת* להיכלל בגוף אותה תגובת HTTP -
     # אין אפשרות להחזיר 200 מיידי ולהשלים ברקע בלי לשבור את חוזה ה-webhook של
@@ -2183,7 +2098,6 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
                     contact_id, message_text, tenant_id=tenant_id, source_channel=source
                 )
                 db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
-                publish_event("message", {"phone": contact_id, "tenant_id": tenant_id, "direction": "out"})
             else:
                 # ai_enabled=False (שלב 5) או DRY_RUN=true (שלב 6) - בלי מענה
                 # אוטומטי; ה-TwiML למטה יחזור ריק (בלי <Message>), בדיוק כמו
@@ -2213,7 +2127,6 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
                     contact_id, tenant_id, intent_result,
                     related_task_id=related_task["id"] if related_task else None,
                 )
-                publish_event("scheduling_proposal", {"phone": contact_id, "tenant_id": tenant_id})
         except Exception as exc:
             logger.warning("זיהוי כוונת תזמון (scheduling_agent) נכשל: %s", exc)
 
