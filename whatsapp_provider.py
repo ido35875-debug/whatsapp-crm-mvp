@@ -193,11 +193,20 @@ class GreenAPIProvider(WhatsAppProvider):
         data = request.get_json(silent=True) or {}
         if data.get("typeWebhook") != "incomingMessageReceived":
             # סוגי webhook אחרים של Green API (סטטוס שליחה, שינוי מצב instance וכו') -
-            # לא הודעה נכנסת, לא רלוונטי לצינור העיבוד - ("", "") גורם ל-400 שקט
-            # ב-server.webhook, בלי לרשום אותו כהודעה ריקה/שגויה.
+            # לא הודעה נכנסת, לא רלוונטי לצינור העיבוד - ("", "") גורם ל-200 שקט
+            # ב-server.webhook (לא 400 - ראו שם; Green API יכול להיכנס ל-backoff
+            # על תגובות שאינן 2xx), בלי לרשום אותו כהודעה ריקה/שגויה.
             return "", ""
 
         sender = ((data.get("senderData") or {}).get("chatId") or "")
+        if sender.endswith("@g.us"):
+            # הודעה מקבוצת וואטסאפ, לא משיחה פרטית - שלב 8 (הקשחת webhook): בלי
+            # הסינון הזה, כל "רעש" קבוצתי (קבוצות משפחה/חברים) היה עובר דרך
+            # pipeline הלידים המלא (חילוץ פרטים + מענה AI אוטומטי ב-Claude) -
+            # עומס/עלות מיותרים לגמרי, ובעיקר מסוכן: תשובה אוטומטית שנשלחת
+            # *לתוך קבוצה* נראית כמו ספאם בוטי, לא שירות לקוחות. ("", "") - אותו
+            # נתיב "אין מה לעבד" כמו למעלה, 200 שקט.
+            return "", ""
         digits = sender.split("@")[0] if "@" in sender else sender
         contact_id = f"+{digits}" if digits.isdigit() else digits
 
@@ -304,6 +313,8 @@ class UltraMsgProvider(WhatsAppProvider):
         if payload.get("fromMe"):
             return "", ""  # הודעה יוצאת מאיתנו (עקבנו אחריה כבר), לא נכנסת מהלקוח
         sender = payload.get("from", "")
+        if sender.endswith("@g.us"):
+            return "", ""  # הודעת קבוצה - ראו ההערה המלאה ב-GreenAPIProvider.parse_webhook
         digits = sender.split("@")[0] if "@" in sender else sender
         contact_id = f"+{digits}" if digits.isdigit() else digits
         message_text = payload.get("body", "") if payload.get("type") == "chat" else ""

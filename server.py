@@ -2020,126 +2020,149 @@ def api_system_queue_status():
 # עולה כסף בפועל (קריאת Claude ברקע, ראו _webhook_job_queue) - לא רק עומס.
 @limiter.limit(os.environ.get("RATELIMIT_WEBHOOK", "60 per minute"))
 def webhook(tenant_id: str = DEFAULT_TENANT_ID):
-    # כל עסק (tenant) מקבל כתובת webhook משלו עם ה-tenant_id שלו בנתיב, למשל:
-    # https://<ngrok-url>/webhook/business_a - כך שהנתונים של כל עסק מבודדים זה מזה.
+    """⚠️ חוזה חובה כלפי הספק (שלב 8 - הקשחת webhook מפני עומס/backoff): כל
+    מה שבתוך ה-try למטה **תמיד** מחזיר 2xx, גם כשאין מה לעבד (קבוצה, סוג
+    webhook לא-הודעה) וגם בכשל בלתי-צפוי - ה-except התחתון תופס הכל. ספקים
+    כמו Green API/UltraMsg נכנסים ל-exponential backoff על כל תגובה שאינה
+    2xx; עם נפח הודעות אמיתי (כולל webhook-ים שאינם הודעה - סטטוסים וכו',
+    וכולל רעש מקבוצות וואטסאפ) 4xx/5xx תכופים הם בדיוק מה שגורם ל"עומס
+    קריטי"/קריסות - לא עצם קבלת ההודעות. 403 (חתימת Twilio) הוא היוצא מן
+    הכלל המודע היחיד - דחייה אבטחתית מכוונת, לא "שגיאה" שצריך להסתיר."""
+    try:
+        # כל עסק (tenant) מקבל כתובת webhook משלו עם ה-tenant_id שלו בנתיב, למשל:
+        # https://<ngrok-url>/webhook/business_a - כך שהנתונים של כל עסק מבודדים זה מזה.
 
-    # parse_incoming קובע את ה-source הסופי (כולל override מגוף ה-JSON, ראו שם) -
-    # רק אחריו יודעים אם בכלל רלוונטי לבדוק Provider/חתימת Twilio. parse_incoming
-    # עצמו לא כותב כלום (לא DB, לא לוג) - בטוח לקרוא לו לפני אימות החתימה.
-    contact_id, message_text, source = parse_incoming()
-    provider = get_provider() if source == "whatsapp" else None
+        # parse_incoming קובע את ה-source הסופי (כולל override מגוף ה-JSON, ראו שם) -
+        # רק אחריו יודעים אם בכלל רלוונטי לבדוק Provider/חתימת Twilio. parse_incoming
+        # עצמו לא כותב כלום (לא DB, לא לוג) - בטוח לקרוא לו לפני אימות החתימה.
+        contact_id, message_text, source = parse_incoming()
+        provider = get_provider() if source == "whatsapp" else None
 
-    # אימות Twilio חל רק כש-source==whatsapp וה-Provider הפעיל הוא בפועל Twilio,
-    # על בקשות בפורמט Twilio האמיתי (form-encoded) - לא על ה-JSON הגנרי של
-    # instagram/facebook (PLACEHOLDER) ולא על ספקים אחרים (Green API/Mock, שאין
-    # להם מנגנון חתימת HMAC כזה - הם סומכים על כך שכתובת ה-webhook עצמה סודית,
-    # ראו WhatsAppProvider.verify_webhook).
-    if isinstance(provider, TwilioProvider) and VERIFY_TWILIO_SIGNATURE and not request.is_json:
-        if not _verify_twilio_request(request):
-            logger.warning(
-                "בקשת webhook נדחתה - חתימת X-Twilio-Signature לא תקינה/חסרה (מ-%s, tenant=%s)",
-                request.remote_addr, tenant_id,
-            )
-            return Response(status=403)
-
-    # הודעה קולית נכנסת (WhatsApp voice note): מגיעה בלי טקסט, רק מדיה - בלי
-    # הטיפול הזה message_text היה נשאר ריק וההודעה כולה נדחית ב-400 למטה, בלי
-    # להירשם בשום מקום ("נעלמת" מה-Inbox). provider.extract_voice_media מנרמל
-    # את הפורמט הגולמי הספציפי-ספק (form-encoded אצל Twilio, JSON אצל Green API)
-    # למבנה אחיד {"media_url","content_type"} - ראו whatsapp_provider.py; מכאן
-    # transcription.transcribe_incoming_voice_message מתמלל אוטומטית (OpenAI
-    # Whisper) ומשתמש בטקסט המתומלל בדיוק כמו הודעת טקסט רגילה מכאן והלאה - אותו
-    # צינור process_message_with_reply/db.log_message, בלי קוד כפול, לכל ספק.
-    # אם התמלול עצמו נכשל (OPENAI_API_KEY לא מוגדר/לא תקין, שגיאת רשת/API) -
-    # עדיין מקבלים טקסט placeholder ברור (⚠️) במקום None, כדי שההודעה עדיין
-    # תירשם ותופיע ב-Inbox עם סימון שקרה כשל, לא תיעלם בשקט.
-    if not message_text and provider is not None:
-        voice_media = provider.extract_voice_media(request)
-        voice_result = transcription.transcribe_incoming_voice_message(voice_media, provider.download_media)
-        if voice_result:
-            if voice_result["success"]:
-                message_text = f"🎙️ {voice_result['text']}"
-                # חילוץ שדות אוטומטי (שם/סוג נכס/תקציב - ממוקד נדל"ן, ראו "חזון
-                # המוצר" ב-CLAUDE.md) מהתמלול, עם gpt-4o-mini - רק אחרי תמלול
-                # מוצלח (אין טעם לנתח טקסט placeholder של כישלון). כשל בשלב הזה
-                # לא אמור להפיל את כל הטיפול בהודעה - היא כבר תירשם כרגיל בהמשך
-                # גם אם חילוץ השדות נכשל.
-                if contact_id:
-                    try:
-                        fields = transcription.extract_voice_message_fields(voice_result["text"])
-                        update_lead_voice_extraction(
-                            contact_id, tenant_id=tenant_id,
-                            customer_name=fields.get("customer_name"),
-                            property_type=fields.get("property_type"),
-                            budget=fields.get("budget"),
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "חילוץ שדות אוטומטי מהודעה קולית נכשל (התמלול עצמו הצליח): %s", exc,
-                        )
-            else:
-                message_text = voice_result["text"]
-
-    if not contact_id or not message_text:
-        return Response(status=400)
-
-    _log_incoming_message(tenant_id, source, contact_id, message_text)
-    db.log_message(contact_id, message_text, direction="in", tenant_id=tenant_id, channel=source)
-
-    # Twilio (TwiML): התשובה האוטומטית *חייבת* להיכלל בגוף אותה תגובת HTTP -
-    # אין אפשרות להחזיר 200 מיידי ולהשלים ברקע בלי לשבור את חוזה ה-webhook של
-    # Twilio (ראו ההערה המלאה מעל _webhook_job_queue). ממשיכים סינכרוני, בדיוק
-    # כמו לפני שלב 3 - שום שינוי התנהגות בנתיב הזה.
-    if source == "whatsapp" and provider.requires_twiml_reply():
-        reply_text = None
-        try:
-            if _ai_enabled_for(contact_id, tenant_id) and not DRY_RUN:
-                card, reply_text = process_message_with_reply(
-                    contact_id, message_text, tenant_id=tenant_id, source_channel=source
+        # אימות Twilio חל רק כש-source==whatsapp וה-Provider הפעיל הוא בפועל Twilio,
+        # על בקשות בפורמט Twilio האמיתי (form-encoded) - לא על ה-JSON הגנרי של
+        # instagram/facebook (PLACEHOLDER) ולא על ספקים אחרים (Green API/Mock, שאין
+        # להם מנגנון חתימת HMAC כזה - הם סומכים על כך שכתובת ה-webhook עצמה סודית,
+        # ראו WhatsAppProvider.verify_webhook).
+        if isinstance(provider, TwilioProvider) and VERIFY_TWILIO_SIGNATURE and not request.is_json:
+            if not _verify_twilio_request(request):
+                logger.warning(
+                    "בקשת webhook נדחתה - חתימת X-Twilio-Signature לא תקינה/חסרה (מ-%s, tenant=%s)",
+                    request.remote_addr, tenant_id,
                 )
-                db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
-            else:
-                # ai_enabled=False (שלב 5) או DRY_RUN=true (שלב 6) - בלי מענה
-                # אוטומטי; ה-TwiML למטה יחזור ריק (בלי <Message>), בדיוק כמו
-                # שהיה קורה אם לא הייתה תשובה בכלל. ל-Twilio אין "שלח אבל אל
-                # תשלח באמת" - התגובה הסינכרונית עצמה היא השליחה, ולכן ב-
-                # DRY_RUN פשוט לא מייצרים תשובה בכלל (בניגוד ל-UltraMsg/Green
-                # API, ששם DRY_RUN עדיין מייצר תשובה מדומה שנראית בהיסטוריה -
-                # ראו DryRunProviderProxy ב-whatsapp_provider.py). מענה ידני
-                # בלבד דרך /api/messages/send.
-                card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
-            logger.info("[tenant=%s] [%s] עודכן כרטיס לקוח: %s", tenant_id, source, card)
-        except Exception as exc:
-            logger.error("שגיאה בעיבוד הודעה מ-%s (tenant=%s): %s", source, tenant_id, exc, exc_info=True)
+                return Response(status=403)
 
-        try:
-            prior_messages = db.get_messages(contact_id, tenant_id=tenant_id)[:-1][-6:]
-            history_text = "\n".join(
-                f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
-                for m in prior_messages
-            )
-            intent_result = scheduling_agent.detect_scheduling_intent(message_text, history_text=history_text)
-            if intent_result["has_intent"]:
-                related_task = None
-                if intent_result["intent"] in ("cancel", "reschedule"):
-                    related_task = scheduling_agent.find_related_task(contact_id, tenant_id)
-                scheduling_agent.create_scheduling_proposal(
-                    contact_id, tenant_id, intent_result,
-                    related_task_id=related_task["id"] if related_task else None,
+        # הודעה קולית נכנסת (WhatsApp voice note): מגיעה בלי טקסט, רק מדיה - בלי
+        # הטיפול הזה message_text היה נשאר ריק וההודעה כולה נדחית למטה, בלי
+        # להירשם בשום מקום ("נעלמת" מה-Inbox). provider.extract_voice_media מנרמל
+        # את הפורמט הגולמי הספציפי-ספק (form-encoded אצל Twilio, JSON אצל Green API)
+        # למבנה אחיד {"media_url","content_type"} - ראו whatsapp_provider.py; מכאן
+        # transcription.transcribe_incoming_voice_message מתמלל אוטומטית (OpenAI
+        # Whisper) ומשתמש בטקסט המתומלל בדיוק כמו הודעת טקסט רגילה מכאן והלאה - אותו
+        # צינור process_message_with_reply/db.log_message, בלי קוד כפול, לכל ספק.
+        # אם התמלול עצמו נכשל (OPENAI_API_KEY לא מוגדר/לא תקין, שגיאת רשת/API) -
+        # עדיין מקבלים טקסט placeholder ברור (⚠️) במקום None, כדי שההודעה עדיין
+        # תירשם ותופיע ב-Inbox עם סימון שקרה כשל, לא תיעלם בשקט.
+        if not message_text and provider is not None:
+            voice_media = provider.extract_voice_media(request)
+            voice_result = transcription.transcribe_incoming_voice_message(voice_media, provider.download_media)
+            if voice_result:
+                if voice_result["success"]:
+                    message_text = f"🎙️ {voice_result['text']}"
+                    # חילוץ שדות אוטומטי (שם/סוג נכס/תקציב - ממוקד נדל"ן, ראו "חזון
+                    # המוצר" ב-CLAUDE.md) מהתמלול, עם gpt-4o-mini - רק אחרי תמלול
+                    # מוצלח (אין טעם לנתח טקסט placeholder של כישלון). כשל בשלב הזה
+                    # לא אמור להפיל את כל הטיפול בהודעה - היא כבר תירשם כרגיל בהמשך
+                    # גם אם חילוץ השדות נכשל.
+                    if contact_id:
+                        try:
+                            fields = transcription.extract_voice_message_fields(voice_result["text"])
+                            update_lead_voice_extraction(
+                                contact_id, tenant_id=tenant_id,
+                                customer_name=fields.get("customer_name"),
+                                property_type=fields.get("property_type"),
+                                budget=fields.get("budget"),
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "חילוץ שדות אוטומטי מהודעה קולית נכשל (התמלול עצמו הצליח): %s", exc,
+                            )
+                else:
+                    message_text = voice_result["text"]
+
+        if not contact_id or not message_text:
+            # אין מה לעבד - לא רק קלט ריק/שגוי: גם webhook-ים שאינם הודעה נכנסת
+            # בכלל (סטטוס שליחה וכו', ראו GreenAPIProvider/UltraMsgProvider.
+            # parse_webhook) וגם הודעות קבוצה שסוננו שם בכוונה (@g.us). 200, לא
+            # 400 - ראו docstring הפונקציה: תגובה שאינה 2xx היא בדיוק מה שמכניס
+            # את הספק ל-backoff, וזה נפוץ-לגמרי, לא מקרה שגיאה.
+            return Response(status=200)
+
+        _log_incoming_message(tenant_id, source, contact_id, message_text)
+        db.log_message(contact_id, message_text, direction="in", tenant_id=tenant_id, channel=source)
+
+        # Twilio (TwiML): התשובה האוטומטית *חייבת* להיכלל בגוף אותה תגובת HTTP -
+        # אין אפשרות להחזיר 200 מיידי ולהשלים ברקע בלי לשבור את חוזה ה-webhook של
+        # Twilio (ראו ההערה המלאה מעל _webhook_job_queue). ממשיכים סינכרוני, בדיוק
+        # כמו לפני שלב 3 - שום שינוי התנהגות בנתיב הזה.
+        if source == "whatsapp" and provider.requires_twiml_reply():
+            reply_text = None
+            try:
+                if _ai_enabled_for(contact_id, tenant_id) and not DRY_RUN:
+                    card, reply_text = process_message_with_reply(
+                        contact_id, message_text, tenant_id=tenant_id, source_channel=source
+                    )
+                    db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
+                else:
+                    # ai_enabled=False (שלב 5) או DRY_RUN=true (שלב 6) - בלי מענה
+                    # אוטומטי; ה-TwiML למטה יחזור ריק (בלי <Message>), בדיוק כמו
+                    # שהיה קורה אם לא הייתה תשובה בכלל. ל-Twilio אין "שלח אבל אל
+                    # תשלח באמת" - התגובה הסינכרונית עצמה היא השליחה, ולכן ב-
+                    # DRY_RUN פשוט לא מייצרים תשובה בכלל (בניגוד ל-UltraMsg/Green
+                    # API, ששם DRY_RUN עדיין מייצר תשובה מדומה שנראית בהיסטוריה -
+                    # ראו DryRunProviderProxy ב-whatsapp_provider.py). מענה ידני
+                    # בלבד דרך /api/messages/send.
+                    card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
+                logger.info("[tenant=%s] [%s] עודכן כרטיס לקוח: %s", tenant_id, source, card)
+            except Exception as exc:
+                logger.error("שגיאה בעיבוד הודעה מ-%s (tenant=%s): %s", source, tenant_id, exc, exc_info=True)
+
+            try:
+                prior_messages = db.get_messages(contact_id, tenant_id=tenant_id)[:-1][-6:]
+                history_text = "\n".join(
+                    f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
+                    for m in prior_messages
                 )
-        except Exception as exc:
-            logger.warning("זיהוי כוונת תזמון (scheduling_agent) נכשל: %s", exc)
+                intent_result = scheduling_agent.detect_scheduling_intent(message_text, history_text=history_text)
+                if intent_result["has_intent"]:
+                    related_task = None
+                    if intent_result["intent"] in ("cancel", "reschedule"):
+                        related_task = scheduling_agent.find_related_task(contact_id, tenant_id)
+                    scheduling_agent.create_scheduling_proposal(
+                        contact_id, tenant_id, intent_result,
+                        related_task_id=related_task["id"] if related_task else None,
+                    )
+            except Exception as exc:
+                logger.warning("זיהוי כוונת תזמון (scheduling_agent) נכשל: %s", exc)
 
-        body = f"<Message>{escape(reply_text)}</Message>" if reply_text else ""
-        twiml = f"<?xml version='1.0' encoding='UTF-8'?><Response>{body}</Response>"
-        return Response(twiml, mimetype="text/xml")
+            body = f"<Message>{escape(reply_text)}</Message>" if reply_text else ""
+            twiml = f"<?xml version='1.0' encoding='UTF-8'?><Response>{body}</Response>"
+            return Response(twiml, mimetype="text/xml")
 
-    # כל שאר הספקים/הערוצים (UltraMsg/Green API/Mock, instagram/facebook
-    # placeholder) - עיבוד ה-AI לא צריך להיכלל בתגובה הזו בכלל, אז מעבירים
-    # ל-worker ברקע (שלב 3) ומחזירים 200 מיידית. ההודעה הנכנסת כבר נרשמה
-    # למעלה בכל מקרה - גם אם ה-job ברקע ייכשל, שום דבר לא "נעלם".
-    _webhook_job_queue.put((contact_id, message_text, tenant_id, source))
-    return Response(status=200)
+        # כל שאר הספקים/הערוצים (UltraMsg/Green API/Mock, instagram/facebook
+        # placeholder) - עיבוד ה-AI לא צריך להיכלל בתגובה הזו בכלל, אז מעבירים
+        # ל-worker ברקע (שלב 3) ומחזירים 200 מיידית. ההודעה הנכנסת כבר נרשמה
+        # למעלה בכל מקרה - גם אם ה-job ברקע ייכשל, שום דבר לא "נעלם".
+        _webhook_job_queue.put((contact_id, message_text, tenant_id, source))
+        return Response(status=200)
+    except Exception as exc:
+        # רשת ביטחון אחרונה (שלב 8): כל חריגה בלתי-צפויה שלא נתפסה למעלה (באג
+        # בפענוח, DB זמנית לא זמינה וכו') עדיין מחזירה 200, לא 500 - ה-
+        # errorhandler הגלובלי (handle_uncaught_exception למעלה בקובץ) היה
+        # מחזיר 500 כאן, וזה בדיוק מה שמכניס ספקים ל-backoff. ה-exc_info=True
+        # מבטיח שהחריגה האמיתית עדיין נראית בלוגים לאבחון - "להחזיר 200"
+        # אף פעם לא אומר "להסתיר את השגיאה", רק "לא להעניש את הספק עליה".
+        logger.error("שגיאה בלתי-צפויה ב-webhook (tenant=%s): %s", tenant_id, exc, exc_info=True)
+        return Response(status=200)
 
 
 if __name__ == "__main__":
