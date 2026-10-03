@@ -5,6 +5,7 @@
 """
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,9 @@ def load_customers() -> dict:
 def save_customers(customers: dict) -> None:
     CUSTOMERS_FILE.write_text(
         json.dumps(customers, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    logging.getLogger("whatsapp_crm").info(
+        "✅ customers.json נכתב: %s (סה\"כ %d לידים)", CUSTOMERS_FILE, len(customers)
     )
 
 

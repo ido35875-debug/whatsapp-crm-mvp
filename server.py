@@ -147,6 +147,11 @@ _file_handler.setLevel(logging.WARNING)  # קובץ הלוג מתמקד בשגי
 _file_handler.setFormatter(_log_formatter)
 logger.addHandler(_file_handler)
 
+logger.info(
+    "🚀 שרת עולה: WHATSAPP_PROVIDER=%s | DRY_RUN=%s | DATA_DIR=%s | customers.json=%s",
+    os.environ.get("WHATSAPP_PROVIDER", "twilio"), DRY_RUN, DATA_DIR, DATA_DIR / "customers.json",
+)
+
 if not API_SECRET_KEY:
     # תקלה נפוצה מאוד בפריסה ראשונה בענן (Render/Railway): .env לא מועלה
     # ל-git בכוונה (סודות), כך שמשתני הסביבה חייבים הגדרה ידנית בלוח הבקרה של
@@ -1932,6 +1937,12 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
             # משמשת לערוצים בלי מענה אוטומטי בכלל (instagram/facebook) - לא
             # קוד כפול.
             card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
+        logger.info(
+            "🧠 חילוץ נתונים הושלם [תור רקע, tenant=%s]: טלפון=%s | שם=%r | עסק=%r | מיקום=%r",
+            tenant_id, contact_id, card.get("customer_name"), card.get("business_name"), card.get("location"),
+        )
+        if reply_text:
+            logger.info("💬 מענה AI נוצר (ייתרכב/יישלח אחרי השהייה): %r", reply_text[:300])
         logger.info("[תור רקע][tenant=%s] [%s] עודכן כרטיס לקוח: %s", tenant_id, source, card)
     except Exception as exc:
         logger.error("שגיאה בעיבוד הודעה ברקע מ-%s (tenant=%s): %s", source, tenant_id, exc, exc_info=True)
@@ -2035,7 +2046,19 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
         # parse_incoming קובע את ה-source הסופי (כולל override מגוף ה-JSON, ראו שם) -
         # רק אחריו יודעים אם בכלל רלוונטי לבדוק Provider/חתימת Twilio. parse_incoming
         # עצמו לא כותב כלום (לא DB, לא לוג) - בטוח לקרוא לו לפני אימות החתימה.
+        raw_json = request.get_json(silent=True)
+        logger.info(
+            "📥 webhook הגיע: WHATSAPP_PROVIDER=%s | content-type=%s | JSON גולמי: %s",
+            os.environ.get("WHATSAPP_PROVIDER", "twilio"), request.content_type,
+            json.dumps(raw_json, ensure_ascii=False)[:2000] if raw_json is not None else repr(request.get_data()[:500]),
+        )
+
         contact_id, message_text, source = parse_incoming()
+        logger.info(
+            "🔎 חילוץ מההודעה: מספר/מזהה שולח=%r | טקסט=%r | source=%s | typeWebhook=%r",
+            contact_id, (message_text or "")[:200], source,
+            (raw_json or {}).get("typeWebhook") if isinstance(raw_json, dict) else None,
+        )
         provider = get_provider() if source == "whatsapp" else None
 
         # אימות Twilio חל רק כש-source==whatsapp וה-Provider הפעיל הוא בפועל Twilio,
@@ -2090,6 +2113,12 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
                     message_text = voice_result["text"]
 
         if not contact_id or not message_text:
+            logger.warning(
+                "⏭️ webhook דולג (לא נוצר ליד): contact_id=%r, טקסט ריק=%s, typeWebhook=%r. "
+                "אם זו הודעה אמיתית מלקוח - ה-WHATSAPP_PROVIDER או מבנה ה-JSON לא תואמים לספק הפעיל.",
+                contact_id, not message_text,
+                (raw_json or {}).get("typeWebhook") if isinstance(raw_json, dict) else None,
+            )
             # אין מה לעבד - לא רק קלט ריק/שגוי: גם webhook-ים שאינם הודעה נכנסת
             # בכלל (סטטוס שליחה וכו', ראו GreenAPIProvider/UltraMsgProvider.
             # parse_webhook) וגם הודעות קבוצה שסוננו שם בכוונה (@g.us). 200, לא
