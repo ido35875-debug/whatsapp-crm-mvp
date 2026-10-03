@@ -191,7 +191,12 @@ class GreenAPIProvider(WhatsAppProvider):
 
     def parse_webhook(self, request) -> tuple[str, str]:
         data = request.get_json(silent=True) or {}
-        if data.get("typeWebhook") != "incomingMessageReceived":
+        type_webhook = data.get("typeWebhook")
+        if type_webhook == "quotaExceeded":
+            logger.error("🚫 Green API: המכסה נגמרה (quotaExceeded) - לא מתקבלות הודעות ולא נשלחים מענים עד חידוש/שדרוג המסלול")
+        elif type_webhook == "stateInstanceChanged":
+            logger.warning("⚠️ Green API: סטטוס ה-Instance השתנה: %s", data.get("stateInstance"))
+        if type_webhook != "incomingMessageReceived":
             # סוגי webhook אחרים של Green API (סטטוס שליחה, שינוי מצב instance וכו') -
             # לא הודעה נכנסת, לא רלוונטי לצינור העיבוד - ("", "") גורם ל-200 שקט
             # ב-server.webhook (לא 400 - ראו שם; Green API יכול להיכנס ל-backoff
