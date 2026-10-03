@@ -186,22 +186,42 @@ def process_message(
 
 
 REPLY_PROMPT = """\
-אתה נציג שירות של עסק קטן, עונה בקצרה ובחום להודעה שהתקבלה מלקוח פוטנציאלי בוואטסאפ.
-זו הודעת הלקוח:
+אתה נציג שירות של עסק קטן, עונה ללקוח פוטנציאלי בוואטסאפ - בחום, בקצרה, ובהקשר של השיחה.
+
+היסטוריית השיחה עד עכשיו (מהישנה לחדשה):
+{history_text}
+
+ההודעה החדשה שהתקבלה מהלקוח:
 "{message}"
 
 פרטים שכבר ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}, מיקום - {location}.
 
-כתוב תגובה קצרה בעברית (1-2 משפטים), חמה וטבעית, שמאשרת שהפנייה התקבלה ושיחזרו אליו בקרוב.
-אם יש שם ללקוח, פנה אליו בשמו. אל תמציא פרטים שלא ניתנו, ואל תבטיח מחיר, הנחה או תאריך מדויק.
+כתוב תגובה אחת קצרה בעברית (1-2 משפטים), טבעית כמו נציג אמיתי בוואטסאפ:
+- ענה ישירות למה שהלקוח כתב בהודעה החדשה, בהתאם להקשר מההיסטוריה. אל תתחיל מחדש ואל תברך שוב אם כבר דיברתם.
+- אם יש שם ללקוח, פנה אליו בשמו.
+- אם חסר פרט חשוב (למשל עיר או סוג השירות), שאל שאלה אחת קצרה כדי להתקדם.
+- אל תמציא פרטים שלא ניתנו, ואל תבטיח מחיר, הנחה או תאריך מדויק.
 החזר רק את טקסט ההודעה, בלי מרכאות ובלי הסברים נוספים.
 """
 
 
-def generate_reply(message_text: str, card: dict) -> str:
+def _format_history_for_reply(card: dict, limit: int = 10) -> str:
+    """היסטוריית השיחה מהכרטיס (ללא ההודעה הנוכחית שהיא האחרונה בו), כטקסט לפרומפט
+    המענה. הכרטיס הוא מקור האמת לשיחה (customers.json), לכן לא צריך שאילתת DB נוספת."""
+    entries = (card.get("history") or [])[:-1][-limit:]
+    if not entries:
+        return "(אין הודעות קודמות בשיחה הזו)"
+    return "\n".join(
+        f"[{'לקוח' if e.get('direction') == 'in' else 'אנחנו'}] {e.get('message', '')}"
+        for e in entries
+    )
+
+
+def generate_reply(message_text: str, card: dict, history_text: str = "") -> str:
     prompt_template = prompts.get_prompt("speed_to_lead_reply", REPLY_PROMPT)
     prompt = prompt_template.format(
         message=message_text,
+        history_text=history_text or "(אין הודעות קודמות בשיחה הזו)",
         customer_name=card.get("customer_name") or "לא ידוע",
         business_name=card.get("business_name") or "לא ידוע",
         location=card.get("location") or "לא ידוע",
@@ -394,7 +414,7 @@ def process_message_with_reply(
 ) -> tuple[dict, str]:
     """כמו process_message, ובנוסף מייצר תשובה אוטומטית ורושם אותה בהיסטוריה כהודעה יוצאת."""
     card = process_message(phone, message_text, tenant_id=tenant_id, source_channel=source_channel)
-    reply_text = generate_reply(message_text, card)
+    reply_text = generate_reply(message_text, card, history_text=_format_history_for_reply(card))
 
     customers = load_customers()
     key = _customer_key(tenant_id, phone)
