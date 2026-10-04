@@ -153,6 +153,29 @@ class MockProvider(WhatsAppProvider):
         return contact_id, message_text
 
 
+_GREEN_TEXT_KEYS = ("textMessage", "text", "caption")
+
+
+def _green_text_from_message_data(message_data: dict) -> str:
+    """טקסט של הודעה נכנסת מ-Green API - מכסה את המבנים הנפוצים (textMessageData,
+    extendedTextMessageData, caption של מדיה) ואז חיפוש רקורסיבי כגיבוי, כדי שגרסה
+    אחרת של המבנה לא תחזיר טקסט ריק בשקט."""
+    for key in ("textMessageData", "extendedTextMessageData"):
+        block = message_data.get(key) or {}
+        for field in _GREEN_TEXT_KEYS:
+            value = block.get(field)
+            if isinstance(value, str) and value.strip():
+                return value
+
+    for value in message_data.values():
+        if isinstance(value, dict):
+            for field in _GREEN_TEXT_KEYS:
+                text = value.get(field)
+                if isinstance(text, str) and text.strip():
+                    return text
+    return ""
+
+
 class GreenAPIProvider(WhatsAppProvider):
     """מתחבר ל-Green API (https://green-api.com) - שירות WhatsApp API חיצוני
     שמתחבר למספר WhatsApp אמיתי (לא Sandbox) דרך סריקת QR, ללא צורך באישור Meta
@@ -217,19 +240,16 @@ class GreenAPIProvider(WhatsAppProvider):
 
         message_data = data.get("messageData") or {}
         msg_type = message_data.get("typeMessage")
-        if msg_type == "textMessage":
-            message_text = (message_data.get("textMessageData") or {}).get("textMessage", "")
-        elif msg_type == "extendedTextMessage":
-            message_text = (message_data.get("extendedTextMessageData") or {}).get("text", "")
-        elif msg_type == "audioMessage":
+        if msg_type == "audioMessage":
             # הודעה קולית - אין כאן טקסט ישיר; server.webhook יפנה בנפרד ל-
             # extract_voice_media+transcribe_incoming_voice_message (בדיוק כמו
             # אצל Twilio) - כאן מחזירים מחרוזת ריקה, לא מנסים לתמלל בתוך parse_webhook.
             message_text = ""
         else:
             # מדיה אחרת (תמונה/מסמך/מיקום וכו') - לא ממומשת (ראו הערת ההיקף בראש הקובץ)
-            logger.info("[GreenAPIProvider] הודעה נכנסת מסוג %s לא נתמכת - התעלמות", msg_type)
-            message_text = ""
+            message_text = _green_text_from_message_data(message_data)
+            if not message_text:
+                logger.info("[GreenAPIProvider] הודעה נכנסת מסוג %s ללא טקסט - התעלמות", msg_type)
 
         return contact_id, message_text
 
