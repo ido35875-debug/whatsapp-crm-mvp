@@ -2197,8 +2197,8 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
         # placeholder) - עיבוד ה-AI לא צריך להיכלל בתגובה הזו בכלל, אז מעבירים
         # ל-worker ברקע (שלב 3) ומחזירים 200 מיידית. ההודעה הנכנסת כבר נרשמה
         # למעלה בכל מקרה - גם אם ה-job ברקע ייכשל, שום דבר לא "נעלם".
-        _kick_webhook_drain()
         _webhook_job_queue.put((contact_id, message_text, tenant_id, source))
+        _kick_webhook_drain()
         return Response(status=200)
     except Exception as exc:
         # רשת ביטחון אחרונה (שלב 8): כל חריגה בלתי-צפויה שלא נתפסה למעלה (באג
