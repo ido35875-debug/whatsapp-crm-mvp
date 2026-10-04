@@ -205,6 +205,8 @@ REPLY_PROMPT = """\
 - אם יש שם ללקוח, פנה אליו בשמו.
 - אם חסר פרט חשוב (למשל עיר או סוג השירות), שאל שאלה אחת קצרה כדי להתקדם.
 - אל תמציא פרטים שלא ניתנו, ואל תבטיח מחיר, הנחה או תאריך מדויק.
+- בלי אימוג'ים בכלל. בלי סימני קריאה מוגזמים, בלי ריבוי משפטי נימוס, בלי פתיחה רובוטית.
+- כתוב כמו שנציג מכירות כותב מהטלפון: קצר, ישיר, בגובה העיניים.
 החזר רק את טקסט ההודעה, בלי מרכאות ובלי הסברים נוספים.
 """
 
@@ -237,7 +239,8 @@ def generate_reply(message_text: str, card: dict, history_text: str = "") -> str
         output_config={"effort": "low"},
         messages=[{"role": "user", "content": prompt}],
     )
-    return next(block.text for block in response.content if block.type == "text").strip()
+    from whatsapp_provider import strip_emojis
+    return strip_emojis(next(block.text for block in response.content if block.type == "text").strip())
 
 
 CALL_SUMMARY_PROMPT = """\

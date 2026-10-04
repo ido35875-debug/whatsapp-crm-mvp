@@ -23,10 +23,23 @@ from __future__ import annotations
 import abc
 import logging
 import os
+import re
 
 import requests
 
 logger = logging.getLogger("whatsapp_crm")
+
+
+_EMOJI_RE = re.compile(
+    "[🀀-🫿☀-➿⌀-⏿"
+    "⬀-⯿🇦-🇿‍️⃣]+"
+)
+
+
+def strip_emojis(text: str) -> str:
+    """מסיר אימוג'ים מכל טקסט יוצא (איסור מוחלט - הסגנון אנושי, בלי אימוג'ים)."""
+    cleaned = _EMOJI_RE.sub("", text or "")
+    return re.sub(r"[ 	]{2,}", " ", cleaned).strip()
 
 def _default_green_api_url(instance_id: str) -> str:
     # Green API (מ-2024 ואילך) מקצה לכל instance host ייעודי (לא שער גנרי
@@ -98,6 +111,7 @@ class TwilioProvider(WhatsAppProvider):
     ה-Provider בכלל - ראו server.webhook לאופן שבו זה מחובר יחד בלי circular import."""
 
     def send_message(self, to: str, text: str) -> str:
+        text = strip_emojis(text)
         from whatsapp_send import send_whatsapp_message
         return send_whatsapp_message(to, text)
 
@@ -144,6 +158,7 @@ class MockProvider(WhatsAppProvider):
     simulate_webhook.py, שכבר בנויים סביב הפורמט הזה) ימשיכו לעבוד ללא שינוי."""
 
     def send_message(self, to: str, text: str) -> str:
+        text = strip_emojis(text)
         from whatsapp_send import MockMessenger
         return MockMessenger.send(from_="mock:crm", to=f"mock:{to}", body=text)
 
@@ -203,6 +218,7 @@ class GreenAPIProvider(WhatsAppProvider):
         return f"{self.api_url}/waInstance{self.instance_id}/{method}/{self.token}"
 
     def send_message(self, to: str, text: str) -> str:
+        text = strip_emojis(text)
         digits = to.replace("whatsapp:", "").replace("+", "").strip()
         chat_id = f"{digits}@c.us"
         resp = requests.post(self._url("sendMessage"), json={"chatId": chat_id, "message": text}, timeout=15)
@@ -296,6 +312,7 @@ class UltraMsgProvider(WhatsAppProvider):
         self.base_url = os.environ.get("ULTRAMSG_URL", "").strip() or "https://api.ultramsg.com"
 
     def send_message(self, to: str, text: str) -> str:
+        text = strip_emojis(text)
         # UltraMsg דורש מספר בפורמט בינלאומי מלא בלי "+" (למשל "972502222222") -
         # contacts.csv מכיל גם מספרים בפורמט מקומי ישראלי ("0502222222", 0 מוביל
         # בלי קידומת מדינה) - בלי נרמול, ההודעה מתקבלת ב-API (200 + idMessage)
@@ -365,6 +382,7 @@ class DryRunProviderProxy(WhatsAppProvider):
         self._real = real
 
     def send_message(self, to: str, text: str) -> str:
+        text = strip_emojis(text)
         from whatsapp_send import MockMessenger
         logger.info("[DRY_RUN] מדמה שליחת הודעה (לא נשלח בפועל) אל %s: %s", to, text)
         return MockMessenger.send(from_="dry-run:crm", to=f"dry-run:{to}", body=text)
