@@ -2007,10 +2007,26 @@ def _webhook_worker_loop() -> None:
         job = _webhook_job_queue.get()
         try:
             _process_incoming_message_job(*job)
-        except Exception:
+        except BaseException:
             logger.exception("job בתור עיבוד ה-webhook נכשל באופן בלתי-צפוי")
         finally:
             _webhook_job_queue.task_done()
+
+
+_webhook_worker_lock = threading.Lock()
+
+
+def _ensure_webhook_worker() -> None:
+    """מפעיל מחדש את ה-worker אם מת - בלי זה, הודעות נכנסות נערמו בתור בלי שמישהו
+    יעבד אותן (נצפה בפועל: worker_alive=false עם 7 הודעות ממתינות)."""
+    global _webhook_worker_thread
+    with _webhook_worker_lock:
+        if _webhook_worker_thread is None or not _webhook_worker_thread.is_alive():
+            logger.warning("⚠️ worker של תור ה-webhook לא פעיל - מפעיל מחדש")
+            _webhook_worker_thread = threading.Thread(
+                target=_webhook_worker_loop, daemon=True, name="webhook-worker",
+            )
+            _webhook_worker_thread.start()
 
 
 # מתחיל ברמת המודול (לא בתוך if __name__=="__main__") - בכוונה, כדי שיעבוד גם
@@ -2196,6 +2212,7 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
         # placeholder) - עיבוד ה-AI לא צריך להיכלל בתגובה הזו בכלל, אז מעבירים
         # ל-worker ברקע (שלב 3) ומחזירים 200 מיידית. ההודעה הנכנסת כבר נרשמה
         # למעלה בכל מקרה - גם אם ה-job ברקע ייכשל, שום דבר לא "נעלם".
+        _ensure_webhook_worker()
         _webhook_job_queue.put((contact_id, message_text, tenant_id, source))
         return Response(status=200)
     except Exception as exc:
