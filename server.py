@@ -128,6 +128,18 @@ API_SECRET_KEY = os.environ.get("API_SECRET_KEY", "").strip()  # שער אימו
 # תגובת ה-HTTP עצמה ולא קריאת send_message נפרדת שאפשר לעטוף באותה נקודה.
 DRY_RUN = os.environ.get("DRY_RUN", "false").strip().lower() == "true"
 
+
+def _normalize_phone(raw: str) -> str:
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if digits.startswith("0"):
+        digits = "972" + digits[1:]
+    return f"+{digits}" if digits else ""
+
+
+# רשימת שולחים מאושרים (VIP) - מופרדת בפסיקים, מוגדרת ב-.env/Render (לא בסורס, כי אלה מספרים אישיים).
+# ריקה = בלי סינון (ברירת מחדל, ההתנהגות הקיימת). כשמוגדרת - רק השולחים ברשימה מעובדים ומקבלים מענה.
+APPROVED_SENDERS = {_normalize_phone(p) for p in os.environ.get("APPROVED_SENDERS", "").split(",") if p.strip()}
+
 BASE_DIR = Path(__file__).parent
 from paths import DATA_DIR  # noqa: E402 - chat_history.txt (state) נשמר כאן; server_error.log/index.html נשארים ב-BASE_DIR
 
@@ -2054,6 +2066,9 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
         )
 
         contact_id, message_text, source = parse_incoming()
+        if APPROVED_SENDERS and contact_id and _normalize_phone(contact_id) not in APPROVED_SENDERS:
+            logger.info("🚷 שולח לא מאושר (APPROVED_SENDERS) - דולג בלי מענה: %s", f"{contact_id[:4]}…{contact_id[-4:]}")
+            return Response(status=200)
         logger.info(
             "🔎 חילוץ מההודעה: מספר/מזהה שולח=%r | טקסט=%r | source=%s | typeWebhook=%r",
             contact_id, (message_text or "")[:200], source,
