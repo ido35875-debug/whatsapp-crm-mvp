@@ -242,8 +242,7 @@ def api_health():
         db_ok = False
         db_error = str(exc)
 
-    worker_alive = _webhook_worker_thread.is_alive() if _webhook_worker_thread else False
-    healthy = db_ok and worker_alive
+    healthy = db_ok
 
     payload = {
         "status": "ok" if healthy else "degraded",
@@ -254,7 +253,7 @@ def api_health():
             "error": db_error,
         },
         "async_queue": {
-            "worker_alive": worker_alive,
+            "processing_now": _job_processing_lock.locked(),
             "queue_size": _webhook_job_queue.qsize(),
         },
     }
@@ -1928,7 +1927,7 @@ def _send_auto_reply_after_delay(provider, contact_id: str, reply_text: str, ten
 def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id: str, source: str) -> None:
     """מעבד הודעה נכנסת אחת ברקע - חילוץ פרטים/מענה אוטומטי, זיהוי כוונת
     תזמון, ושליחת התשובה בפועל (לספקים בלי TwiML). רץ בתוך ה-worker thread
-    (ראו _webhook_worker_loop) - **לא** תלוי ב-Flask request context (אין כאן
+    (ראו _drain_webhook_queue) - **לא** תלוי ב-Flask request context (אין כאן
     גישה ל-request/g), רק בפרמטרים שהועברו במפורש בזמן ה-enqueue. הלוגיקה
     עצמה זהה לגמרי למה שהיה סינכרוני בתוך webhook() לפני שלב 3 - הופרדה
     לפונקציה, לא שוכתבה."""
@@ -1987,7 +1986,7 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
     # כשל בשליחה נרשם כאזהרה - ההודעה הנכנסת כבר נרשמה בכל מקרה לפני ה-enqueue.
     # ההשהיה האקראית (שלב 5, אנטי-זיהוי-אוטומציה - תשובה שמגיעה תוך אלפיות
     # שנייה "נראית" רובוטית) רצה ב-thread נפרד משלה, **לא** כאן על ה-worker
-    # היחיד של תור העיבוד (_webhook_worker_thread) - אחרת השהיה של עד 75
+    # של תור העיבוד (_drain_webhook_queue) - אחרת השהיה של עד 75
     # שניות הייתה חוסמת מאחוריה כל הודעה אחרת שממתינה בתור, בדיוק ה"ראש תור"
     # (head-of-line blocking) שהתור האסינכרוני כולו (שלב 3) נועד למנוע.
     if source == "whatsapp" and reply_text and provider is not None:
@@ -1998,55 +1997,41 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
         ).start()
 
 
-def _webhook_worker_loop() -> None:
-    """הצרכן היחיד של _webhook_job_queue - רץ ברקע לכל אורך חיי התהליך
-    (thread daemon, מופעל ב-__main__ למטה). try/except צר סביב כל job בנפרד -
-    חריגה ב-job אחד לא אמורה "להרוג" את ה-worker ולהשאיר את כל התור תקוע
-    (בדיוק אותו עיקרון שכבר חוזר בכל מקום אחר בקוד - כשל מקומי לא מפיל הכל)."""
+_job_processing_lock = threading.Lock()
+
+
+def _drain_webhook_queue() -> None:
+    """מעבד את תור ה-webhook עד שהוא ריק, ואז מסיים. נקרא מ-thread קצר שנוצר לכל
+    הודעה נכנסת - אין worker קבוע שיכול למות בשקט. הנעילה מבטיחה שעיבוד אחד בכל
+    פעם (כמו קודם), כך ש-customers.json לא ייכתב בו-זמנית."""
     while True:
-        job = _webhook_job_queue.get()
         try:
-            _process_incoming_message_job(*job)
-        except BaseException:
-            logger.exception("job בתור עיבוד ה-webhook נכשל באופן בלתי-צפוי")
-        finally:
-            _webhook_job_queue.task_done()
+            job = _webhook_job_queue.get_nowait()
+        except queue_module.Empty:
+            return
+        with _job_processing_lock:
+            try:
+                _process_incoming_message_job(*job)
+            except BaseException:
+                logger.exception("job בתור עיבוד ה-webhook נכשל באופן בלתי-צפוי")
+            finally:
+                _webhook_job_queue.task_done()
 
 
-_webhook_worker_lock = threading.Lock()
-
-
-def _ensure_webhook_worker() -> None:
-    """מפעיל מחדש את ה-worker אם מת - בלי זה, הודעות נכנסות נערמו בתור בלי שמישהו
-    יעבד אותן (נצפה בפועל: worker_alive=false עם 7 הודעות ממתינות)."""
-    global _webhook_worker_thread
-    with _webhook_worker_lock:
-        if _webhook_worker_thread is None or not _webhook_worker_thread.is_alive():
-            logger.warning("⚠️ worker של תור ה-webhook לא פעיל - מפעיל מחדש")
-            _webhook_worker_thread = threading.Thread(
-                target=_webhook_worker_loop, daemon=True, name="webhook-worker",
-            )
-            _webhook_worker_thread.start()
-
-
-# מתחיל ברמת המודול (לא בתוך if __name__=="__main__") - בכוונה, כדי שיעבוד גם
-# תחת Gunicorn (שלא מריץ את בלוק ה-__main__ בכלל, ראו scheduler.start() למטה
-# להבדל). בניגוד ל-scheduler.py, worker לכל process הוא בדיוק ההתנהגות
-# הרצויה כאן (ראו ההערה המלאה מעל _webhook_job_queue) - לא צריך תיאום.
-_webhook_worker_thread = threading.Thread(target=_webhook_worker_loop, daemon=True, name="webhook-worker")
-_webhook_worker_thread.start()
+def _kick_webhook_drain() -> None:
+    threading.Thread(target=_drain_webhook_queue, daemon=True, name="webhook-drain").start()
 
 
 @app.route("/api/system/queue-status")
 def api_system_queue_status():
     """גודל תור עיבוד ה-webhook כרגע + האם ה-worker thread חי - אדמין-בלבד,
-    לניטור/דיבוג (ראו _webhook_job_queue/_webhook_worker_loop)."""
+    לניטור/דיבוג (ראו _webhook_job_queue/_drain_webhook_queue)."""
     denied = _require_admin()
     if denied:
         return denied
     return jsonify({
         "queue_size": _webhook_job_queue.qsize(),
-        "worker_alive": _webhook_worker_thread.is_alive() if _webhook_worker_thread else False,
+        "processing_now": _job_processing_lock.locked(),
     })
 
 
@@ -2212,7 +2197,7 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
         # placeholder) - עיבוד ה-AI לא צריך להיכלל בתגובה הזו בכלל, אז מעבירים
         # ל-worker ברקע (שלב 3) ומחזירים 200 מיידית. ההודעה הנכנסת כבר נרשמה
         # למעלה בכל מקרה - גם אם ה-job ברקע ייכשל, שום דבר לא "נעלם".
-        _ensure_webhook_worker()
+        _kick_webhook_drain()
         _webhook_job_queue.put((contact_id, message_text, tenant_id, source))
         return Response(status=200)
     except Exception as exc:
