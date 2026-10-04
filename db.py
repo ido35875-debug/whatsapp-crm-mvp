@@ -342,6 +342,15 @@ def _init_schema(conn) -> None:
         )
         """
     )
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS customers (
+            id {_PK},
+            cust_key TEXT NOT NULL UNIQUE,
+            data TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
 
 
@@ -1256,5 +1265,48 @@ def delete_user(user_id: str) -> bool:
         cur = conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
         conn.commit()
         return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+# ---- customers (כרטיסי לידים) - חלופה ל-customers.json כש-DATABASE_URL מוגדר ----
+# כל שורה = כרטיס אחד (מפתח tenant::phone + JSON של הכרטיס). השמירה היא שורה-שורה:
+# רק שורות שהשתנו נכתבות, ושורות שנמחקו מהמילון מוסרות - לא דריסה של כל הטבלה.
+
+def load_customers_rows() -> dict:
+    conn = _get_connection()
+    try:
+        rows = conn.execute("SELECT cust_key, data FROM customers").fetchall()
+        return {row["cust_key"]: json.loads(row["data"]) for row in rows}
+    finally:
+        conn.close()
+
+
+def replace_customers_rows(customers: dict) -> dict:
+    """מסנכרן את הטבלה למילון נתון: מעדכן/מוסיף רק שורות שהשתנו, ומוחק שורות שחסרות.
+    מחזיר סיכום {upserted, deleted}."""
+    conn = _get_connection()
+    try:
+        existing = {
+            row["cust_key"]: row["data"]
+            for row in conn.execute("SELECT cust_key, data FROM customers").fetchall()
+        }
+        upserted = deleted = 0
+        for key, card in customers.items():
+            payload = json.dumps(card, ensure_ascii=False, sort_keys=True)
+            if existing.get(key) == payload:
+                continue
+            conn.execute(
+                "INSERT INTO customers (cust_key, data) VALUES (?, ?) "
+                "ON CONFLICT (cust_key) DO UPDATE SET data = EXCLUDED.data",
+                (key, payload),
+            )
+            upserted += 1
+        for key in existing:
+            if key not in customers:
+                conn.execute("DELETE FROM customers WHERE cust_key = ?", (key,))
+                deleted += 1
+        conn.commit()
+        return {"upserted": upserted, "deleted": deleted}
     finally:
         conn.close()

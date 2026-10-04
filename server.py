@@ -250,6 +250,7 @@ def api_health():
         "db": {
             "ok": db_ok,
             "backend": "postgresql" if db.IS_POSTGRES else "sqlite",
+            "customers_storage": "database" if db.DATABASE_URL else "file",
             "error": db_error,
         },
         "async_queue": {
@@ -1903,8 +1904,8 @@ _webhook_job_queue: "queue_module.Queue" = queue_module.Queue()
 # WhatsApp/הלקוח - לא קשור למנגנון ה-Anti-Ban של outbound_engine.py (שם ההשהיה
 # היא בין הודעה להודעה ב*קמפיין* יזום ללקוחות חדשים; כאן זו השהיה לפני מענה
 # חוזר ל*אותו* לקוח שכבר כתב אלינו - שני מנגנונים נפרדים בכוונה, לא כפילות).
-AUTO_REPLY_MIN_DELAY_SECONDS = int(os.environ.get("AUTO_REPLY_MIN_DELAY_SECONDS", "3"))
-AUTO_REPLY_MAX_DELAY_SECONDS = int(os.environ.get("AUTO_REPLY_MAX_DELAY_SECONDS", "7"))
+AUTO_REPLY_MIN_DELAY_SECONDS = int(os.environ.get("AUTO_REPLY_MIN_DELAY_SECONDS", "20"))
+AUTO_REPLY_MAX_DELAY_SECONDS = int(os.environ.get("AUTO_REPLY_MAX_DELAY_SECONDS", "60"))
 
 
 def _send_auto_reply_after_delay(provider, contact_id: str, reply_text: str, tenant_id: str) -> None:

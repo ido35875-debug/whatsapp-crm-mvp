@@ -51,19 +51,31 @@ def extract_customer_info(message_text: str) -> dict:
     return json.loads(raw_text)
 
 
+def _use_database() -> bool:
+    return bool(db.DATABASE_URL)
+
+
 def load_customers() -> dict:
+    """כש-DATABASE_URL מוגדר - הכרטיסים נטענים מהמסד (הקבוע בענן). אחרת מקובץ
+    customers.json המקומי (ברירת מחדל, בלי שינוי התנהגות)."""
+    if _use_database():
+        return db.load_customers_rows()
     if CUSTOMERS_FILE.exists():
         return json.loads(CUSTOMERS_FILE.read_text(encoding="utf-8"))
     return {}
 
 
 def save_customers(customers: dict) -> None:
+    log = logging.getLogger("whatsapp_crm")
+    if _use_database():
+        summary = db.replace_customers_rows(customers)
+        log.info("✅ כרטיסי לידים נשמרו במסד (%d לידים, עודכנו %d, נמחקו %d)",
+                 len(customers), summary["upserted"], summary["deleted"])
+        return
     CUSTOMERS_FILE.write_text(
         json.dumps(customers, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    logging.getLogger("whatsapp_crm").info(
-        "✅ customers.json נכתב: %s (סה\"כ %d לידים)", CUSTOMERS_FILE, len(customers)
-    )
+    log.info("✅ customers.json נכתב: %s (סה\"כ %d לידים)", CUSTOMERS_FILE, len(customers))
 
 
 def _append_history(
