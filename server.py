@@ -268,6 +268,13 @@ def api_health():
             "processing_now": _job_processing_lock.locked(),
             "queue_size": _webhook_job_queue.qsize(),
         },
+        # לא חושף את המספרים עצמם (PII) - רק כמה מוגדרים, כדי שהדשבורד יוכל
+        # להציג אזהרה גלויה ("הפיילוט מוגבל כרגע ל-N מספרים") בלי לחפש בלוגים -
+        # ראו senderFilterBanner ב-index.html. זה בדיוק מה שגרם לבאג "0 לידים
+        # למרות שהבוט פעיל" שהתגלה בשיחה: APPROVED_SENDERS נשאר מוגדר מבדיקת
+        # quota מוקדמת יותר, וחסם בשקט כל שולח שאינו ברשימה.
+        "approved_senders_count": len(APPROVED_SENDERS),
+        "blocked_contacts_count": len(BLOCKED_CONTACTS),
     }
     return jsonify(payload), 200 if healthy else 503
 

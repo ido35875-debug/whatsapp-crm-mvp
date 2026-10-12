@@ -1073,6 +1073,16 @@
       <i data-lucide="alert-triangle" class="h-4 w-4 shrink-0"></i>
       <span>מפתח <code>API_SECRET_KEY</code> לא מוגדר בשרת - לכן כל בקשות ה-API נחסמות (401), וזה מה שנראה כ"אין חיבור לשרת". השרת עצמו פעיל - צריך להגדיר את משתנה הסביבה <code>API_SECRET_KEY</code> בלוח הבקרה של הפלטפורמה (Render/Railway וכו') ולהפעיל מחדש.</span>
     </div>
+    <!-- אזהרת סינון שולחים פעיל (APPROVED_SENDERS/BLOCKED_CONTACTS ב-server.py) -
+         מוצג רק אם GET /health מדווח כמות > 0 באחד מהם (ראו checkSenderFiltersActive
+         למטה). נוסף בעקבות באג אמיתי שהתגלה: APPROVED_SENDERS נשאר מוגדר מבדיקת
+         quota מוקדמת יותר של Green API, וחסם בשקט כל שולח חדש שלא ברשימה - "0
+         לידים למרות שהבוט פעיל", בלי שום שגיאה גלויה בשום מקום חוץ מהלוגים. -->
+    <div id="senderFilterBanner" style="display:none;"
+      class="mx-6 mt-3 flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-300">
+      <i data-lucide="alert-triangle" class="h-4 w-4 shrink-0"></i>
+      <span id="senderFilterBannerText"></span>
+    </div>
     <div class="import-status" id="importStatus"></div>
 
     <main class="flex-1 overflow-y-auto p-6 lg:p-8">
@@ -4996,6 +5006,31 @@ function checkApiKeyConfigured() {
   if (banner) banner.style.display = activeApiKey() ? "none" : "";
 }
 checkApiKeyConfigured();
+
+// מציג את senderFilterBanner אם APPROVED_SENDERS ו/או BLOCKED_CONTACTS פעילים
+// בשרת (ראו GET /health - לא דורש מפתח API, אז זמין גם אם apiKeyMissingBanner
+// כבר מוצג). נבדק פעם אחת בטעינת הדף - מספיק (שינוי בפועל דורש עדכון env var
+// ב-Render + redeploy, לא קורה "חי" בלי טעינה חדשה של הדף בכל מקרה).
+async function checkSenderFiltersActive() {
+  try {
+    const res = await fetch("/health");
+    if (!res.ok) return;
+    const data = await res.json();
+    const approved = data.approved_senders_count || 0;
+    const blocked = data.blocked_contacts_count || 0;
+    const banner = document.getElementById("senderFilterBanner");
+    const textEl = document.getElementById("senderFilterBannerText");
+    if (!banner || !textEl || (!approved && !blocked)) return;
+    const parts = [];
+    if (approved) parts.push(`מוגבל ל-${approved} מספרים מאושרים בלבד (APPROVED_SENDERS) - כל שולח אחר נדחה בשקט`);
+    if (blocked) parts.push(`${blocked} מספרים חסומים (BLOCKED_CONTACTS)`);
+    textEl.textContent = "⚠️ סינון שולחים פעיל כרגע: " + parts.join(" · ") + ". אם הודעות אמיתיות לא מגיעות לדשבורד - בדקו את משתני הסביבה האלה ב-Render.";
+    banner.style.display = "";
+  } catch (err) {
+    // שקט - לא קריטי, לא מפיל שום דבר אחר בטעינת הדף
+  }
+}
+checkSenderFiltersActive();
 
 loadCurrentUser();
 loadLeads().then(() => renderOverviewCards());
