@@ -94,6 +94,7 @@ try:
         process_message_with_reply,
         rekey_lead,
         resolve_existing_phone,
+        update_activity_summary,
         update_lead_agent,
         update_lead_ai_enabled,
         update_lead_category,
@@ -139,6 +140,16 @@ def _normalize_phone(raw: str) -> str:
 # רשימת שולחים מאושרים (VIP) - מופרדת בפסיקים, מוגדרת ב-.env/Render (לא בסורס, כי אלה מספרים אישיים).
 # ריקה = בלי סינון (ברירת מחדל, ההתנהגות הקיימת). כשמוגדרת - רק השולחים ברשימה מעובדים ומקבלים מענה.
 APPROVED_SENDERS = {_normalize_phone(p) for p in os.environ.get("APPROVED_SENDERS", "").split(",") if p.strip()}
+
+# רשימת אנשי קשר חסומים (אישיים/פנימיים - משפחה/חברים/צוות) - ⚠️ ההיפך המדויק
+# מ-APPROVED_SENDERS (אלה שולחים שתמיד מעובדים גם בלי שום רשימה), ושתי הרשימות
+# לא תלויות זו בזו (אפשר להגדיר אחת, שתיהן, או אף אחת). מספרים ברשימה הזו
+# **לעולם** לא עוברים דרך pipeline הלידים (לא נוצר כרטיס, לא חילוץ פרטים, לא
+# מענה AI) - בלי קשר להיסטוריית השיחה איתם/כמה זמן היא קיימת. אין API חיצוני
+# שחושף "אנשי הקשר השמורים בטלפון" (Green API לא מספק את זה) - זו הדרך
+# המעשית היחידה היום למנוע מהבוט לענות בטעות לאנשי קשר פרטיים/פנימיים על אותו
+# מספר WhatsApp שמשמש גם לפיילוט. ריקה = בלי סינון (ברירת מחדל).
+BLOCKED_CONTACTS = {_normalize_phone(p) for p in os.environ.get("BLOCKED_CONTACTS", "").split(",") if p.strip()}
 
 BASE_DIR = Path(__file__).parent
 from paths import DATA_DIR  # noqa: E402 - chat_history.txt (state) נשמר כאן; server_error.log/index.html נשארים ב-BASE_DIR
@@ -480,7 +491,7 @@ def _compute_commission_for_user(user: dict) -> dict:
     allowed_tenant_ids = set(user.get("tenant_ids") or [])
     conversions = 0
     total_leads = 0
-    engaged_statuses = {"contacted", "hot", "reactivation"}
+    engaged_statuses = {"contacted", "follow_up", "hot", "reactivation", "human_handling"}
     for key, card in load_customers().items():
         tenant_id, _, key_phone = key.partition("::")
         resolved_tenant_id = card.get("tenant_id", tenant_id)
@@ -554,7 +565,7 @@ def api_analytics_timeseries():
     # changed_at לכל ליד שהגיע לאחד מסטטוסי המעורבות. קירוב סביר, לא לוג מדויק
     # של כל שינוי היסטורי (אם ליד עבר סטטוס כמה פעמים, רק האחרון נספר).
     conversions_by_day: dict[str, int] = {}
-    engaged_statuses = {"contacted", "hot", "reactivation"}
+    engaged_statuses = {"contacted", "follow_up", "hot", "reactivation", "human_handling"}
     for key, card in load_customers().items():
         if card.get("lead_status") not in engaged_statuses:
             continue
@@ -618,6 +629,32 @@ def parse_incoming() -> tuple[str, str, str]:
         return contact_id, message_text, source
 
     return "", "", source
+
+
+def _handle_human_takeover(contact_id: str, tenant_id: str) -> None:
+    """Takeover אנושי - נקרא מ-webhook() כש-provider.parse_human_outgoing_webhook
+    מזהה שהודעה יוצאת נשלחה ידנית מהמכשיר המקושר עצמו (לא דרך ה-API/הדשבורד -
+    ראו whatsapp_provider.GreenAPIProvider). מכבה מענה אוטומטי לליד הזה
+    (ai_enabled=False, בדיוק כמו "✋ מענה ידני" בדשבורד) ומעביר ל-lead_status=
+    "human_handling", כדי שהבוט לא "יתחרה" בנציג שכבר נכנס לשיחה בעצמו.
+
+    **פועל רק על כרטיס קיים** - בכוונה לא יוצר כרטיס חדש רק כי נשלחה הודעה
+    ידנית למספר כלשהו (אחרת כל הודעה אישית שהמשתמש שולח מהטלפון שלו - למשפחה/
+    חברים - הייתה נכנסת ל-CRM כ"ליד"). זו אכיפה נוספת לאותה מדיניות בדיוק
+    כמו BLOCKED_CONTACTS: רק מי שכבר ליד אמיתי בפייפליין מושפע."""
+    key = f"{tenant_id}::{contact_id}"
+    card = load_customers().get(key)
+    if card is None:
+        return
+    if card.get("ai_enabled", True) is False and card.get("lead_status") == "human_handling":
+        return  # כבר מסומן - לא לכתוב שוב בכל הודעה ידנית נוספת מהנציג באותה שיחה
+    update_lead_ai_enabled(contact_id, False, tenant_id=tenant_id)
+    update_lead_status(contact_id, "human_handling", tenant_id=tenant_id)
+    db.log_message(
+        contact_id, "🙋 זוהתה הודעה ידנית מהמכשיר - מענה ה-AI כובה אוטומטית לליד הזה",
+        direction="out", tenant_id=tenant_id, channel="note",
+    )
+    logger.warning("🙋 Takeover אנושי זוהה - מענה AI כובה אוטומטית: tenant=%s, טלפון=%s", tenant_id, contact_id)
 
 
 def _log_incoming_message(tenant_id: str, source: str, contact_id: str, message_text: str) -> None:
@@ -690,6 +727,7 @@ def api_leads():
             "agent": card.get("agent"),
             "property_type": card.get("property_type"),
             "budget": card.get("budget"),
+            "activity_summary": card.get("activity_summary"),
             "notes": card.get("notes"),
             "client_id": card.get("client_id"),
             "ai_enabled": card.get("ai_enabled", True),
@@ -846,7 +884,7 @@ def api_search():
     return jsonify([{"phone": phone, "tenant_id": tenant_id} for phone, tenant_id in matches])
 
 
-VALID_LEAD_STATUSES = {"new", "contacted", "hot", "not_relevant", "reactivation"}
+VALID_LEAD_STATUSES = {"new", "contacted", "follow_up", "hot", "not_relevant", "reactivation", "human_handling", "no_answer"}
 
 
 @app.route("/api/leads/status", methods=["POST"])
@@ -1697,6 +1735,7 @@ def api_calls():
 
 
 VALID_TASK_STATUSES = {"pending", "done", "cancelled"}
+VALID_ATTENDANCE_STATUSES = {"confirmed", "no_answer", "declined"}
 
 
 @app.route("/api/tasks", methods=["GET", "POST"])
@@ -1717,6 +1756,13 @@ def api_tasks():
         tenant_id = request.args.get("tenant_id") or None
         status = request.args.get("status") or None
         tasks = db.get_tasks(phone=phone, tenant_id=tenant_id, status=status)
+        # meeting_time - שדה נגזר-בלבד (לא עמודה ב-DB) שמשרת כל ה-due_date+
+        # due_time לתצוגה נוחה בדשבורד (Meeting Confirmation & No-Show
+        # Prevention) - בכוונה **לא** עמודה נפרדת: due_date/due_time הם כבר
+        # מקור האמת היחיד, ועמודה כפולה הייתה פותחת סיכון ששתי הייצוגים
+        # יסתרו אחד את השני (למשל אחרי update_task_datetime).
+        for t in tasks:
+            t["meeting_time"] = f"{t['due_date']}T{t['due_time']}" if t.get("due_time") else t.get("due_date")
 
         allowed_tenant_ids = _effective_tenant_ids(tenant_id)
         if allowed_tenant_ids is not None:
@@ -1792,6 +1838,36 @@ def api_task_reject(task_id):
     return jsonify({"ok": True, "task": task})
 
 
+@app.route("/api/tasks/<int:task_id>/attendance", methods=["POST"])
+def api_task_attendance(task_id):
+    """מסמנת תוצאת שיחת אישור-הגעה (confirmed/no_answer/declined) - כפתורי
+    "✅ אישר"/"📵 לא ענה"/"🚫 ביטל" על משימת "📞 אישור הגעה" (ראו
+    renderTaskRow ב-index.html, scheduler.check_pending_marketer_reminders
+    שיוצרת את המשימה הזו). ניתן לקרוא גם עם task_id של המשימה הפנימית וגם
+    עם task_id של הפגישה המקורית עצמה - אם זו משימת אישור-הגעה
+    (source="marketer_confirmation"), attendance_status נכתב על related_
+    task_id (הפגישה המקורית), והמשימה הפנימית עצמה מסומנת "done" (נעלמת
+    מרשימת הפעולות הממתינות). אם זו הפגישה עצמה - נכתב עליה ישירות."""
+    data = request.get_json(silent=True) or {}
+    status = data.get("status")
+    if status not in VALID_ATTENDANCE_STATUSES:
+        return jsonify({"error": "סטטוס לא תקין"}), 400
+
+    task = db.get_task(task_id)
+    if not task:
+        return jsonify({"error": "משימה לא נמצאה"}), 404
+
+    target_id = task_id
+    if task.get("source") == "marketer_confirmation" and task.get("related_task_id"):
+        target_id = task["related_task_id"]
+        db.update_task_status(task_id, "done")
+
+    updated = db.set_attendance_status(target_id, status)
+    if not updated:
+        return jsonify({"error": "הפגישה המקורית לא נמצאה"}), 404
+    return jsonify({"ok": True, "task": updated})
+
+
 VALID_FEEDBACK_TYPES = {"bug", "idea"}
 VALID_FEEDBACK_STATUSES = {"new", "in_progress", "done", "wontfix"}
 
@@ -1845,6 +1921,12 @@ def voice_connect():
         record="record-from-answer",
         recording_status_callback=f"{voice_call.PUBLIC_BASE_URL}/voice/recording-status",
         recording_status_callback_event=["completed"],
+        # action - בלעדיו אין שום דרך לדעת אם הלקוח בפועל ענה ל-<Dial> הזה או
+        # לא (ראו No-Answer Call Log - /voice/dial-status). CallSid שיתקבל שם
+        # הוא ה-call_sid של **הרגל הראשונה** (הנציג, אותו call_sid שנשמר ב-
+        # db.create_call) - לא דורש להעביר שום פרמטר נוסף ב-URL.
+        action=f"{voice_call.PUBLIC_BASE_URL}/voice/dial-status",
+        method="POST",
     )
     dial.number(customer_phone)
     response.append(dial)
@@ -1853,7 +1935,10 @@ def voice_connect():
 
 @app.route("/voice/status", methods=["POST"])
 def voice_status():
-    """Status callback לרגל הראשונה של הגשר (הנציג) - CallSid/CallStatus/CallDuration."""
+    """Status callback לרגל הראשונה של הגשר (הנציג) - CallSid/CallStatus/CallDuration.
+    ⚠️ זה תמיד "completed" ברגע שהנציג מנתק, **בלי קשר** אם הלקוח בכלל ענה
+    ל-<Dial> הפנימי - ראו /voice/dial-status להלן לאבחון תוצאת הניתוב ללקוח עצמו
+    (dial_status, עמודה נפרדת בכוונה - ראו db._init_schema)."""
     if VERIFY_TWILIO_SIGNATURE and not _verify_twilio_request(request):
         return Response(status=403)
     call_sid = request.form.get("CallSid", "")
@@ -1862,6 +1947,54 @@ def voice_status():
     if call_sid and status:
         db.update_call_status(call_sid, status, duration_seconds=int(duration) if duration else None)
     return Response(status=204)
+
+
+@app.route("/voice/dial-status", methods=["POST"])
+def voice_dial_status():
+    """action של ה-<Dial> ב-/voice/connect - Twilio קורא לכאן ברגע שהניתוב ללקוח
+    (הרגל השנייה) מסתיים, עם DialCallStatus/DialCallDuration האמיתיים (להבדיל
+    מ-/voice/status, שמשקף רק את הרגל הראשונה - הנציג). "no_answer" (No-Answer
+    Call Log) = DialCallStatus לא-completed (no-answer/busy/failed/canceled),
+    או completed עם משך 0 (התחבר ומיד התנתק, בלי שיחה בפועל).
+
+    ברגע שמזוהה no_answer: (1) lead_status עובר ל-"no_answer" מיידית ב-DB
+    (customers.json/PostgreSQL - extract.update_lead_status, בדיוק כמו כל
+    עדכון סטטוס אחר בפרויקט), (2) מתוזמן פולו-אפ בוואטסאפ (scheduler.
+    compute_call_followup_time - לפני 16:00 שעון ישראל -> היום 18:00, אחרי
+    16:00 -> מחר 08:30-09:30) - הנשלח בפועל ע"י scheduler.check_pending_
+    call_followups (מחזורי, לא כאן - אין timer חדש נפרד; ראו שם למה).
+
+    מחזיר TwiML ריק (לא 204 - בניגוד ל-/voice/status/recording-status): זה
+    action על <Dial>, Twilio מצפה לתגובת TwiML להמשך השיחה (הרגל הראשונה, שעדיין
+    פעילה) - Response ריק = "אין עוד מה לעשות", השיחה מסתיימת כרגיל."""
+    if VERIFY_TWILIO_SIGNATURE and not _verify_twilio_request(request):
+        return Response(status=403)
+    call_sid = request.form.get("CallSid", "")
+    dial_call_status = request.form.get("DialCallStatus", "")
+    dial_call_duration = request.form.get("DialCallDuration")
+    if call_sid and dial_call_status:
+        try:
+            duration = int(dial_call_duration) if dial_call_duration else 0
+        except ValueError:
+            duration = 0
+        is_no_answer = dial_call_status != "completed" or duration <= 0
+
+        followup_scheduled_at = None
+        if is_no_answer:
+            followup_scheduled_at = scheduler.compute_call_followup_time(
+                datetime.now(timezone.utc)
+            ).isoformat()
+
+        call = db.mark_call_dial_outcome(
+            call_sid, "no_answer" if is_no_answer else "completed", followup_scheduled_at,
+        )
+        if call and is_no_answer:
+            update_lead_status(call["phone"], "no_answer", tenant_id=call["tenant_id"])
+            logger.info(
+                "📵 שיחה שלא נענתה - tenant=%s, טלפון=%s, DialCallStatus=%s, פולו-אפ מתוזמן ל-%s",
+                call["tenant_id"], call["phone"], dial_call_status, followup_scheduled_at,
+            )
+    return Response(str(VoiceResponse()), mimetype="text/xml")
 
 
 @app.route("/voice/recording-status", methods=["POST"])
@@ -1959,17 +2092,24 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
     except Exception as exc:
         logger.error("שגיאה בעיבוד הודעה ברקע מ-%s (tenant=%s): %s", source, tenant_id, exc, exc_info=True)
 
-    # סוכן יומן (scheduling_agent.py) - מנתח את ההודעה ומזהה בקשת תיאום/ביטול/
-    # הזזת פגישה. try/except צר משלו, נפרד מהבלוק למעלה - כשל כאן לעולם לא
-    # אמור להשפיע על עיבוד ההודעה/התשובה האוטומטית. כותב לכל היותר שורת
-    # **הצעה** ל-calendar_tasks (status="pending_confirmation") - אף פעם לא
-    # משנה פגישה קיימת ישירות (ראו אזהרת הבטיחות ב-scheduling_agent.py).
+    # היסטוריה מרוכזת לשימוש שלושת הסוכנים הבאים (יומן/חם/תקציר) - נשלפת פעם
+    # אחת, לא בכל try/except בנפרד, כדי לא לכפול שאילתת DB שלוש פעמים לאותה הודעה.
     try:
         prior_messages = db.get_messages(contact_id, tenant_id=tenant_id)[:-1][-6:]
         history_text = "\n".join(
             f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
             for m in prior_messages
         )
+    except Exception as exc:
+        logger.warning("שליפת היסטוריה לסוכני-רקע נכשלה: %s", exc)
+        history_text = ""
+
+    # סוכן יומן (scheduling_agent.py) - מנתח את ההודעה ומזהה בקשת תיאום/ביטול/
+    # הזזת פגישה. try/except צר משלו, נפרד מהבלוק למעלה - כשל כאן לעולם לא
+    # אמור להשפיע על עיבוד ההודעה/התשובה האוטומטית. כותב לכל היותר שורת
+    # **הצעה** ל-calendar_tasks (status="pending_confirmation") - אף פעם לא
+    # משנה פגישה קיימת ישירות (ראו אזהרת הבטיחות ב-scheduling_agent.py).
+    try:
         intent_result = scheduling_agent.detect_scheduling_intent(message_text, history_text=history_text)
         if intent_result["has_intent"]:
             related_task = None
@@ -1981,6 +2121,48 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
             )
     except Exception as exc:
         logger.warning("זיהוי כוונת תזמון (scheduling_agent, רקע) נכשל: %s", exc)
+
+    # Hot Lead Alert (sales_agent.py) - זיהוי כוונת קנייה/בקשת שיחה/בקשת תיאום
+    # ביקור, וסימון מיידי של הליד כ-"hot" בכרטיס + שורת לוג בולטת לנראות מיידית
+    # ב-Render Logs. try/except נפרד משלו - כשל כאן לעולם לא אמור להשפיע על
+    # עיבוד ההודעה/התשובה האוטומטית. לא דורס אם הליד כבר "hot" (נמנע מהצפת
+    # history בכתיבה חוזרת על כל הודעה נוספת מליד שכבר סומן).
+    try:
+        hot_result = sales_agent.detect_hot_lead_signal(message_text, history_text=history_text)
+        if hot_result["is_hot"]:
+            current_card = load_customers().get(f"{tenant_id}::{contact_id}") or {}
+            if current_card.get("lead_status") != "hot":
+                reason = hot_result.get("reason") or "כוונת רכישה/בקשת שיחה/בקשת תיאום ביקור"
+                # בכוונה בלי note= כאן (לא דרך update_lead_status) - note שם נכתב
+                # ל-card["history"], שמוזן חזרה כהקשר שיחה ל-AI (ראו _format_
+                # history_for_reply) - שורת מערכת מזוהמת כ"הודעת לקוח" הייתה
+                # עלולה לבלבל את ה-AI בתשובה הבאה. channel="note" (ראו /api/
+                # messages/note) נכתב רק לטבלת messages - מופיע בפיד הכרונולוגי
+                # בדשבורד כהערה פנימית, ולא נוגע בהקשר ה-AI בכלל.
+                update_lead_status(contact_id, "hot", tenant_id=tenant_id, source_channel=source)
+                db.log_message(
+                    contact_id, f"🔥 ליד חם אוטומטית: {reason}",
+                    direction="out", tenant_id=tenant_id, channel="note",
+                )
+                logger.warning(
+                    "🔥 התראת ליד חם [tenant=%s]: טלפון=%s | סיבה: %s", tenant_id, contact_id, reason,
+                )
+    except Exception as exc:
+        logger.warning("זיהוי ליד חם (sales_agent, רקע) נכשל: %s", exc)
+
+    # תקציר פעילות אוטומטי (activity_summary) - מתעדכן אחרי כל הודעה נכנסת
+    # שהבוט ענה עליה, כדי שלנציג יהיה "מצב עניינים" עדכני על הליד בלי לקרוא את
+    # כל ההיסטוריה. משתמש ב-generate_executive_summary הקיים (כפתור "📋 סיכום
+    # מנהלים" בפאנל ה-Timeline) - לא פרומפט נפרד. try/except נפרד משלו, בכוונה
+    # רק כש-reply_text קיים (אותו תנאי כמו שאר צינור ה-AI האוטומטי).
+    if reply_text:
+        try:
+            summary_history = f"{history_text}\n[לקוח] {message_text}\n[אנחנו] {reply_text}".strip()
+            card_for_summary = load_customers().get(f"{tenant_id}::{contact_id}") or {}
+            summary_text = generate_executive_summary(summary_history, card_for_summary)
+            update_activity_summary(contact_id, summary_text, tenant_id=tenant_id)
+        except Exception as exc:
+            logger.warning("עדכון תקציר פעילות אוטומטי נכשל: %s", exc)
 
     # ספקים בלי TwiML (UltraMsg/Green API/Mock) - התשובה האוטומטית נשלחת
     # כקריאת API יזומה נפרדת, לא inline בתגובת ה-webhook (זו כבר נשלחה מזמן).
@@ -2071,6 +2253,12 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
         if APPROVED_SENDERS and contact_id and _normalize_phone(contact_id) not in APPROVED_SENDERS:
             logger.info("🚷 שולח לא מאושר (APPROVED_SENDERS) - דולג בלי מענה: %s", f"{contact_id[:4]}…{contact_id[-4:]}")
             return Response(status=200)
+        if contact_id and _normalize_phone(contact_id) in BLOCKED_CONTACTS:
+            # איש קשר חסום (BLOCKED_CONTACTS) - לפני כל עיבוד, אפילו לפני יצירת
+            # כרטיס - ראו ההערה שם. כוללת גם הודעות ל"שיחות ישנות"/כל הודעה
+            # עתידית מהמספר הזה, לא רק את זו.
+            logger.info("🚫 איש קשר חסום (BLOCKED_CONTACTS) - דולג בלי מענה: %s", f"{contact_id[:4]}…{contact_id[-4:]}")
+            return Response(status=200)
         logger.info(
             "🔎 חילוץ מההודעה: מספר/מזהה שולח=%r | טקסט=%r | source=%s | typeWebhook=%r",
             contact_id, (message_text or "")[:200], source,
@@ -2130,6 +2318,16 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
                     message_text = voice_result["text"]
 
         if not contact_id or not message_text:
+            # Takeover אנושי - לפני ה-skip הכללי: בודקים אם זו דווקא דיווח של
+            # Green API על הודעה יוצאת שנשלחה *ידנית* מהמכשיר המקושר (לא דרך
+            # ה-API) - ראו provider.parse_human_outgoing_webhook/_handle_human_
+            # takeover. None (הברירת מחדל לספקים אחרים/webhook לא רלוונטי) -
+            # ממשיכים ל-skip הרגיל כאילו לא קרה כלום.
+            if source == "whatsapp" and provider is not None:
+                human_contact_id = provider.parse_human_outgoing_webhook(request)
+                if human_contact_id:
+                    _handle_human_takeover(human_contact_id, tenant_id)
+                    return Response(status=200)
             logger.warning(
                 "⏭️ webhook דולג (לא נוצר ליד): contact_id=%r, טקסט ריק=%s, typeWebhook=%r. "
                 "אם זו הודעה אמיתית מלקוח - ה-WHATSAPP_PROVIDER או מבנה ה-JSON לא תואמים לספק הפעיל.",

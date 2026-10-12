@@ -112,10 +112,11 @@
    - חריג: מענה אוטומטי חוזר בתוך חלון שיחה שהלקוח פתח (`/webhook`) - מותר, זו לא פנייה יזומה.
    - חריג: `POST /api/messages/send` (קליק "שלח" ידני של נציג) - האישור הוא הקליק עצמו; חלה עדיין מדיניות חלון-24h של מטא (לא נאכפת אוטומטית בקוד - אחריות הנציג).
 2. **קמפיין Reactivation (`--send`/`/api/reactivate` עם `send:true`) דורש אישור אנושי לכל הרצה** - ה-UI אוכף תצוגה מקדימה (`send:false`) לפני `confirm()` ורק אז שליחה אמיתית.
-3. **`SCHEDULER_AUTO_SEND`/`SCHEDULER_AUTO_FOLLOWUP`** - כבויים כברירת מחדל (dry-run). לא להדליק בלי הודעות-תבנית מאושרות מול מטא לכל ורטיקל + החלטה עסקית מודעת.
+3. **`SCHEDULER_AUTO_SEND`/`SCHEDULER_AUTO_FOLLOWUP`/`SCHEDULER_AUTO_CALL_FOLLOWUP`/`SCHEDULER_AUTO_MEETING_REMINDER`/`SCHEDULER_AUTO_MEETING_INVITE`** - כבויים כברירת מחדל (dry-run). לא להדליק בלי הודעות-תבנית מאושרות מול מטא לכל ורטיקל + החלטה עסקית מודעת. **חריג מכוון**: יצירת משימת "📞 אישור הגעה" הפנימית למשווק (`scheduler.check_pending_marketer_reminders`) **אין** לה דגל AUTO_* - היא לא פנייה ללקוח, רק משימה פנימית בדשבורד (מותר בלי אישור, בדיוק כמו הצעות `scheduling_agent.py`).
 4. **ייבוא לידים תמיד דרך `extract.import_lead`/`resolve_existing_phone`** - לעולם לא SQL ישיר ל-`crm_data.db` (ראו אזהרת המלכודת למעלה).
 5. **שינוי טלפון לליד קיים (rekey)** חייב לעדכן גם מפתח `customers.json` וגם `phone` בשלוש טבלאות ה-SQLite (`db.rekey_phone`) - לא לבצע `UPDATE` חלקי.
 6. **היסטוריית הודעות (`history`/`messages`) היא append-only** - אף עריכה (כולל עריכת שיחה) לא נוגעת בלוג ההודעות שכבר הוצג ללקוח/בצ'אט.
+7. **`BLOCKED_CONTACTS`/Takeover אנושי** - מספרים ב-`BLOCKED_CONTACTS` (server.py) לעולם לא עוברים דרך pipeline הלידים (אין API לקריאת אנשי הקשר השמורים בטלפון - זו הדרך המעשית היחידה למנוע מענה בטעות לאנשי קשר פרטיים/פנימיים על אותו מספר WhatsApp). הודעה יוצאת שנשלחה ידנית מהמכשיר המקושר (`outgoingMessageReceived` ב-Green API, לא `outgoingAPIMessageReceived`) מכבה אוטומטית `ai_enabled`+מסמנת `lead_status="human_handling"` לליד קיים (`_handle_human_takeover`) - **לא** יוצרת כרטיס חדש למספר שלא היה ליד כבר.
 
 ## חלוקת סוכנים (roles - חלקם roadmap בלבד, לא קוד רץ)
 
@@ -124,6 +125,6 @@
 | DevOps | `server.py`, `requirements.txt` | לגעת ב-`customers.json` ישירות |
 | QA/Bug Finder | `extract.py` (פרומפטים), לוגים | לשנות לוגיקת עסקים בלי אישור |
 | Cold Lead Reactivation | `reactivate.py`, `contacts.csv` | לשלוח `--send`/`send:true`/production ללא תבנית מאושרת/אישור |
-| Sales & Objection | טרם נוצר (`sales_agent.py`) | לסגור עסקה/להתחייב על מחיר בלי אישור |
-| Scheduling & Follow-Up | טרם נוצר (`scheduling_agent.py`) | למחוק/לשנות פגישות בלי אישור |
+| Sales & Objection + Hot Lead Alert | `sales_agent.py` | לסגור עסקה/להתחייב על מחיר בלי אישור. Hot Lead Alert (`detect_hot_lead_signal`) מותר לסמן `lead_status="hot"`+הערה פנימית אוטומטית (לא פנייה ללקוח) - אסור לשלוח הודעה ללקוח בעצמו |
+| Scheduling & Follow-Up | `scheduling_agent.py`, `scheduler.py` | למחוק/לשנות פגישות קיימות בלי אישור (מותר רק ליצור הצעה `pending_confirmation`). פולו-אפ אוטומטי (24ש/72ש) כפוף ל-`SCHEDULER_AUTO_FOLLOWUP` |
 | BI & Analytics | טרם נוצר (`analytics.py`) | לשנות נתוני לקוחות (read-only) |

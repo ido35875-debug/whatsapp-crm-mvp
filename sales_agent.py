@@ -151,6 +151,61 @@ def suggest_replies(last_message: str, card: dict, history_text: str = "") -> di
     return {"category": category, "category_label": category_label, "replies": replies}
 
 
+# ---- Hot Lead Alert - זיהוי כוונת רכישה/בקשת שיחה/בקשת תיאום ביקור, לסימון
+# מיידי של הליד כ-"hot" בכרטיס (ראו server.py._process_incoming_message_job,
+# שקורא ל-detect_hot_lead_signal ברקע אחרי כל הודעה נכנסת ומעדכן lead_status
+# מיידית אם is_hot=true - התראה/חימום אוטומטי, לא רק אינדיקציה פסיבית).
+# ניתוח-בלבד (read-only, קריאת Claude זולה אחת) - בדיוק כמו scheduling_agent.
+# detect_scheduling_intent: לא כותבת שום דבר בעצמה, הקורא מחליט מה לעשות
+# עם התוצאה. ----
+
+HOT_LEAD_PROMPT = """\
+נתח את ההודעה הבאה שהתקבלה מלקוח פוטנציאלי בוואטסאפ, ובדוק אם היא מראה כוונת
+קנייה ברורה, בקשה מפורשת לשיחת טלפון, או בקשה לתאם ביקור/פגישה בנכס/בעסק.
+
+הקשר קודם לשיחה (אם יש, מהישן לחדש):
+{history_text}
+
+הודעת הלקוח:
+"{message}"
+
+אם ההודעה היא שאלה כללית/בירור ראשוני/תגובה סתמית בלי אחד מהסימנים למעלה -
+החזר אך ורק: {{"is_hot": false}}
+
+אם יש בהודעה סימן ברור (כוונת קנייה/רכישה מפורשת, בקשה לשיחת טלפון, או בקשה
+לתאם ביקור/פגישה) - החזר JSON עם השדות הבאים בדיוק:
+- "is_hot": true
+- "reason": משפט אחד קצר בעברית שמסביר מה בהודעה הצביע על זה
+
+היה שמרן - עדיף false אם לא בטוח, לא לנחש. החזר אך ורק JSON תקין, בלי טקסט
+נוסף לפני/אחרי.
+"""
+
+
+def detect_hot_lead_signal(message: str, history_text: str = "") -> dict:
+    """מנתח הודעה אחת ומחזיר {is_hot, reason}. לא כותבת שום דבר, לא ניגשת ל-DB.
+    "is_hot": false הוא המקרה הנפוץ (רוב ההודעות הנכנסות אינן סימן חם) - לא שגיאה.
+    נופלת בעדינות ל-{"is_hot": false} על כל כשל פענוח - זיהוי-חום שהתפספס הוא
+    הרבה פחות גרוע מחריגה שמפילה את כל עיבוד ההודעה."""
+    prompt_template = prompts.get_prompt("hot_lead_detection", HOT_LEAD_PROMPT)
+    prompt = prompt_template.format(history_text=history_text or "(אין הקשר נוסף)", message=message)
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=150,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw_text = next(block.text for block in response.content if block.type == "text").strip()
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return {"is_hot": False}
+    if not isinstance(parsed, dict) or not parsed.get("is_hot"):
+        return {"is_hot": False}
+    return {"is_hot": True, "reason": parsed.get("reason") or ""}
+
+
 def _parse_replies(raw_text: str) -> list[str]:
     """מפרק את פלט המודל לרשימת מחרוזות - עמיד לשני סוגי סטייה מהפורמט המבוקש
     (מערך JSON אחד): (1) המודל (לעיתים נדירות) מחזיר כמה מערכי JSON נפרדים

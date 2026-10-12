@@ -84,6 +84,16 @@ class WhatsAppProvider(abc.ABC):
         ברירת מחדל False - כל שגיאה נחשבת אמיתית, אלא אם ספק ספציפי יודע אחרת."""
         return False
 
+    def parse_human_outgoing_webhook(self, request) -> str | None:
+        """מחזיר contact_id אם בקשת ה-webhook הנוכחית מדווחת על הודעה **יוצאת**
+        שנשלחה ידנית מהמכשיר המקושר עצמו (אפליקציית WhatsApp, לא קריאת API של
+        המערכת הזו) - "Takeover אנושי" (ראו server._handle_human_takeover):
+        נציג שהתערב ידנית בשיחה מכבה את המענה האוטומטי לליד הזה. None כברירת
+        מחדל - ספק שאין לו הבחנה כזו בין "נשלח מהטלפון" ל"נשלח דרך ה-API"
+        (Twilio/UltraMsg - לא אומת כאן) פשוט לא תומך בזיהוי הזה, לא "לא זוהה
+        takeover" (אין עם מה להשוות)."""
+        return None
+
     def extract_voice_media(self, request) -> dict | None:
         """אם בקשת ה-webhook הנוכחית היא הודעה קולית נכנסת (voice note), מחזיר
         מבנה נתונים אחיד {"media_url": str, "content_type": str} - ללא קשר
@@ -268,6 +278,27 @@ class GreenAPIProvider(WhatsAppProvider):
                 logger.info("[GreenAPIProvider] הודעה נכנסת מסוג %s ללא טקסט - התעלמות", msg_type)
 
         return contact_id, message_text
+
+    def parse_human_outgoing_webhook(self, request) -> str | None:
+        """Green API מדווח "outgoingMessageReceived" על הודעה יוצאת שנשלחה
+        מהמכשיר המקושר עצמו (אפליקציית WhatsApp, סריקת QR) - לעומת
+        "outgoingAPIMessageReceived" שמדווח על הודעה שנשלחה **דרך ה-API**
+        (sendMessage - זה אנחנו, הבוט/הדשבורד). רק הראשון נחשב Takeover אנושי -
+        אם היינו מגיבים גם ל-outgoingAPIMessageReceived, כל תשובה אוטומטית
+        שהבוט עצמו שולח הייתה מכבה את עצמה מיידית אחרי השליחה הראשונה.
+        chatId במבנה outgoing מייצג את *הנמען* (אותו שדה ומשמעות כמו ב-
+        incomingMessageReceived, רק שהכיוון התהפך - ראו תיעוד Green API).
+        ⚠️ לא אומת מול חשבון Green API אמיתי - אם שם ה-typeWebhook/המבנה
+        שונה בפועל, התכונה הזו פשוט לא תזהה Takeover, לא תשבור שום דבר אחר
+        (ברירת המחדל הבטוחה היא "לא זוהה", לא "שגיאה")."""
+        data = request.get_json(silent=True) or {}
+        if data.get("typeWebhook") != "outgoingMessageReceived":
+            return None
+        sender = ((data.get("senderData") or {}).get("chatId") or "")
+        if sender.endswith("@g.us"):
+            return None  # הודעה יוצאת לקבוצה - לא רלוונטי ל-Takeover על ליד פרטי
+        digits = sender.split("@")[0] if "@" in sender else sender
+        return f"+{digits}" if digits.isdigit() else (digits or None)
 
     def extract_voice_media(self, request) -> dict | None:
         """נורמליזציה של payload הודעה קולית של Green API (typeMessage=

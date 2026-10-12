@@ -29,10 +29,12 @@ DEFAULT_TENANT_ID = "default"  # מזהה העסק כשאין tenant_id מפור
 
 EXTRACTION_PROMPT = """\
 אתה עוזר שמחלץ פרטי לקוח מהודעת וואטסאפ בעברית או באנגלית.
-מתוך ההודעה הבאה, חלץ שלושה שדות: customer_name (שם הלקוח), business_name (שם העסק שלו, אם צוין), location (עיר/אזור, אם צוין).
+מתוך ההודעה הבאה, חלץ חמישה שדות: customer_name (שם הלקוח), business_name (שם העסק שלו, אם צוין),
+location (עיר/אזור, אם צוין), property_type (סוג נכס מבוקש - למשל דירה/בית/מגרש/משרד, רק אם רלוונטי לנדל"ן),
+budget (תקציב/טווח מחיר שהוזכר, כמחרוזת כפי שנאמרה - למשל "עד 2 מיליון").
 אם שדה מסוים לא מופיע בהודעה, החזר עבורו null.
 החזר אך ורק JSON תקין בפורמט הבא, בלי שום טקסט נוסף:
-{"customer_name": "...", "business_name": "...", "location": "..."}
+{"customer_name": "...", "business_name": "...", "location": "...", "property_type": "...", "budget": "..."}
 
 הודעה:
 """
@@ -179,7 +181,7 @@ def upsert_customer(
     key = _customer_key(tenant_id, phone)
     card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
     card.setdefault("source_channel", source_channel)  # הערוץ שממנו הגיע הלקוח לראשונה
-    for field in ("customer_name", "business_name", "location"):
+    for field in ("customer_name", "business_name", "location", "property_type", "budget"):
         if extracted.get(field):
             card[field] = extracted[field]
     if raw_message:
@@ -320,13 +322,28 @@ FOLLOWUP_PROMPT = """\
 רק את טקסט ההודעה, בלי מרכאות ובלי הסברים נוספים.
 """
 
+FOLLOWUP_FINAL_PROMPT = """\
+אתה כותב הודעת מעקב **אחרונה** (follow-up סופי) קצרה בעברית ללקוח שיצרתם איתו
+קשר, קיבל כבר תזכורת פולו-אפ אחת, ועדיין לא השיב בכלל.
+פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}.
 
-def generate_followup_message(card: dict) -> str:
-    """הודעת פולו-אפ אוטומטית ללידים שסומנו "נוצר קשר" ולא ענו תוך X שעות - ראו
-    scheduler.check_pending_followups. פרומפט נפרד מ-reactivate.generate_
-    outreach_message (החייאת לידים קרים) בכוונה - טון שונה: "עדיין מחכים לתשובה
-    משיחה שכבר התחילה", לא "פונים מחדש אחרי הפסקה ארוכה"."""
-    prompt_template = prompts.get_prompt("followup_message", FOLLOWUP_PROMPT)
+כתוב הודעה קצרה (1-2 משפטים), חמה ולא לוחצת, שמבהירה בעדינות שזו הפנייה
+האחרונה בנושא הזה בשלב זה, ומשאירה את הדלת פתוחה לפנות חזרה כשיתאים לו - בלי
+טון של ויתור/תלונה, ובלי לחץ מכירתי. אל תמציא פרטים שלא ניתנו. החזר רק את
+טקסט ההודעה, בלי מרכאות ובלי הסברים נוספים.
+"""
+
+
+def generate_followup_message(card: dict, final: bool = False) -> str:
+    """הודעת פולו-אפ אוטומטית ללידים שסומנו "נוצר קשר"/"follow_up" ולא ענו תוך
+    X שעות - ראו scheduler.check_pending_followups. final=True: הודעת המעקב
+    השנייה/האחרונה (72 שעות, טון סופי יותר) במקום הראשונה (24 שעות). פרומפט
+    נפרד מ-reactivate.generate_outreach_message (החייאת לידים קרים) בכוונה -
+    טון שונה: "עדיין מחכים לתשובה משיחה שכבר התחילה", לא "פונים מחדש אחרי
+    הפסקה ארוכה"."""
+    key = "followup_final_message" if final else "followup_message"
+    default = FOLLOWUP_FINAL_PROMPT if final else FOLLOWUP_PROMPT
+    prompt_template = prompts.get_prompt(key, default)
     prompt = prompt_template.format(
         customer_name=card.get("customer_name") or "לא ידוע",
         business_name=card.get("business_name") or "לא ידוע",
@@ -338,16 +355,51 @@ def generate_followup_message(card: dict) -> str:
         output_config={"effort": "low"},
         messages=[{"role": "user", "content": prompt}],
     )
-    return next(block.text for block in response.content if block.type == "text").strip()
+    from whatsapp_provider import strip_emojis
+    return strip_emojis(next(block.text for block in response.content if block.type == "text").strip())
+
+
+MISSED_CALL_FOLLOWUP_PROMPT = """\
+אתה כותב הודעת וואטסאפ קצרה וקז'ואלית בעברית ללקוח שניסינו להתקשר אליו טלפונית
+ולא הצלחנו להשיג אותו (השיחה לא נענתה).
+פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}.
+
+כתוב הודעה קצרה (1-2 משפטים), טבעית וידידותית כמו הודעה שאדם אמיתי שולח מהטלפון -
+לא רשמית, בלי "לתשומת ליבך"/"הריני", בלי תחושת רובוט. ציין בעדינות שניסינו
+להתקשר ולא הצלחנו להשיג, ושאל מתי נוח לו שנחזור/אם אפשר להמשיך כאן בוואטסאפ.
+אל תמציא פרטים שלא ניתנו. החזר רק את טקסט ההודעה, בלי מרכאות ובלי הסברים נוספים.
+"""
+
+
+def generate_missed_call_followup_message(card: dict) -> str:
+    """הודעת פולו-אפ אוטומטית בוואטסאפ אחרי שיחה שלא נענתה (No-Answer Call Log -
+    ראו server.voice_dial_status, scheduler.check_pending_call_followups). טון
+    קז'ואלי ושונה מ-generate_followup_message (זה לא "לא ענית לי בוואטסאפ",
+    זה "התקשרתי ולא עניתי בטלפון")."""
+    prompt_template = prompts.get_prompt("missed_call_followup_message", MISSED_CALL_FOLLOWUP_PROMPT)
+    prompt = prompt_template.format(
+        customer_name=card.get("customer_name") or "לא ידוע",
+        business_name=card.get("business_name") or "לא ידוע",
+    )
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=150,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    from whatsapp_provider import strip_emojis
+    return strip_emojis(next(block.text for block in response.content if block.type == "text").strip())
 
 
 # שדות שנחשבים "חובה" להשלמה בכרטיס ליד - קבועה ניתנת להרחבה. תקציב/סוג-נכס
 # (property_type/budget) לא נכללים בברירת המחדל בכוונה: הם רלוונטיים רק לוורטיקל
-# נדל"ן ומתמלאים כמעט אך ורק מחילוץ הודעה קולית (update_lead_voice_extraction) -
-# ברוב מוחלט של הלידים הקיימים בפועל (רובם עסקי-קמעונאות, לא נדל"ן) budget חסר
-# כמעט תמיד, כך שהכללתו כ"חובה" הייתה מסמנת כמעט כל ליד ומרוקנת את האינדיקטור
-# ממשמעות. email לא נכלל - השדה הזה לא קיים בשום מקום בסכמה של הפרויקט (לא
-# נאסף בשום טופס/webhook/חילוץ) - יש להוסיף רק אחרי שייבנה מנגנון איסוף אמיתי.
+# נדל"ן ומתמלאים מחילוץ טקסט רגיל (extract_customer_info) וגם מהודעה קולית
+# (update_lead_voice_extraction) - אבל ברוב הלידים הקיימים בפועל (רובם עסקי-
+# קמעונאות, לא נדל"ן) budget חסר כמעט תמיד, כך שהכללתו כ"חובה" הייתה מסמנת כמעט
+# כל ליד ומרוקנת את האינדיקטור ממשמעות. email לא נכלל - השדה הזה לא קיים בשום
+# מקום בסכמה של הפרויקט (לא נאסף בשום טופס/webhook/חילוץ) - יש להוסיף רק אחרי
+# שייבנה מנגנון איסוף אמיתי.
 REQUIRED_LEAD_FIELDS: dict[str, str] = {
     "customer_name": "שם",
     "location": "מיקום",
@@ -431,7 +483,14 @@ def process_message_with_reply(
     tenant_id: str = DEFAULT_TENANT_ID,
     source_channel: str = "whatsapp",
 ) -> tuple[dict, str]:
-    """כמו process_message, ובנוסף מייצר תשובה אוטומטית ורושם אותה בהיסטוריה כהודעה יוצאת."""
+    """כמו process_message, ובנוסף מייצר תשובה אוטומטית ורושם אותה בהיסטוריה כהודעה יוצאת.
+    זו גם נקודת ה"מגע הראשון/מחודש" היחידה שמקדמת lead_status אוטומטית (סגמנטציה):
+    "new"/"follow_up"/"no_answer" (או חסר) -> "contacted" - כי כאן, ובכאן בלבד, יש
+    וידוא שהבוט בפועל ענה ללקוח (בניגוד ל-log_manual_reply/update_lead_voice_extraction,
+    שבכוונה לא נוגעים ב-lead_status - ראו שם). "no_answer" נכלל כאן - אם הלקוח כן
+    כותב בוואטסאפ אחרי שיחה שלא נענתה, זה מגע חדש אמיתי, לא "עדיין לא ענה לטלפון".
+    לא דורס "hot"/"not_relevant"/"reactivation"/"human_handling" - אלו סטטוסים
+    שנקבעו ע"י כוונה מפורשת (סוכן/נציג אנושי), לא ע"י עצם קבלת הודעה."""
     card = process_message(phone, message_text, tenant_id=tenant_id, source_channel=source_channel)
     reply_text = generate_reply(message_text, card, history_text=_format_history_for_reply(card))
 
@@ -439,10 +498,103 @@ def process_message_with_reply(
     key = _customer_key(tenant_id, phone)
     card = customers[key]
     _append_history(card, source_channel, reply_text, direction="out")
+    if card.get("lead_status") in (None, "", "new", "follow_up", "no_answer"):
+        card["lead_status"] = "contacted"
+        card["status_changed_at"] = datetime.now(timezone.utc).isoformat()
     customers[key] = card
     save_customers(customers)
 
     return card, reply_text
+
+
+MEETING_REMINDER_PROMPT = """\
+אתה כותב הודעת תזכורת קצרה וטבעית בעברית ללקוח על פגישה שנקבעה איתו, שעתידה
+להתקיים ב-{due_date} בשעה {due_time}.
+פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}.
+
+כתוב הודעה קצרה (1-2 משפטים), חמה וידידותית כמו הודעה שאדם אמיתי שולח מהטלפון -
+לא רשמית, בלי "לתשומת ליבך"/"הריני". תזכיר בעדינות את מועד הפגישה (תאריך ושעה)
+ותשאל אם המועד עדיין נוח/מזמינה לאשר. אל תמציא פרטים שלא ניתנו (למשל מקום
+הפגישה, אם לא צוין). החזר רק את טקסט ההודעה, בלי מרכאות ובלי הסברים נוספים.
+"""
+
+
+def generate_meeting_reminder_message(card: dict, task: dict) -> str:
+    """תזכורת פגישה אוטומטית בוואטסאפ - נשלחת בערב הקודם (פגישת בוקר) או בבוקר
+    אותו היום (פגישת אחה"צ/ערב), ראו scheduler.compute_meeting_reminder_time/
+    check_pending_meeting_reminders. task: שורת calendar_tasks (due_date/due_time)."""
+    prompt_template = prompts.get_prompt("meeting_reminder_message", MEETING_REMINDER_PROMPT)
+    prompt = prompt_template.format(
+        customer_name=card.get("customer_name") or "לא ידוע",
+        business_name=card.get("business_name") or "לא ידוע",
+        due_date=task.get("due_date") or "",
+        due_time=task.get("due_time") or "",
+    )
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=150,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    from whatsapp_provider import strip_emojis
+    return strip_emojis(next(block.text for block in response.content if block.type == "text").strip())
+
+
+MEETING_INVITE_PROMPT = """\
+אתה כותב הודעת וואטסאפ מנומסת ללקוח, יום לפני פגישה שנקבעה איתו, עם פרטי הפגישה.
+תאריך ושעת הפגישה: {due_date} בשעה {due_time}.
+מיקום/כתובת הפגישה (אם צוין): {location}.
+מי מטעמנו ייפגש איתו (אם צוין): {host}.
+פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}.
+
+כתוב הודעה קצרה (2-4 משפטים) בעברית, מנומסת וחמה - לא רשמית מדי, בלי "לתשומת
+ליבך"/"הריני". ציין את תאריך ושעת הפגישה בבירור, ואת המיקום ומי ייפגש איתו אם
+סופקו (אם לא סופקו - אל תמציא/תנחש, פשוט אל תזכיר אותם). סיים בנימה נעימה
+שמחכים לו. אל תמציא פרטים שלא ניתנו. החזר רק את טקסט ההודעה, בלי מרכאות ובלי
+הסברים נוספים.
+"""
+
+
+def generate_meeting_invite_message(card: dict, task: dict) -> str:
+    """הודעת "זימון" מנומסת ליום לפני הפגישה (Meeting Confirmation & No-Show
+    Prevention - ראו scheduler.check_pending_meeting_invites) - שונה מ-
+    generate_meeting_reminder_message (זו לא שואלת "עדיין נוח?", היא מודיעה
+    את פרטי הפגישה: מיקום + מי לפגוש). location/host נשלפים מ-task["notes"]/
+    card["agent"] בהתאמה - אין שדות DB נפרדים למיקום פגישה/מארח (ראו ההערה
+    ב-scheduler.py - task.notes הוא כבר השדה החופשי המתאים לזה, לא כפל מבנה)."""
+    prompt_template = prompts.get_prompt("meeting_invite_message", MEETING_INVITE_PROMPT)
+    prompt = prompt_template.format(
+        customer_name=card.get("customer_name") or "לא ידוע",
+        business_name=card.get("business_name") or "לא ידוע",
+        due_date=task.get("due_date") or "",
+        due_time=task.get("due_time") or "",
+        location=task.get("notes") or "לא צוין",
+        host=card.get("agent") or "לא צוין",
+    )
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=200,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    from whatsapp_provider import strip_emojis
+    return strip_emojis(next(block.text for block in response.content if block.type == "text").strip())
+
+
+def update_activity_summary(phone: str, summary: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
+    """מעדכן תקציר פעילות קצר (activity_summary) שמתעדכן אוטומטית אחרי כל הודעה
+    נכנסת (ראו server.py._process_incoming_message_job, מבוסס extract.
+    generate_executive_summary) - מטא-דאטה בלבד, בדיוק כמו update_lead_voice_
+    extraction: לא נרשם ב-history בנפרד ולא נוגע ב-lead_status."""
+    customers = load_customers()
+    key = _customer_key(tenant_id, phone)
+    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+    card["activity_summary"] = summary
+    customers[key] = card
+    save_customers(customers)
+    return card
 
 
 def log_manual_reply(

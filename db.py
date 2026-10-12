@@ -236,6 +236,19 @@ def _init_schema(conn) -> None:
         ("source", "ALTER TABLE calendar_tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'"),
         ("intent", "ALTER TABLE calendar_tasks ADD COLUMN intent TEXT"),
         ("related_task_id", "ALTER TABLE calendar_tasks ADD COLUMN related_task_id INTEGER"),
+        # תזכורת פגישה אוטומטית בוואטסאפ (בוקר/ערב, לפי שעת הפגישה - ראו
+        # scheduler.compute_meeting_reminder_time/check_pending_meeting_reminders) -
+        # דגל חד-פעמי, בדיוק כמו calls.followup_sent.
+        ("reminder_sent", "ALTER TABLE calendar_tasks ADD COLUMN reminder_sent INTEGER NOT NULL DEFAULT 0"),
+        # Meeting Confirmation & No-Show Prevention (ראו scheduler.check_pending_
+        # meeting_invites/check_pending_marketer_reminders): invite_sent - הודעת
+        # זימון (כתובת+מי לפגוש) נשלחה ליום לפני. marketer_reminder_status -
+        # "created" ברגע שנוצרה משימת "📞 אישור הגעה" פנימית למשווק (ראו למטה),
+        # null לפני כן. attendance_status - התוצאה שהמשווק מסמן בפועל אחרי
+        # השיחה (confirmed/no_answer/declined) - null = עדיין לא טופל.
+        ("invite_sent", "ALTER TABLE calendar_tasks ADD COLUMN invite_sent INTEGER NOT NULL DEFAULT 0"),
+        ("marketer_reminder_status", "ALTER TABLE calendar_tasks ADD COLUMN marketer_reminder_status TEXT"),
+        ("attendance_status", "ALTER TABLE calendar_tasks ADD COLUMN attendance_status TEXT"),
     ):
         if column not in existing_task_columns:
             conn.execute(ddl)
@@ -306,6 +319,19 @@ def _init_schema(conn) -> None:
     existing_call_columns = _existing_columns(conn, "calls")
     if "transcript_segments" not in existing_call_columns:
         conn.execute("ALTER TABLE calls ADD COLUMN transcript_segments TEXT")
+    # מיגרציה קלה נוספת: No-Answer Call Log & Dynamic Follow-Up - תוצאת הניתוב
+    # ללקוח עצמו (dial_status, ראו /voice/dial-status) נבדלת בכוונה מ-status
+    # הקיימת (זו משקפת את הרגל הראשונה - הנציג - ראו /voice/status; status
+    # הופכת "completed" ברגע שהנציג מנתק, בלי קשר אם הלקוח בכלל ענה). שילוב
+    # שתיהן בעמודה אחת היה גורם ל-race מול /voice/status (שני callbacks של
+    # Twilio על אותה שיחה, בלי סדר מובטח בין ה-UPDATE-ים).
+    for column, ddl in (
+        ("dial_status", "ALTER TABLE calls ADD COLUMN dial_status TEXT"),
+        ("followup_scheduled_at", "ALTER TABLE calls ADD COLUMN followup_scheduled_at TEXT"),
+        ("followup_sent", "ALTER TABLE calls ADD COLUMN followup_sent INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if column not in existing_call_columns:
+            conn.execute(ddl)
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS outbound_queue (
@@ -610,6 +636,57 @@ def update_call_status(call_sid: str, status: str, duration_seconds: int | None 
         conn.close()
 
 
+def mark_call_dial_outcome(call_sid: str, dial_status: str, followup_scheduled_at: str | None = None) -> dict | None:
+    """מעדכן את תוצאת הניתוב בפועל ללקוח (dial_status - ראו POST /voice/dial-status,
+    הערה ב-_init_schema) + מתזמן פולו-אפ בוואטסאפ אם רלוונטי (followup_scheduled_at,
+    ISO UTC - ראו scheduler.compute_call_followup_time). מחזיר את השורה המעודכנת
+    (phone/tenant_id - הקורא (server.py) צריך אותם כדי לעדכן lead_status באותו
+    רגע) או None אם call_sid לא נמצא (קרה בעבר/שיחת בדיקה בלי שורה תואמת ב-DB)."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "UPDATE calls SET dial_status = ?, followup_scheduled_at = ?, updated_at = ? WHERE call_sid = ?",
+            (dial_status, followup_scheduled_at, datetime.now(timezone.utc).isoformat(), call_sid),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM calls WHERE call_sid = ?", (call_sid,)).fetchone()
+        return _call_row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_pending_call_followups() -> list[dict]:
+    """שיחות שסומנו dial_status="no_answer" (ראו mark_call_dial_outcome - הערך
+    היחיד שהקוד הזה בפועל כותב ל-dial_status כש"לא נענה"; "completed" הוא הערך
+    היחיד האחר) עם זמן פולו-אפ מתוזמן שעדיין לא נשלח (followup_sent=0) - לא
+    מסננת לפי זמן כאן (הקורא, scheduler.check_pending_call_followups, בודק
+    followup_scheduled_at מול "עכשיו" בפייתון - כך ששני הבסיסים (sqlite/postgres)
+    לא צריכים להשוות מחרוזות ISO ב-SQL, שבירה בין הבסיסים)."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM calls WHERE followup_sent = 0 AND followup_scheduled_at IS NOT NULL "
+            "AND dial_status = 'no_answer'"
+        ).fetchall()
+        return [_call_row_to_dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def mark_call_followup_sent(call_id: int) -> None:
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calls SET followup_sent = 1, updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), call_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def save_recording_url(call_sid: str, recording_url: str) -> None:
     """שומר קישור להקלטת השיחה לפי call_sid - קורא ל-POST /voice/recording-status.
     לא מוריד/מתמלל את התוכן - רק שומר את ה-URL (הוחלט במפורש: תמלול אוטומטי מחוץ
@@ -847,6 +924,77 @@ def reject_task_proposal(task_id: int) -> dict | None:
     return update_task_status(task_id, "cancelled")
 
 
+def mark_task_reminder_sent(task_id: int) -> None:
+    """מסמן ששליחת תזכורת הפגישה בוואטסאפ בוצעה (dry-run או בפועל) - ראו
+    scheduler.check_pending_meeting_reminders. דגל חד-פעמי, לא נבדק מול זמן
+    (בניגוד ל-followup_sent ב-calls, שם יש followup_scheduled_at נפרד - כאן
+    הקורא מחשב reminder time בכל סריקה מ-due_date/due_time, אין צורך לשמור
+    זמן מתוזמן נפרד)."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calendar_tasks SET reminder_sent = 1, updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), task_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_invite_sent(task_id: int) -> None:
+    """מסמן שהודעת הזימון (invite - כתובת/מיקום + מי לפגוש, יום לפני הפגישה)
+    נשלחה - ראו scheduler.check_pending_meeting_invites. דגל חד-פעמי."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calendar_tasks SET invite_sent = 1, updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), task_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_marketer_reminder_created(task_id: int) -> None:
+    """מסמן שמשימת "📞 אישור הגעה" הפנימית למשווק נוצרה בפועל - ראו
+    scheduler.check_pending_marketer_reminders (היא היוצרת גם את שורת המשימה
+    החדשה וגם קוראת לפונקציה הזו, על שורת הפגישה המקורית)."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calendar_tasks SET marketer_reminder_status = 'created', updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), task_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_VALID_ATTENDANCE_STATUSES = ("confirmed", "no_answer", "declined")
+
+
+def set_attendance_status(task_id: int, status: str) -> dict | None:
+    """מסמן את תוצאת שיחת אישור ההגעה (confirmed/no_answer/declined) על שורת
+    **הפגישה המקורית** - נקרא מ-POST /api/tasks/<id>/attendance (server.py),
+    שמפנה לכאן את related_task_id אם הקריאה בפועל הגיעה משורת משימת האישור
+    (לא מהפגישה עצמה - ראו שם). מחזיר את השורה המעודכנת, או None אם status
+    לא תקין/המשימה לא נמצאה - לא כותב כלום במקרה הזה."""
+    if status not in _VALID_ATTENDANCE_STATUSES:
+        return None
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "UPDATE calendar_tasks SET attendance_status = ?, updated_at = ? WHERE id = ?",
+            (status, datetime.now(timezone.utc).isoformat(), task_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM calendar_tasks WHERE id = ?", (task_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def get_tasks(phone: str | None = None, tenant_id: str | None = None, status: str | None = None) -> list[dict]:
     """משימות מעקב. עם phone - רק המשימות של הליד הזה (לפאנל "📅 משימות" - כל סטטוס).
     בלי phone - כל המשימות (לתצוגת "📅 יומן" הגלובלית), עם סינון אופציונלי לפי
@@ -941,11 +1089,20 @@ _SCORE_RECENCY_BANDS = [(1, 25), (3, 18), (7, 10), (30, 4)]  # (גיל מקסי�
 
 def compute_lead_score(phone: str, tenant_id: str = "default") -> int:
     """מחשב "ציון חום" (1-100) לליד על בסיס פעילות בפועל בטבלאות messages/calls/
-    calendar_tasks - ראו פירוט המשקלים מעל. משמש את GET /api/leads?include_score=1."""
+    calendar_tasks - ראו פירוט המשקלים מעל. משמש את GET /api/leads?include_score=1.
+
+    הודעות פולו-אפ אוטומטיות (channel IN ('followup','followup_final') - ראו
+    scheduler.check_pending_followups) מוחרגות בכוונה גם ממניין ההודעות וגם
+    מ"עדכניות" (recency): אלו פניות **שלנו** יזמנו כלפי ליד ששקט, לא פעילות/
+    מעורבות אמיתית שלו - לספור אותן היה מנפח את הציון באופן מטעה בדיוק בשלב
+    שבו הליד בפועל מתקרר (זה ה"עדכון ציון" שקורה בפועל אחרי פולו-אפ 72 שעות
+    ללא מענה - הציון נשאר נמוך/יורד, לא מזנק כלאפי "פעילות חדשה")."""
     conn = _get_connection()
     try:
         message_count = conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE phone = ? AND tenant_id = ?", (phone, tenant_id)
+            "SELECT COUNT(*) FROM messages WHERE phone = ? AND tenant_id = ? "
+            "AND channel NOT IN ('followup', 'followup_final')",
+            (phone, tenant_id),
         ).fetchone()[0]
         call_count = conn.execute(
             "SELECT COUNT(*) FROM calls WHERE phone = ? AND tenant_id = ?", (phone, tenant_id)
@@ -957,6 +1114,7 @@ def compute_lead_score(phone: str, tenant_id: str = "default") -> int:
         last_activity = conn.execute(
             "SELECT MAX(ts) FROM ("
             "SELECT MAX(timestamp) AS ts FROM messages WHERE phone = ? AND tenant_id = ? "
+            "AND channel NOT IN ('followup', 'followup_final') "
             "UNION ALL "
             "SELECT MAX(created_at) AS ts FROM calls WHERE phone = ? AND tenant_id = ? "
             "UNION ALL "
