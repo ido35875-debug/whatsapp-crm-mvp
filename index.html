@@ -723,6 +723,19 @@
   .modal-box p { margin: 0 0 20px; color: var(--text-secondary); font-size: 13.5px; line-height: 1.5; }
   .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
 
+  /* תזכורת חזרה לליד (Callback) - "משימה בולטת" שלא ניתן לפספס (ראו
+     checkDueCallbacks) - גבול/כותרת בולטים בגוון critical, נבדל ממודאל
+     האישור הכללי (confirmModalOverlay) שמעל */
+  #callbackAlertOverlay { z-index: 250; }
+  .callback-alert-box { border: 2px solid var(--status-critical); animation: callbackPulse 1.6s ease-in-out infinite; }
+  .callback-alert-box h3 { color: var(--status-critical); }
+  .callback-alert-name { font-size: 15px; font-weight: 700; color: var(--text-primary) !important; }
+  .callback-alert-note { font-style: italic; }
+  @keyframes callbackPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0.5); }
+    50% { box-shadow: 0 0 0 10px rgba(248,113,113,0); }
+  }
+
   /* משימות מעקב (יומן) ומשוב מערכת */
   .mini-row-list { margin-bottom: 16px; }
   .task-row, .feedback-row {
@@ -757,6 +770,9 @@
      (no_answer, בדיוק כמו badge.no_answer), נבדל מ-proposal (warning) */
   .task-row.marketer-confirmation { border-color: #a78bfa; background: rgba(167,139,250,0.1); }
   .task-proposal-badge.marketer { color: #a78bfa; }
+  /* תזכורת חזרה לליד (Callback Reminder) - ראו POST /api/tasks/callback */
+  .task-row.callback-required { border-color: var(--status-critical); background: var(--status-critical-soft); }
+  .task-proposal-badge.callback { color: var(--status-critical); }
   .attendance-badge {
     display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 6px;
     border-radius: 999px; width: fit-content;
@@ -1172,6 +1188,7 @@
           <div id="inboxChatSummaryWrap" class="panel-summary-wrap"></div>
           <div id="inboxChatMissingFieldsWrap" class="panel-property-wrap"></div>
           <button type="button" class="call-btn" id="inboxCallBtn">📞 שיחה</button>
+          <button type="button" class="call-btn" id="inboxCallbackBtn">⏰ חזור בהמשך</button>
           <button type="button" class="call-btn" id="inboxTasksBtn">📅 משימות</button>
           <button type="button" class="call-btn" id="inboxCallHistoryBtn">📋 היסטוריית שיחות</button>
           <button type="button" class="call-btn" id="inboxQuickEditBtn">✏️ ערוך פרטים</button>
@@ -1342,6 +1359,7 @@
       <div id="panelSummaryWrap" class="panel-summary-wrap"></div>
       <div id="panelMissingFieldsWrap" class="panel-property-wrap"></div>
       <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
+      <button type="button" class="call-btn" id="panelCallbackBtn">⏰ חזור בהמשך</button>
       <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
       <button type="button" class="call-btn" id="panelCallHistoryBtn">📋 היסטוריית שיחות</button>
       <button type="button" class="call-btn" id="panelQuickEditBtn">✏️ ערוך פרטים</button>
@@ -1507,6 +1525,42 @@
     </form>
   </div>
 </aside>
+
+<aside class="panel glass" id="callbackPanel">
+  <div class="panel-header">
+    <div>
+      <h2>⏰ תזכורת חזרה לליד (Callback)</h2>
+      <p id="callbackPanelSub"></p>
+    </div>
+    <button class="panel-close" id="callbackPanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body">
+    <form class="mini-form" id="callbackForm">
+      <input type="hidden" id="callbackPhone">
+      <input type="hidden" id="callbackTenant">
+      <label class="edit-lead-label" for="callbackDate">תאריך</label>
+      <input type="date" id="callbackDate" required>
+      <label class="edit-lead-label" for="callbackTime">שעה מדויקת</label>
+      <input type="time" id="callbackTime" required>
+      <label class="edit-lead-label" for="callbackNotes">הערה (אופציונלי - למשל "בקש לחזור בחמש")</label>
+      <textarea id="callbackNotes" placeholder="הערה..." rows="2"></textarea>
+      <div class="composer-error" id="callbackError"></div>
+      <button type="submit" class="primary">⏰ קבע תזכורת חזרה</button>
+    </form>
+  </div>
+</aside>
+
+<div class="modal-overlay" id="callbackAlertOverlay">
+  <div class="modal-box glass callback-alert-box">
+    <h3>⏰ תזכורת: זמן לחזור לליד!</h3>
+    <p id="callbackAlertName" class="callback-alert-name"></p>
+    <p id="callbackAlertNote" class="callback-alert-note"></p>
+    <div class="modal-actions">
+      <button type="button" id="callbackAlertDismiss">✓ טופל</button>
+      <a class="primary btn-link" id="callbackAlertDial" href="#">📞 חייג עכשיו</a>
+    </div>
+  </div>
+</div>
 
 <div class="modal-overlay" id="confirmModalOverlay">
   <div class="modal-box glass">
@@ -2795,7 +2849,7 @@ function stopDialQueue() {
 // פאנלים נוספים (שיחה/משימות/יומן/משוב) נפתחים מעל #panel/#inboxView באותו overlay
 // המשותף - כשסוגרים אחד מהם, מסירים את ה-overlay רק אם אף פאנל אחר לא עדיין open
 // (למשל #panel, אם הפאנל השני נפתח מעליו ולא מה-Inbox).
-const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "callHistoryPanel", "calendarPanel", "feedbackPanel", "addLeadPanel", "editLeadPanel", "promptsPanel"];
+const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "callHistoryPanel", "calendarPanel", "feedbackPanel", "addLeadPanel", "editLeadPanel", "promptsPanel", "callbackPanel"];
 function closeSubPanel(id) {
   document.getElementById(id).classList.remove("open");
   const anyOpen = OVERLAY_PANEL_IDS.some(pid => document.getElementById(pid).classList.contains("open"));
@@ -2818,6 +2872,131 @@ document.getElementById("inboxCallBtn").addEventListener("click", () => {
   if (lead) openCallPanel(lead.phone, lead.tenantId, document.getElementById("inboxChatName").textContent);
 });
 document.getElementById("callPanelClose").addEventListener("click", closeCallPanel);
+
+// ---- תזכורת חזרה לליד (Callback Reminder) - כפתור מהיר "⏰ חזור בהמשך" בפאנל
+// הליד: המשווק בוחר תאריך+שעה מדויקת, נשמר כמשימה עם status="callback_required"
+// (ראו POST /api/tasks/callback) - לא "pending" רגיל, כדי שתופיע בנפרד וברור
+// שזו הבטחה ללקוח, לא משימה כללית. ההקפצה בזמן האמת (כש-"עכשיו" >= הזמן
+// שנקבע) קורית ב-checkDueCallbacks, שמופעלת מ-pollDashboardUpdates הקיים -
+// בלי timer/polling נפרד, בדיוק כמו Hot Lead Alert.
+let activeCallbackLead = null; // { phone, tenantId, name }
+
+function openCallbackPanel(phone, tenantId, name) {
+  activeCallbackLead = { phone, tenantId, name };
+  document.getElementById("callbackPanelSub").textContent = `${name} · ${phone}`;
+  document.getElementById("callbackPhone").value = phone;
+  document.getElementById("callbackTenant").value = tenantId;
+  const now = new Date();
+  document.getElementById("callbackDate").value = now.toISOString().slice(0, 10);
+  document.getElementById("callbackTime").value = "";
+  document.getElementById("callbackNotes").value = "";
+  document.getElementById("callbackError").classList.remove("show");
+  document.getElementById("callbackPanel").classList.add("open");
+}
+function closeCallbackPanel() {
+  document.getElementById("callbackPanel").classList.remove("open");
+}
+
+document.getElementById("panelCallbackBtn").addEventListener("click", () => {
+  const lead = panelChat.currentLead;
+  if (lead) openCallbackPanel(lead.phone, lead.tenantId, document.getElementById("panelName").textContent);
+});
+document.getElementById("inboxCallbackBtn").addEventListener("click", () => {
+  const lead = inboxChat.currentLead;
+  if (lead) openCallbackPanel(lead.phone, lead.tenantId, document.getElementById("inboxChatName").textContent);
+});
+document.getElementById("callbackPanelClose").addEventListener("click", closeCallbackPanel);
+
+document.getElementById("callbackForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById("callbackError");
+  errEl.classList.remove("show");
+  const dueDate = document.getElementById("callbackDate").value;
+  const dueTime = document.getElementById("callbackTime").value;
+  if (!dueDate || !dueTime) {
+    errEl.textContent = "חובה לבחור תאריך ושעה מדויקת.";
+    errEl.classList.add("show");
+    return;
+  }
+  try {
+    const res = await fetch("/api/tasks/callback", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        phone: document.getElementById("callbackPhone").value,
+        tenant_id: document.getElementById("callbackTenant").value,
+        due_date: dueDate, due_time: dueTime,
+        notes: document.getElementById("callbackNotes").value.trim() || null,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    closeCallbackPanel();
+    loadControlCenter();
+  } catch (err) {
+    errEl.textContent = "קביעת התזכורת נכשלה: " + err.message;
+    errEl.classList.add("show");
+  }
+});
+
+// Set של task id-ים שכבר הוקפצו ב-session הזה - לא חוזרים להקפיץ שוב באותה
+// טעינת דף אחרי "✓ טופל"/בכל טיק polling נוסף. תור (לא מודאל-על-מודאל אם
+// כמה תזכורות הגיעו לזמנן באותו טיק) - ראו showNextCallbackAlert.
+const callbackAlertSeen = new Set();
+let callbackAlertQueue = [];
+let callbackAlertShowing = false;
+
+async function checkDueCallbacks() {
+  try {
+    const res = await fetch("/api/tasks?status=callback_required");
+    if (!res.ok) return;
+    const tasks = await res.json();
+    const now = new Date();
+    for (const t of tasks) {
+      if (!t.due_date || !t.due_time || callbackAlertSeen.has(t.id)) continue;
+      const due = new Date(`${t.due_date}T${t.due_time}:00`);
+      if (due <= now) {
+        callbackAlertSeen.add(t.id);
+        callbackAlertQueue.push(t);
+      }
+    }
+    showNextCallbackAlert();
+  } catch (err) {
+    // שקט - לא מפיל את שאר ה-polling בגלל בדיקת callback אחת שנכשלה
+  }
+}
+
+function showNextCallbackAlert() {
+  if (callbackAlertShowing || callbackAlertQueue.length === 0) return;
+  const t = callbackAlertQueue.shift();
+  callbackAlertShowing = true;
+  const lead = findLead(t.phone, t.tenant_id);
+  const name = lead ? (lead.customer_name || t.phone) : t.phone;
+  document.getElementById("callbackAlertName").textContent = `${name} (${t.phone})`;
+  document.getElementById("callbackAlertNote").textContent = t.notes || "";
+  document.getElementById("callbackAlertNote").style.display = t.notes ? "" : "none";
+  document.getElementById("callbackAlertDial").href = "tel:" + toE164ish(t.phone).replace(/[^\d+]/g, "");
+  document.getElementById("callbackAlertOverlay").dataset.taskId = t.id;
+  document.getElementById("callbackAlertOverlay").classList.add("open");
+}
+
+async function dismissCallbackAlert() {
+  const overlay = document.getElementById("callbackAlertOverlay");
+  const taskId = overlay.dataset.taskId;
+  overlay.classList.remove("open");
+  callbackAlertShowing = false;
+  if (taskId) {
+    await fetch(`/api/tasks/${taskId}/status`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "done" }),
+    });
+  }
+  showNextCallbackAlert();
+}
+document.getElementById("callbackAlertDismiss").addEventListener("click", dismissCallbackAlert);
+document.getElementById("callbackAlertDial").addEventListener("click", () => {
+  // חייגן נפתח (tel:) - עדיין נשאר "פתוח" עד "✓ טופל" מפורש, כדי לא לאבד את
+  // המעקב אם החיוג לא יצא לפועל בסוף.
+});
 
 // ---- משימות מעקב (follow-up) - פאנל פר-ליד + יומן גלובלי ----
 let activeTasksLead = null; // { phone, tenantId, name }
@@ -2883,6 +3062,27 @@ function renderTaskRow(t, { showLead = false } = {}) {
           <button type="button" class="primary task-attendance-btn" data-status="confirmed">✅ אישר</button>
           <button type="button" class="task-attendance-btn" data-status="no_answer">📵 לא ענה</button>
           <button type="button" class="task-attendance-btn" data-status="declined">🚫 ביטל</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // תזכורת חזרה לליד (Callback Reminder) - ראו POST /api/tasks/callback.
+  // badge ייעודי כדי שיהיה ברור שזו הבטחה מדויקת ללקוח (לא משימה כללית) -
+  // ההקפצה הבולטת בזמן קורית ב-checkDueCallbacks, לא כאן (זו רק התצוגה ברשימה).
+  if (t.status === "callback_required") {
+    return `
+      <div class="task-row callback-required${showLead ? " clickable" : ""}" data-task-id="${t.id}" data-phone="${escapeHtml(t.phone)}" data-tenant="${escapeHtml(t.tenant_id)}">
+        <div class="task-row-main">
+          <span class="task-proposal-badge callback">⏰ תזכורת חזרה - ממתין לשעה שנקבעה</span>
+          <div class="task-row-title">${escapeHtml(t.title)}</div>
+          <div class="task-row-due">📅 ${escapeHtml(taskDueLabel(t))}</div>
+          ${t.notes ? `<div class="task-row-notes">${escapeHtml(t.notes)}</div>` : ""}
+          ${leadLine}
+        </div>
+        <div class="task-row-actions">
+          <button type="button" class="task-done-btn">✓ בוצע</button>
+          <button type="button" class="task-cancel-btn">✗ בטל</button>
         </div>
       </div>
     `;
@@ -3225,24 +3425,33 @@ async function loadCalendarPanel() {
   try {
     const tenantId = document.getElementById("tenantFilter").value;
     const tenantQS = tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : "";
-    const [proposalsRes, tasksRes] = await Promise.all([
+    const [callbacksRes, proposalsRes, tasksRes] = await Promise.all([
+      fetch(`/api/tasks?status=callback_required${tenantQS}`),
       fetch(`/api/tasks?status=pending_confirmation${tenantQS}`),
       fetch(`/api/tasks?status=pending${tenantQS}`),
     ]);
+    if (!callbacksRes.ok) throw new Error("HTTP " + callbacksRes.status);
     if (!proposalsRes.ok) throw new Error("HTTP " + proposalsRes.status);
     if (!tasksRes.ok) throw new Error("HTTP " + tasksRes.status);
+    const callbacks = await callbacksRes.json();
     const proposals = await proposalsRes.json();
     const tasks = await tasksRes.json();
 
+    // תזכורות חזרה (Callback) ראשונות - ראו POST /api/tasks/callback - הבטחה
+    // מדויקת ללקוח, לכן מוצגות לפני הצעות/משימות רגילות.
+    const callbacksSection = callbacks.length ? `
+      <div class="calendar-section-title">⏰ תזכורות חזרה ממתינות (${callbacks.length})</div>
+      ${callbacks.map(t => renderTaskRow(t, { showLead: true })).join("")}
+    ` : "";
     const proposalsSection = proposals.length ? `
       <div class="calendar-section-title">🤖 הצעות ממתינות לאישור (${proposals.length})</div>
       ${proposals.map(t => renderTaskRow(t, { showLead: true })).join("")}
     ` : "";
     const tasksSection = tasks.length
       ? tasks.map(t => renderTaskRow(t, { showLead: true })).join("")
-      : '<div class="empty">אין משימות פתוחות ✅</div>';
+      : (callbacks.length || proposals.length ? "" : '<div class="empty">אין משימות פתוחות ✅</div>');
 
-    body.innerHTML = proposalsSection + tasksSection;
+    body.innerHTML = callbacksSection + proposalsSection + tasksSection;
   } catch (err) {
     body.innerHTML = '<div class="error">שגיאה בטעינת היומן: ' + escapeHtml(err.message) + "</div>";
   }
@@ -3730,6 +3939,7 @@ async function pollDashboardUpdates() {
     if (currentSection === "overview") renderOverviewCards();
     if (currentSection === "ai-agents") loadAiAgentsSection();
     if (currentSection === "crm" && document.getElementById("inboxView").style.display !== "none") renderInboxList();
+    await checkDueCallbacks();
   } catch (err) {
     console.error("רענון תקופתי של הדשבורד נכשל:", err);
   } finally {
@@ -3924,20 +4134,26 @@ async function loadAiAgentsSection() {
   try {
     const tenantId = document.getElementById("tenantFilter").value;
     const tenantQS = tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : "";
-    const [proposalsRes, tasksRes] = await Promise.all([
+    const [callbacksRes, proposalsRes, tasksRes] = await Promise.all([
+      fetch(`/api/tasks?status=callback_required${tenantQS}`),
       fetch(`/api/tasks?status=pending_confirmation${tenantQS}`),
       fetch(`/api/tasks?status=pending${tenantQS}`),
     ]);
+    const callbacks = callbacksRes.ok ? await callbacksRes.json() : [];
     const proposals = proposalsRes.ok ? await proposalsRes.json() : [];
     const tasks = tasksRes.ok ? await tasksRes.json() : [];
 
+    const callbacksSection = callbacks.length ? `
+      <div class="calendar-section-title">⏰ תזכורות חזרה ממתינות (${callbacks.length})</div>
+      ${callbacks.map(t => renderTaskRow(t, { showLead: true })).join("")}
+    ` : "";
     const proposalsSection = proposals.length ? `
       <div class="calendar-section-title">🤖 הצעות ממתינות לאישור (${proposals.length})</div>
       ${proposals.map(t => renderTaskRow(t, { showLead: true })).join("")}
     ` : "";
-    body.innerHTML = proposalsSection + (tasks.length
+    body.innerHTML = callbacksSection + proposalsSection + (tasks.length
       ? tasks.map(t => renderTaskRow(t, { showLead: true })).join("")
-      : '<div class="empty">אין משימות פתוחות ✅</div>');
+      : (callbacks.length || proposals.length ? "" : '<div class="empty">אין משימות פתוחות ✅</div>'));
     body.querySelectorAll(".task-confirm-btn, .task-reject-btn, .task-done-btn, .task-cancel-btn, .task-attendance-btn").forEach(btn => {
       btn.addEventListener("click", async (e) => {
         const row = e.target.closest(".task-row");

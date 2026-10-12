@@ -1734,7 +1734,7 @@ def api_calls():
     return jsonify(db.get_calls(phone, tenant_id=tenant_id))
 
 
-VALID_TASK_STATUSES = {"pending", "done", "cancelled"}
+VALID_TASK_STATUSES = {"pending", "done", "cancelled", "callback_required"}
 VALID_ATTENDANCE_STATUSES = {"confirmed", "no_answer", "declined"}
 
 
@@ -1789,6 +1789,36 @@ def api_tasks():
         return jsonify({"error": "חסר טלפון, כותרת או תאריך יעד"}), 400
 
     task_id = db.create_task(phone, tenant_id=tenant_id, title=title, due_date=due_date, due_time=due_time, notes=notes)
+    return jsonify({"ok": True, "task_id": task_id})
+
+
+@app.route("/api/tasks/callback", methods=["POST"])
+def api_task_create_callback():
+    """תזכורת חזרה לליד (Callback Reminder) - כפתור "⏰ חזור בהמשך" בפאנל הליד.
+    שונה מ-POST /api/tasks הכללי: status="callback_required" (לא "pending") +
+    source="callback" + due_time **חובה** (לא אופציונלי) - זו הבטחה מדויקת
+    ללקוח לשעה נתונה, לא משימה כללית בלי שעה. checkDueCallbacks ב-index.html
+    (polling קיים, בלי timer נפרד) מקפיצה התראה בולטת כש-"עכשיו" מגיע/עובר
+    את due_date+due_time."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    due_date = (data.get("due_date") or "").strip()
+    due_time = (data.get("due_time") or "").strip()
+    notes = (data.get("notes") or "").strip() or None
+
+    if not phone or not due_date or not due_time:
+        return jsonify({"error": "חסר טלפון, תאריך או שעה מדויקת"}), 400
+    card, err = _authorize_lead_access(phone, tenant_id)
+    if err:
+        return err
+
+    name = card.get("customer_name") or phone
+    task_id = db.create_task(
+        phone, tenant_id=tenant_id, title=f"⏰ תזכורת חזרה ל{name}",
+        due_date=due_date, due_time=due_time, notes=notes,
+        status="callback_required", source="callback",
+    )
     return jsonify({"ok": True, "task_id": task_id})
 
 
