@@ -690,7 +690,8 @@ def index():
 
 @app.route("/api/leads")
 def api_leads():
-    """רשימת כל הלידים מ-customers.json (מקור האמת) - לשימוש הדשבורד ב-index.html.
+    """רשימת כל הלידים (extract.load_customers - PostgreSQL כש-DATABASE_URL מוגדר,
+    אחרת customers.json מקומי) - לשימוש הדשבורד ב-index.html.
     ?include_last_message=1 (משמש את תצוגת ה-Unified Inbox): מוסיף לכל ליד את ההודעה
     האחרונה מטבלת messages (תצוגה מקדימה + מיון לפי פעילות) - כבוי כברירת מחדל כדי
     לא להאט את טעינת הטבלה הרגילה עם שאילתת DB נוספת לכל שורה.
