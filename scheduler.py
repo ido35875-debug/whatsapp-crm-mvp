@@ -11,7 +11,7 @@ dry-run בלבד** (סורק, מייצר הודעות לדוגמה, רושם ל�
 אוטומטית אמיתית דורשת הגדרה מפורשת ומכוונת: SCHEDULER_AUTO_SEND=true ב-.env.
 אם תדליקו את זה - המערכת תשלח הודעות WhatsApp אמיתיות אוטומטית, ללא אישור נקודתי
 לכל הודעה/קמפיין, כל עוד השרת רץ. אל תדליקו את זה על חשבון production בלי הודעות-
-תבנית מאושרות מול מטא (ראו ההערה המקבילה ב-reactivate.py ו-whatsapp_send.py).
+תבנית מאושרות מול מטא (ראו ההערה המקבילה ב-reactivate.py).
 """
 
 import os
@@ -42,7 +42,7 @@ from extract import (
     update_lead_status,
 )
 from paths import DATA_DIR
-from whatsapp_send import is_trial_restriction, send_whatsapp_message
+from whatsapp_provider import get_provider
 
 CHAT_HISTORY_FILE = DATA_DIR / "chat_history.txt"
 
@@ -223,12 +223,18 @@ def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
 
     **שליחה אמיתית רק אם AUTO_FOLLOWUP=true** (SCHEDULER_AUTO_FOLLOWUP ב-.env) -
     בדיוק כמו AUTO_SEND למעלה: ברירת המחדל היא dry-run (מייצר את ההודעה, רושם
-    בלוג, לא שולח כלום). כשל Trial (whatsapp_send.is_trial_restriction) נתפס
-    ומטופל בדיוק כמו בכל שאר נקודות השליחה בפרויקט - נרשם כ-simulated, לא
-    כשגיאה אמיתית."""
+    בלוג, לא שולח כלום). שליחה בפועל דרך הספק הפעיל (WHATSAPP_PROVIDER - Green
+    API בפרודקשן, לא Twilio קשיח - ראו get_provider). כשל "ידוע ותקין" של הספק
+    (provider.is_soft_failure - למשל חסימת Trial ב-Twilio) נתפס ומטופל בדיוק
+    כמו בכל שאר נקודות השליחה בפרויקט (reactivate.py/send_bulk.py) - נרשם
+    כ-simulated, לא כשגיאה אמיתית."""
     now = datetime.now(timezone.utc)
     customers = load_customers()
     results = []
+    # הספק נבחר פעם אחת לכל הסריקה (לא פר-הודעה), ורק אם יש בכלל סיכוי לשלוח -
+    # בדיוק כמו reactivate._run_campaign_loop. dry-run (AUTO_FOLLOWUP=false)
+    # לא צריך ספק שליחה בכלל, אז לא בונים אחד בלי צורך.
+    provider = get_provider() if AUTO_FOLLOWUP else None
 
     for key, card in customers.items():
         card_tenant, _, phone = key.partition("::")
@@ -269,10 +275,10 @@ def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
 
         if AUTO_FOLLOWUP:
             try:
-                entry["sid"] = send_whatsapp_message(phone, message)
+                entry["sid"] = provider.send_message(phone, message)
                 entry["sent"] = True
             except Exception as exc:
-                if is_trial_restriction(exc):
+                if provider.is_soft_failure(exc):
                     entry["simulated"] = True
                 else:
                     entry["error"] = str(exc)
@@ -343,9 +349,11 @@ def check_pending_call_followups() -> list[dict]:
     (AUTO_REPLY_MIN/MAX_DELAY_SECONDS, אותם משתני סביבה כמו מענה אוטומטי
     ל-webhook) לפני השליחה בפועל - חוסמת (time.sleep) כאן בכוונה: זה thread/
     job מחזורי ברקע, לא תגובת HTTP שמישהו מחכה לה, אז אין בעיית head-of-line
-    blocking כמו ב-server._send_auto_reply_after_delay."""
+    blocking כמו ב-server._send_auto_reply_after_delay. שליחה בפועל דרך הספק
+    הפעיל (WHATSAPP_PROVIDER - ראו get_provider), לא Twilio קשיח."""
     now = datetime.now(timezone.utc)
     results = []
+    provider = get_provider() if AUTO_CALL_FOLLOWUP else None
 
     for call in db.get_pending_call_followups():
         scheduled_at_str = call.get("followup_scheduled_at")
@@ -377,10 +385,10 @@ def check_pending_call_followups() -> list[dict]:
         if AUTO_CALL_FOLLOWUP:
             time.sleep(random.randint(AUTO_REPLY_MIN_DELAY_SECONDS, AUTO_REPLY_MAX_DELAY_SECONDS))
             try:
-                entry["sid"] = send_whatsapp_message(phone, message)
+                entry["sid"] = provider.send_message(phone, message)
                 entry["sent"] = True
             except Exception as exc:
-                if is_trial_restriction(exc):
+                if provider.is_soft_failure(exc):
                     entry["simulated"] = True
                 else:
                     entry["error"] = str(exc)
@@ -444,9 +452,11 @@ def check_pending_meeting_reminders() -> list[dict]:
 
     **שליחה אמיתית רק אם SCHEDULER_AUTO_MEETING_REMINDER=true** - בדיוק כמו
     שאר דגלי הבטיחות בקובץ הזה. השהיה אנושית רגילה לפני שליחה בפועל, אותו
-    עיקרון כמו check_pending_call_followups."""
+    עיקרון כמו check_pending_call_followups. שליחה דרך הספק הפעיל (ראו
+    get_provider), לא Twilio קשיח."""
     now = datetime.now(timezone.utc)
     results = []
+    provider = get_provider() if AUTO_MEETING_REMINDER else None
 
     for task in db.get_tasks(status="pending"):
         if task.get("reminder_sent"):
@@ -468,10 +478,10 @@ def check_pending_meeting_reminders() -> list[dict]:
         if AUTO_MEETING_REMINDER:
             time.sleep(random.randint(AUTO_REPLY_MIN_DELAY_SECONDS, AUTO_REPLY_MAX_DELAY_SECONDS))
             try:
-                entry["sid"] = send_whatsapp_message(phone, message)
+                entry["sid"] = provider.send_message(phone, message)
                 entry["sent"] = True
             except Exception as exc:
-                if is_trial_restriction(exc):
+                if provider.is_soft_failure(exc):
                     entry["simulated"] = True
                 else:
                     entry["error"] = str(exc)
@@ -504,9 +514,11 @@ def check_pending_meeting_invites() -> list[dict]:
     "יום לפני, באותה שעה" בכלל, לא מתזמנים זימון (עדיף לא לשלוח מאשר לנחש שעה).
 
     **שליחה אמיתית רק אם SCHEDULER_AUTO_MEETING_INVITE=true** - בדיוק כמו שאר
-    דגלי הבטיחות בקובץ הזה."""
+    דגלי הבטיחות בקובץ הזה. שליחה דרך הספק הפעיל (ראו get_provider), לא
+    Twilio קשיח."""
     now = datetime.now(timezone.utc)
     results = []
+    provider = get_provider() if AUTO_MEETING_INVITE else None
 
     for task in db.get_tasks(status="pending"):
         if task.get("invite_sent") or not task.get("due_time"):
@@ -537,10 +549,10 @@ def check_pending_meeting_invites() -> list[dict]:
         if AUTO_MEETING_INVITE:
             time.sleep(random.randint(AUTO_REPLY_MIN_DELAY_SECONDS, AUTO_REPLY_MAX_DELAY_SECONDS))
             try:
-                entry["sid"] = send_whatsapp_message(phone, message)
+                entry["sid"] = provider.send_message(phone, message)
                 entry["sent"] = True
             except Exception as exc:
-                if is_trial_restriction(exc):
+                if provider.is_soft_failure(exc):
                     entry["simulated"] = True
                 else:
                     entry["error"] = str(exc)
