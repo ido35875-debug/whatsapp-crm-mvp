@@ -249,6 +249,10 @@ def _init_schema(conn) -> None:
         ("invite_sent", "ALTER TABLE calendar_tasks ADD COLUMN invite_sent INTEGER NOT NULL DEFAULT 0"),
         ("marketer_reminder_status", "ALTER TABLE calendar_tasks ADD COLUMN marketer_reminder_status TEXT"),
         ("attendance_status", "ALTER TABLE calendar_tasks ADD COLUMN attendance_status TEXT"),
+        # Automated Meeting Booking Confirmation (ראו server.api_task_confirm) -
+        # דגל חד-פעמי, בדיוק כמו invite_sent/reminder_sent - מונע שליחה כפולה אם
+        # /confirm נקרא פעמיים (למשל קליק כפול בדשבורד).
+        ("booking_confirmation_sent", "ALTER TABLE calendar_tasks ADD COLUMN booking_confirmation_sent INTEGER NOT NULL DEFAULT 0"),
     ):
         if column not in existing_task_columns:
             conn.execute(ddl)
@@ -991,6 +995,21 @@ def set_attendance_status(task_id: int, status: str) -> dict | None:
         conn.commit()
         row = conn.execute("SELECT * FROM calendar_tasks WHERE id = ?", (task_id,)).fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def mark_booking_confirmation_sent(task_id: int) -> None:
+    """מסמן שהודעת אישור קביעת הפגישה (Automated Meeting Booking Confirmation)
+    נשלחה - ראו server.api_task_confirm/_send_meeting_confirmation_after_delay.
+    דגל חד-פעמי, בדיוק כמו invite_sent."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calendar_tasks SET booking_confirmation_sent = 1, updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), task_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 

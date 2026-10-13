@@ -583,6 +583,51 @@ def generate_meeting_invite_message(card: dict, task: dict) -> str:
     return strip_emojis(next(block.text for block in response.content if block.type == "text").strip())
 
 
+MEETING_BOOKING_CONFIRMATION_PROMPT = """\
+אתה כותב הודעת וואטסאפ מסודרת ללקוח, מיד לאחר שנציג אישר בפועל פגישה שנקבעה
+איתו (Automated Meeting Booking Confirmation) - תאריך: {due_date}, שעה: {due_time}.
+מיקום/פרטי הגעה (אם צוין): {location}.
+מי מטעמנו ייפגש איתו (אם צוין): {host}.
+פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}.
+
+כתוב הודעה קצרה (2-4 משפטים) בעברית - סיכום ואישור סופי וברור, לא "תזכורת" ולא
+שאלה אם המועד נוח (הוא כבר אושר בפועל). ציין בבירור שהפגישה נקבעה ואושרה,
+את התאריך והשעה, ואת המיקום/מי ייפגש איתו אם סופקו (אם לא סופקו - אל תמציא/
+תנחש, פשוט אל תזכיר אותם). סיים בנימה חמה שמחכים לו. אל תמציא פרטים שלא ניתנו.
+החזר רק את טקסט ההודעה, בלי מרכאות ובלי הסברים נוספים.
+"""
+
+
+def generate_meeting_booking_confirmation_message(card: dict, task: dict) -> str:
+    """הודעת אישור קביעת פגישה (Automated Meeting Booking Confirmation) - נשלחת
+    ברגע שנציג מאשר בפועל הצעת פגישה חדשה שזוהתה ע"י scheduling_agent (ראו
+    server.api_task_confirm/_send_meeting_confirmation_after_delay) - לא ברגע
+    שה-AI רק *מזהה* כוונת תזמון בהודעה (detect_scheduling_intent נשאר ניתוח-
+    בלבד, ראו חוק הבטיחות ב-scheduling_agent.py) - אחרת היינו שולחים ללקוח
+    "הפגישה אושרה" על בסיס ניחוש AI בלי שום אישור אנושי, בניגוד מוחלט לעיקרון
+    שה-agent הזה קיים כדי לאכוף. location/host נשלפים מ-task["notes"]/
+    card["agent"], בדיוק כמו generate_meeting_invite_message - אין שדות DB
+    נפרדים למיקום/מארח."""
+    prompt_template = prompts.get_prompt("meeting_booking_confirmation_message", MEETING_BOOKING_CONFIRMATION_PROMPT)
+    prompt = prompt_template.format(
+        customer_name=card.get("customer_name") or "לא ידוע",
+        business_name=card.get("business_name") or "לא ידוע",
+        due_date=task.get("due_date") or "",
+        due_time=task.get("due_time") or "",
+        location=task.get("notes") or "לא צוין",
+        host=card.get("agent") or "לא צוין",
+    )
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=200,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    from whatsapp_provider import strip_emojis
+    return strip_emojis(next(block.text for block in response.content if block.type == "text").strip())
+
+
 def update_activity_summary(phone: str, summary: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
     """מעדכן תקציר פעילות קצר (activity_summary) שמתעדכן אוטומטית אחרי כל הודעה
     נכנסת (ראו server.py._process_incoming_message_job, מבוסס extract.

@@ -84,6 +84,7 @@ try:
         delete_lead,
         generate_call_summary,
         generate_executive_summary,
+        generate_meeting_booking_confirmation_message,
         generate_missing_fields_message,
         get_missing_fields,
         import_lead,
@@ -1857,10 +1858,26 @@ def api_task_confirm(task_id):
     ביומן/בפאנל המשימות. זו הפעולה היחידה שמפעילה בפועל הצעה: הופכת אותה
     לפגישה אמיתית (intent="new"), או מבצעת את הביטול/הזזת המועד המבוקשים על
     הפגישה המקורית (intent="cancel"/"reschedule", ראו db.confirm_task_proposal) -
-    **תמיד** מקליק נציג מפורש כאן, אף פעם לא אוטומטית (חוק בטיחות #1)."""
+    **תמיד** מקליק נציג מפורש כאן, אף פעם לא אוטומטית (חוק בטיחות #1).
+
+    Automated Meeting Booking Confirmation: רק עבור intent="new" (פגישה חדשה
+    שאושרה בפועל - לא cancel/reschedule) מופעלת שליחת הודעת אישור אוטומטית
+    ללקוח ברקע (ראו _send_meeting_confirmation_after_delay) - **אחרי** אישור
+    הנציג כאן, לא במקום. זה בכוונה לא קורה ברגע שה-AI רק *מזהה* כוונת תזמון
+    (scheduling_agent.detect_scheduling_intent) - רק אחרי שאדם אישר בפועל,
+    בדיוק כמו מענה אוטומטי חוזר בתוך חלון שיחה שהלקוח פתח (חוק בטיחות #1)."""
     task = db.confirm_task_proposal(task_id)
     if not task:
         return jsonify({"error": "הצעה לא נמצאה, או שכבר טופלה"}), 404
+
+    if task.get("intent") == "new" and not task.get("booking_confirmation_sent"):
+        provider = get_provider()
+        threading.Thread(
+            target=_send_meeting_confirmation_after_delay,
+            args=(provider, task),
+            daemon=True, name=f"meeting-confirmation-delay-{task_id}",
+        ).start()
+
     return jsonify({"ok": True, "task": task})
 
 
@@ -2093,6 +2110,38 @@ def _send_auto_reply_after_delay(provider, contact_id: str, reply_text: str, ten
             "שליחת תשובה אוטומטית נכשלה אחרי השהיה (ספק=%s, tenant=%s): %s",
             type(provider).__name__, tenant_id, exc,
         )
+
+
+def _send_meeting_confirmation_after_delay(provider, task: dict) -> None:
+    """Automated Meeting Booking Confirmation - שולחת הודעת אישור קביעת פגישה
+    אחרי השהיה רנדומלית, אותה מדיניות בטיחות בדיוק כמו _send_auto_reply_after_
+    delay (אותם AUTO_REPLY_MIN/MAX_DELAY_SECONDS, אותו דגם thread נפרד/daemon -
+    לא חוסמת את תגובת ה-HTTP ל-POST /api/tasks/<id>/confirm). נקראת **רק**
+    אחרי ש-api_task_confirm כבר אישרה בפועל הצעת פגישה חדשה (intent="new") -
+    האישור האנושי כבר קרה לפני שה-thread הזה נוצר בכלל."""
+    phone, tenant_id = task["phone"], task["tenant_id"]
+    try:
+        card = load_customers().get(f"{tenant_id}::{phone}") or {"phone": phone, "tenant_id": tenant_id}
+        message = generate_meeting_booking_confirmation_message(card, task)
+    except Exception as exc:
+        logger.warning("ייצור הודעת אישור פגישה נכשל (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc)
+        return
+
+    time.sleep(random.randint(AUTO_REPLY_MIN_DELAY_SECONDS, AUTO_REPLY_MAX_DELAY_SECONDS))
+    try:
+        provider.send_message(phone, message)
+        log_manual_reply(phone, message, tenant_id=tenant_id, source_channel="meeting_confirmation")
+        db.log_message(phone, message, direction="out", tenant_id=tenant_id, channel="meeting_confirmation")
+    except Exception as exc:
+        logger.warning(
+            "שליחת הודעת אישור פגישה נכשלה אחרי השהיה (ספק=%s, tenant=%s, טלפון=%s): %s",
+            type(provider).__name__, tenant_id, phone, exc,
+        )
+    finally:
+        # מסמנים "נשלח" גם אם ה-send עצמו נכשל - לא רוצים retry אוטומטי אינסופי
+        # על כשל ספק חד-פעמי (כמו שאר הדגלים החד-פעמיים בפרויקט - reminder_sent/
+        # invite_sent/followup_sent - אף אחד מהם לא retry-אבל-אוטומטי).
+        db.mark_booking_confirmation_sent(task["id"])
 
 
 def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id: str, source: str) -> None:
