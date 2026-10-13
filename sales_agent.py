@@ -206,6 +206,63 @@ def detect_hot_lead_signal(message: str, history_text: str = "") -> dict:
     return {"is_hot": True, "reason": parsed.get("reason") or ""}
 
 
+# ---- סינון שיחת-חולין אישית (לא עסקית) מאנשי קשר חדשים/לא-מזוהים - ראו
+# server.py._process_incoming_message_job: מופעל **רק** לפני המענה האוטומטי
+# הראשון לכרטיס שאין לו עדיין שום הקשר נדל"ן/מכירתי מתועד (property_type/
+# budget/lead_status מעבר ל-"new") - ברגע שליד הראה הקשר עסקי כלשהו, לא נבדק
+# שוב אף פעם, כדי לא "לשתוק" באמצע שיחת מכירה אמיתית רק כי הודעה בודדת
+# הייתה קז'ואלית. שמרן בכוונה (עדיף true/לענות מאשר false שגוי שמפספס ליד
+# אמיתי - Speed-to-Lead) - ראו RELEVANCE_PROMPT. ----
+
+RELEVANCE_PROMPT = """\
+אתה מסנן הודעות וואטסאפ נכנסות לבוט מכירות אוטומטי **של עסק נדל"ן** (סוכנות/
+יזם נדל"ן - חיפוש/מכירת/השכרת נכסים), כדי להחליט אם ההודעה הבאה היא פנייה
+אפשרית הקשורה לנדל"ן (ליד פוטנציאלי - חיפוש נכס, מחיר, אזור, פגישה/ביקור בנכס -
+גם אם מנוסחת בעקיפין או בקיצור), או שיחת חולין פרטית שאין לה שום קשר לנדל"ן
+(למשל עם חבר/משפחה - שוק ההון/דוחות כספיים של חברה, ספורט, עדכונים אישיים,
+חדשות כלליות, בדיחות). שים לב: עצם זה שההודעה "עוסקת בכסף/מספרים" (כמו דוחות
+כספיים, מניות) **אינו** הופך אותה לרלוונטית - זה עסק נדל"ן, לא ייעוץ השקעות.
+
+זהו איש קשר חדש/לא-מזוהה - אין עדיין היסטוריית שיחה עסקית מתועדת איתו.
+
+הודעת הלקוח:
+"{message}"
+
+היה שמרן: אם יש סיכוי סביר שזו פנייה שקשורה בפועל לנדל"ן (גם אם לא מפורשת) -
+סמן is_relevant=true. סמן is_relevant=false אם ברור שזו שיחת חולין פרטית בלי
+שום זיקה אפשרית לנדל"ן - גם אם היא "נשמעת עסקית" בתחום אחר (פיננסים, מניות
+וכו').
+
+החזר אך ורק JSON תקין בפורמט הבא, בלי טקסט נוסף:
+{{"is_relevant": true/false, "reason": "משפט קצר בעברית שמסביר את ההחלטה"}}
+"""
+
+
+def detect_real_estate_relevance(message: str) -> dict:
+    """מנתח הודעה אחת ומחזיר {is_relevant, reason} - האם זו פנייה אפשרית
+    הקשורה לנדל"ן, או שיחת חולין פרטית בלי שום קשר לנדל"ן (גם אם היא "נשמעת
+    עסקית" בתחום אחר, כמו שוק ההון - ראו ההערה ב-RELEVANCE_PROMPT). נופלת
+    בעדינות ל-{"is_relevant": True} (לא חוסמת) על כל כשל פענוח/JSON - עדיף
+    לענות ללקוח אמיתי בטעות מאשר לפספס ליד בגלל כשל טכני בסיווג."""
+    prompt_template = prompts.get_prompt("real_estate_relevance_detection", RELEVANCE_PROMPT)
+    prompt = prompt_template.format(message=message)
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=120,
+        thinking={"type": "disabled"},
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw_text = next(block.text for block in response.content if block.type == "text").strip()
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return {"is_relevant": True, "reason": "כשל פענוח - ברירת מחדל: לא חוסמים"}
+    if not isinstance(parsed, dict) or "is_relevant" not in parsed:
+        return {"is_relevant": True, "reason": "תשובה לא תקינה - ברירת מחדל: לא חוסמים"}
+    return {"is_relevant": bool(parsed["is_relevant"]), "reason": parsed.get("reason") or ""}
+
+
 def _parse_replies(raw_text: str) -> list[str]:
     """מפרק את פלט המודל לרשימת מחרוזות - עמיד לשני סוגי סטייה מהפורמט המבוקש
     (מערך JSON אחד): (1) המודל (לעיתים נדירות) מחזיר כמה מערכי JSON נפרדים

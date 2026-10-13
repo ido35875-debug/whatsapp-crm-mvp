@@ -2151,11 +2151,33 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
     (ראו _drain_webhook_queue) - **לא** תלוי ב-Flask request context (אין כאן
     גישה ל-request/g), רק בפרמטרים שהועברו במפורש בזמן ה-enqueue. הלוגיקה
     עצמה זהה לגמרי למה שהיה סינכרוני בתוך webhook() לפני שלב 3 - הופרדה
-    לפונקציה, לא שוכתבה."""
+    לפונקציה, לא שוכתבה.
+
+    סינון שיחת-חולין אישית (לא עסקית) - baq קריטי שתוקן: איש קשר אישי/חבר
+    ששולח הודעת חולין (למשל עדכון על שוק ההון) היה מקבל מענה אוטומטי כאילו
+    הוא ליד. נבדק **רק** לכרטיס בלי עדיין שום הקשר עסקי מתועד (property_type/
+    budget/lead_status מעבר ל-"new") - ברגע שליד הראה הקשר עסקי, לא נבדק שוב
+    (ראו sales_agent.detect_real_estate_relevance). ⚠️ זה שכבת הגנה הסתברותית
+    שנייה בלבד - ההגנה הראשית והוודאית ל*אנשי קשר אישיים ידועים* (כמו חברים
+    שחוזרים ושולחים הודעות) היא BLOCKED_CONTACTS למעלה, שחוסם בלי שום ניחוש AI."""
     provider = get_provider() if source == "whatsapp" else None
     reply_text = None
+    skip_reason = None
+    if source == "whatsapp":
+        existing_card = load_customers().get(f"{tenant_id}::{contact_id}") or {}
+        has_business_context = bool(
+            existing_card.get("property_type") or existing_card.get("budget")
+            or existing_card.get("lead_status") not in (None, "", "new")
+        )
+        if not has_business_context:
+            try:
+                relevance = sales_agent.detect_real_estate_relevance(message_text)
+                if not relevance["is_relevant"]:
+                    skip_reason = relevance.get("reason") or "תוכן לא עסקי"
+            except Exception as exc:
+                logger.warning("בדיקת רלוונטיות עסקית נכשלה - ממשיכים כברירת מחדל (לא חוסמים): %s", exc)
     try:
-        if source == "whatsapp" and _ai_enabled_for(contact_id, tenant_id):
+        if source == "whatsapp" and _ai_enabled_for(contact_id, tenant_id) and not skip_reason:
             # תגובה בתוך חלון השיחה שהלקוח פתח - לא הודעה יזומה - ולכן אינה
             # דורשת הודעת-תבנית מאושרת מול מטא.
             card, reply_text = process_message_with_reply(
@@ -2163,12 +2185,19 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
             )
             db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
         else:
-            # ai_enabled=False (שלב 5) - עדיין מחלצים פרטים/מעדכנים כרטיס, אבל
+            # ai_enabled=False (שלב 5), או skip_reason (שיחת חולין לא-עסקית
+            # מזוהה מליד/איש-קשר חדש) - עדיין מחלצים פרטים/מעדכנים כרטיס, אבל
             # בלי לייצר/לשלוח תשובה אוטומטית (reply_text נשאר None) - מענה
             # ידני בלבד דרך /api/messages/send. אותה פונקציה בדיוק שכבר
             # משמשת לערוצים בלי מענה אוטומטי בכלל (instagram/facebook) - לא
             # קוד כפול.
             card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
+            if skip_reason:
+                logger.info(
+                    "🚫 הודעה לא-עסקית מזוהה (ליד/איש-קשר חדש, בלי הקשר עסקי קודם) - "
+                    "מדלג על מענה אוטומטי: tenant=%s, טלפון=%s, סיבה=%s",
+                    tenant_id, contact_id, skip_reason,
+                )
         logger.info(
             "🧠 חילוץ נתונים הושלם [תור רקע, tenant=%s]: טלפון=%s | שם=%r | עסק=%r | מיקום=%r",
             tenant_id, contact_id, card.get("customer_name"), card.get("business_name"), card.get("location"),
