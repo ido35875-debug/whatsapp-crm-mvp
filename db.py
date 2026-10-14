@@ -338,6 +338,18 @@ def _init_schema(conn) -> None:
             conn.execute(ddl)
     conn.execute(
         f"""
+        CREATE TABLE IF NOT EXISTS blocked_contacts (
+            id {_PK},
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            phone TEXT NOT NULL,
+            reason TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tenant_id, phone)
+        )
+        """
+    )
+    conn.execute(
+        f"""
         CREATE TABLE IF NOT EXISTS outbound_queue (
             id {_PK},
             tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -811,6 +823,69 @@ def get_call(call_id: int) -> dict | None:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM calls WHERE id = ?", (call_id,)).fetchone()
         return _call_row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+# ---- רשימת אנשי קשר חסומים (Ignore List) - DB, לא env var ----
+# מחליפה/משלימה את BLOCKED_CONTACTS (env var ב-server.py, גלובלי לכל ה-tenants,
+# דורש redeploy לעדכן) עם רשימה פר-tenant שניתנת לניהול חי מהדשבורד (כפתור
+# "🚫 חסום איש קשר" בפאנל הליד) - בלי לגעת ב-Render בכלל. שני המקורות נבדקים
+# יחד ב-webhook() (ראו server.py) - לא מחליפים זה את זה, משלימים.
+def add_blocked_contact(phone: str, tenant_id: str = "default", reason: str | None = None) -> None:
+    """חוסם איש קשר - Upsert לפי (tenant_id, phone): קריאה חוזרת עם reason חדש
+    מעדכנת את ה-reason הקיים, לא יוצרת שורה כפולה."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO blocked_contacts (tenant_id, phone, reason) VALUES (?, ?, ?) "
+            "ON CONFLICT (tenant_id, phone) DO UPDATE SET reason = EXCLUDED.reason",
+            (tenant_id, phone, reason),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def remove_blocked_contact(phone: str, tenant_id: str = "default") -> None:
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM blocked_contacts WHERE tenant_id = ? AND phone = ?",
+            (tenant_id, phone),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_blocked_contacts(tenant_id: str | None = None) -> list[dict]:
+    """כל אנשי הקשר החסומים - בלי tenant_id מחזיר את כולם (לתצוגת אדמין),
+    עם tenant_id מסנן לעסק ספציפי - בדיוק כמו get_tasks."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        if tenant_id:
+            rows = conn.execute(
+                "SELECT * FROM blocked_contacts WHERE tenant_id = ? ORDER BY created_at DESC", (tenant_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM blocked_contacts ORDER BY created_at DESC").fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def is_contact_blocked(phone: str, tenant_id: str = "default") -> bool:
+    """נבדק ב-webhook() לכל הודעה נכנסת (ראו server.py) - לפני כל עיבוד אחר,
+    בדיוק כמו BLOCKED_CONTACTS (env var). שאילתה קלה (אינדקס UNIQUE על
+    tenant_id+phone כבר קיים מה-constraint בטבלה)."""
+    conn = _get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM blocked_contacts WHERE tenant_id = ? AND phone = ?", (tenant_id, phone)
+        ).fetchone()
+        return row is not None
     finally:
         conn.close()
 

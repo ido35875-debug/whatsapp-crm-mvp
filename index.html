@@ -1055,6 +1055,7 @@
             <a href="/api/leads/export" class="btn-link" id="exportBtn">📤 ייצוא לידים</a>
             <button id="reactivateBtn">🔥 החייאת לידים קרים</button>
             <button id="calendarBtn">📅 יומן</button>
+            <button id="blockedContactsBtn">🚫 אנשי קשר חסומים</button>
             <button id="feedbackBtn">💡 משוב</button>
             <button id="promptsBtn">🤖 תבניות וסוכנים</button>
             <button id="refreshBtn">↻ רענון</button>
@@ -1202,6 +1203,7 @@
           <button type="button" class="call-btn" id="inboxTasksBtn">📅 משימות</button>
           <button type="button" class="call-btn" id="inboxCallHistoryBtn">📋 היסטוריית שיחות</button>
           <button type="button" class="call-btn" id="inboxQuickEditBtn">✏️ ערוך פרטים</button>
+          <button type="button" class="call-btn danger" id="inboxBlockBtn">🚫 חסום איש קשר</button>
         </div>
         <div class="inbox-chat-body" id="inboxChatBody">
           <div class="inbox-chat-empty muted">בחר שיחה מהרשימה כדי להתחיל</div>
@@ -1373,6 +1375,7 @@
       <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
       <button type="button" class="call-btn" id="panelCallHistoryBtn">📋 היסטוריית שיחות</button>
       <button type="button" class="call-btn" id="panelQuickEditBtn">✏️ ערוך פרטים</button>
+      <button type="button" class="call-btn danger" id="panelBlockBtn">🚫 חסום איש קשר</button>
     </div>
     <button class="panel-close" id="panelClose" aria-label="סגור">✕</button>
   </div>
@@ -1592,6 +1595,24 @@
     <button class="panel-close" id="promptsPanelClose" aria-label="סגור">✕</button>
   </div>
   <div class="panel-body" id="promptsPanelBody"></div>
+</aside>
+
+<aside class="panel glass" id="blockedContactsPanel">
+  <div class="panel-header">
+    <div>
+      <h2>🚫 אנשי קשר חסומים</h2>
+      <p>מספרים ברשימה הזו לעולם לא יקבלו מענה אוטומטי מהבוט (Ignore List ב-DB) - לשימוש אישי/חברים שהבוט ענה להם בטעות</p>
+    </div>
+    <button class="panel-close" id="blockedContactsPanelClose" aria-label="סגור">✕</button>
+  </div>
+  <div class="panel-body">
+    <form class="mini-form" id="addBlockedContactForm">
+      <input type="text" id="blockedContactPhone" placeholder="טלפון (חובה)" required>
+      <input type="text" id="blockedContactReason" placeholder="הערה (אופציונלי - למשל \"חבר - דני\")">
+      <button type="submit" class="primary">🚫 חסום</button>
+    </form>
+    <div id="blockedContactsList"></div>
+  </div>
 </aside>
 
 <aside class="panel glass" id="reactivatePanel">
@@ -2859,7 +2880,7 @@ function stopDialQueue() {
 // פאנלים נוספים (שיחה/משימות/יומן/משוב) נפתחים מעל #panel/#inboxView באותו overlay
 // המשותף - כשסוגרים אחד מהם, מסירים את ה-overlay רק אם אף פאנל אחר לא עדיין open
 // (למשל #panel, אם הפאנל השני נפתח מעליו ולא מה-Inbox).
-const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "callHistoryPanel", "calendarPanel", "feedbackPanel", "addLeadPanel", "editLeadPanel", "promptsPanel", "callbackPanel"];
+const OVERLAY_PANEL_IDS = ["panel", "reactivatePanel", "callPanel", "tasksPanel", "callHistoryPanel", "calendarPanel", "feedbackPanel", "addLeadPanel", "editLeadPanel", "promptsPanel", "callbackPanel", "blockedContactsPanel"];
 function closeSubPanel(id) {
   document.getElementById(id).classList.remove("open");
   const anyOpen = OVERLAY_PANEL_IDS.some(pid => document.getElementById(pid).classList.contains("open"));
@@ -2904,7 +2925,7 @@ function openCallbackPanel(phone, tenantId, name) {
   document.getElementById("callbackPanel").classList.add("open");
 }
 function closeCallbackPanel() {
-  document.getElementById("callbackPanel").classList.remove("open");
+  closeSubPanel("callbackPanel");
 }
 
 document.getElementById("panelCallbackBtn").addEventListener("click", () => {
@@ -3335,6 +3356,41 @@ document.getElementById("inboxQuickEditBtn").addEventListener("click", () => {
   if (lead) openEditLeadPanel(lead.phone, lead.tenantId);
 });
 
+// "🚫 חסום איש קשר" - Ignore List ב-DB (ראו db.add_blocked_contact) - מיועד
+// לאנשי קשר אישיים/חברים שהבוט ענה להם בטעות, לא ללידים אמיתיים. מבקש אישור
+// (reuse של showConfirmModal הקיים) + הערה אופציונלית (window.prompt - אותו
+// דפוס קל-משקל שכבר קיים בקובץ הזה), ולא נוגע בשום פעולה אחרת על הכרטיס -
+// רק מונע מענה אוטומטי עתידי. סוגר את חלון הצ'אט אחרי החסימה (אין טעם להישאר
+// בתוך שיחה עם איש קשר שרק נחסם).
+async function blockContact(phone, tenantId, closeFn) {
+  const confirmed = await showConfirmModal({
+    title: "חסימת איש קשר",
+    body: `לחסום את ${phone}? הבוט לעולם לא יענה אוטומטית להודעות ממספר הזה (עד שתסיר את החסימה).`,
+    confirmLabel: "🚫 חסום",
+  });
+  if (!confirmed) return;
+  const reason = window.prompt("הערה אופציונלית (למשל \"חבר - דני\"):", "") || null;
+  try {
+    const res = await fetch("/api/blocked-contacts/add", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, tenant_id: tenantId, reason }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    if (closeFn) closeFn();
+  } catch (err) {
+    alert("חסימת איש הקשר נכשלה: " + err.message);
+  }
+}
+document.getElementById("panelBlockBtn").addEventListener("click", () => {
+  const lead = panelChat.currentLead;
+  if (lead) blockContact(lead.phone, lead.tenantId, closeAllPanels);
+});
+document.getElementById("inboxBlockBtn").addEventListener("click", () => {
+  const lead = inboxChat.currentLead;
+  if (lead) blockContact(lead.phone, lead.tenantId, null);
+});
+
 
 // עריכה: מחליף את .call-history-view בטופס inline (לא מודאל נפרד - השיחה
 // הספציפית כבר בפאנל ייעודי, אין צורך בעוד שכבה) - שמירה/ביטול מרעננים חזרה
@@ -3654,6 +3710,77 @@ function closePromptsPanel() { closeSubPanel("promptsPanel"); }
 document.getElementById("promptsBtn").addEventListener("click", openPromptsPanel);
 document.getElementById("promptsPanelClose").addEventListener("click", closePromptsPanel);
 
+// ---- אנשי קשר חסומים (Ignore List ב-DB - ראו db.add_blocked_contact) ----
+async function loadBlockedContactsPanel() {
+  const body = document.getElementById("blockedContactsList");
+  body.innerHTML = '<div class="loading">טוען...</div>';
+  try {
+    const res = await fetch("/api/blocked-contacts");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const contacts = await res.json();
+    body.innerHTML = contacts.length
+      ? contacts.map(c => `
+        <div class="task-row" data-phone="${escapeHtml(c.phone)}" data-tenant="${escapeHtml(c.tenant_id)}">
+          <div class="task-row-main">
+            <div class="task-row-title">${escapeHtml(c.phone)}</div>
+            ${c.reason ? `<div class="task-row-notes">${escapeHtml(c.reason)}</div>` : ""}
+          </div>
+          <div class="task-row-actions">
+            <button type="button" class="task-cancel-btn blocked-contact-remove-btn">הסר חסימה</button>
+          </div>
+        </div>
+      `).join("")
+      : '<div class="empty">אין אנשי קשר חסומים</div>';
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה בטעינת הרשימה: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function openBlockedContactsPanel() {
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("blockedContactsPanel").classList.add("open");
+  document.getElementById("addBlockedContactForm").reset();
+  loadBlockedContactsPanel();
+}
+function closeBlockedContactsPanel() { closeSubPanel("blockedContactsPanel"); }
+
+document.getElementById("blockedContactsBtn").addEventListener("click", openBlockedContactsPanel);
+document.getElementById("blockedContactsPanelClose").addEventListener("click", closeBlockedContactsPanel);
+
+document.getElementById("addBlockedContactForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const phone = document.getElementById("blockedContactPhone").value.trim();
+  const reason = document.getElementById("blockedContactReason").value.trim() || null;
+  if (!phone) return;
+  try {
+    const res = await fetch("/api/blocked-contacts/add", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, tenant_id: document.getElementById("tenantFilter").value || "default", reason }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    document.getElementById("addBlockedContactForm").reset();
+    loadBlockedContactsPanel();
+  } catch (err) {
+    alert("חסימת איש הקשר נכשלה: " + err.message);
+  }
+});
+
+document.getElementById("blockedContactsList").addEventListener("click", async (e) => {
+  if (!e.target.classList.contains("blocked-contact-remove-btn")) return;
+  const row = e.target.closest(".task-row");
+  try {
+    const res = await fetch("/api/blocked-contacts/remove", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: row.dataset.phone, tenant_id: row.dataset.tenant }),
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    loadBlockedContactsPanel();
+  } catch (err) {
+    alert("הסרת החסימה נכשלה: " + err.message);
+  }
+});
+
 document.getElementById("promptsPanelBody").addEventListener("click", async (e) => {
   const btn = e.target.closest(".prompt-save-btn");
   if (!btn) return;
@@ -3702,6 +3829,8 @@ function closeAllPanels() {
   document.getElementById("editLeadPanel").classList.remove("open");
   document.getElementById("promptsPanel").classList.remove("open");
   document.getElementById("reactivatePanel").classList.remove("open");
+  document.getElementById("callbackPanel").classList.remove("open");
+  document.getElementById("blockedContactsPanel").classList.remove("open");
   activeCall = null;
   dialQueue = null;
   panelChat.close();

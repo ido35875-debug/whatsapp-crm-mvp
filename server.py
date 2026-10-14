@@ -793,6 +793,7 @@ def api_create_lead():
         business_name=(data.get("business_name") or "").strip() or None,
         location=(data.get("location") or "").strip() or None,
         lead_status=status,
+        import_source="manual",
         category=(data.get("category") or "").strip() or None,
         agent=(data.get("agent") or "").strip() or None,
         client_id=_requested_client_id(data) or None,
@@ -954,6 +955,45 @@ def api_update_lead_agent():
 
     card = update_lead_agent(phone, agent, tenant_id=tenant_id)
     return jsonify({"ok": True, "card": card})
+
+
+@app.route("/api/blocked-contacts")
+def api_get_blocked_contacts():
+    """רשימת אנשי קשר חסומים (Ignore List ב-DB - ראו db.add_blocked_contact) -
+    לפאנל הניהול בדשבורד. admin רואה הכל; partner/client מוגבלים ל-tenant_ids
+    שהוקצו להם (בדיוק כמו GET /api/leads)."""
+    allowed_tenant_ids = _effective_tenant_ids(request.args.get("tenant_id") or None)
+    contacts = db.get_blocked_contacts()
+    if allowed_tenant_ids is not None:
+        contacts = [c for c in contacts if c.get("tenant_id") in allowed_tenant_ids]
+    return jsonify(contacts)
+
+
+@app.route("/api/blocked-contacts/add", methods=["POST"])
+def api_add_blocked_contact():
+    """חוסם איש קשר - כפתור "🚫 חסום איש קשר זה" בפאנל הליד, או הוספה ידנית
+    מפאנל הניהול. אחרי זה, webhook() ידלג בשקט על כל הודעה עתידית מהמספר הזה
+    (ראו db.is_contact_blocked) - בלי לגעת ב-Render/env var בכלל."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    reason = (data.get("reason") or "").strip() or None
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+    db.add_blocked_contact(_normalize_phone(phone) or phone, tenant_id=tenant_id, reason=reason)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/blocked-contacts/remove", methods=["POST"])
+def api_remove_blocked_contact():
+    """מסיר חסימה - "הסר חסימה" בפאנל הניהול."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    if not phone:
+        return jsonify({"error": "חסר טלפון"}), 400
+    db.remove_blocked_contact(phone, tenant_id=tenant_id)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/leads/ai-toggle", methods=["POST"])
@@ -2153,20 +2193,25 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
     עצמה זהה לגמרי למה שהיה סינכרוני בתוך webhook() לפני שלב 3 - הופרדה
     לפונקציה, לא שוכתבה.
 
-    סינון שיחת-חולין אישית (לא עסקית) - baq קריטי שתוקן: איש קשר אישי/חבר
+    סינון שיחת-חולין אישית (לא עסקית) - באג קריטי שתוקן: איש קשר אישי/חבר
     ששולח הודעת חולין (למשל עדכון על שוק ההון) היה מקבל מענה אוטומטי כאילו
-    הוא ליד. נבדק **רק** לכרטיס בלי עדיין שום הקשר עסקי מתועד (property_type/
-    budget/lead_status מעבר ל-"new") - ברגע שליד הראה הקשר עסקי, לא נבדק שוב
-    (ראו sales_agent.detect_real_estate_relevance). ⚠️ זה שכבת הגנה הסתברותית
+    הוא ליד. נבדק **רק** לכרטיס בלי עדיין שום הקשר עסקי מתועד - import_source
+    (קיים כליד רשום ב-DB, למשל מטופס/ייבוא/הוספה ידנית - ראו import_lead)
+    או property_type/budget/lead_status מעבר ל-"new" (הראה הקשר נדל"ני
+    בעצמו בשיחה) - ברגע שאחד מהם מתקיים, לא נבדק שוב לעולם לאותו כרטיס, כדי
+    לא "לשתוק" באמצע שיחת מכירה אמיתית רק כי משפט אחד היה קז'ואלי (ראו
+    sales_agent.detect_real_estate_relevance). ⚠️ זה שכבת הגנה הסתברותית
     שנייה בלבד - ההגנה הראשית והוודאית ל*אנשי קשר אישיים ידועים* (כמו חברים
-    שחוזרים ושולחים הודעות) היא BLOCKED_CONTACTS למעלה, שחוסם בלי שום ניחוש AI."""
+    שחוזרים ושולחים הודעות) היא BLOCKED_CONTACTS/db.is_contact_blocked למעלה,
+    שחוסמים בלי שום ניחוש AI."""
     provider = get_provider() if source == "whatsapp" else None
     reply_text = None
     skip_reason = None
     if source == "whatsapp":
         existing_card = load_customers().get(f"{tenant_id}::{contact_id}") or {}
         has_business_context = bool(
-            existing_card.get("property_type") or existing_card.get("budget")
+            existing_card.get("import_source")
+            or existing_card.get("property_type") or existing_card.get("budget")
             or existing_card.get("lead_status") not in (None, "", "new")
         )
         if not has_business_context:
@@ -2321,6 +2366,65 @@ def _kick_webhook_drain() -> None:
     threading.Thread(target=_drain_webhook_queue, daemon=True, name="webhook-drain").start()
 
 
+# ---- Message Buffering/Debouncing (שלב "Lead Routing & Debouncing") ----
+# לידים (ובייחוד לידים "חמים") שולחים לפעמים כמה הודעות וואטסאפ רצופות
+# ומפוצלות ("היי" / "מחפש דירה" / "בתל אביב" / "3 חדרים") כהודעות נפרדות -
+# בלי debouncing, כל אחת הייתה מפעילה job נפרד משלה (חילוץ+מענה AI נפרד),
+# וה-AI היה עונה בצורה מקוטעת/חופפת להודעה חלקית בכל פעם, במקום תגובה אחת
+# מקיפה לכוונה המלאה. הפתרון: ממתינים MESSAGE_DEBOUNCE_SECONDS של "שקט" מאותו
+# איש-קשר לפני שמריצים את ה-AI בפועל - כל הודעה נוספת מאפסת את הטיימר (לא
+# "חלון קשיח" מההודעה הראשונה, אלא "עד שהוא נרגע"). **לא** משפיע על רישום
+# ההודעה הגולמית עצמה (db.log_message/_log_incoming_message שקוראים ל-webhook()
+# עוד לפני כאן, סינכרונית, בדיוק כמו קודם) - הדשבורד/Inbox עדיין מראה כל
+# הודעה בזמן אמת; רק הפעלת ה-AI (extraction+reply) מתעכבת/מתאחדת.
+#
+# מפתח הבאפר הוא (contact_id, tenant_id, source) - לא כולל phone גולמי בלבד,
+# כדי לא לערבב בין tenants/ערוצים שונים לאותו מספר. מילון/טיימרים גלובליים
+# מוגנים ב-lock אחד - קל (לא תחת עומס כבד, אותה סדר-גודל כמו שאר ה-webhook).
+MESSAGE_DEBOUNCE_SECONDS = float(os.environ.get("MESSAGE_DEBOUNCE_SECONDS", "12"))
+_pending_message_buffers: dict[tuple[str, str, str], list[str]] = {}
+_pending_message_timers: dict[tuple[str, str, str], threading.Timer] = {}
+_message_buffer_lock = threading.Lock()
+
+
+def _flush_message_buffer(buffer_key: tuple[str, str, str]) -> None:
+    """נקראת מה-Timer אחרי MESSAGE_DEBOUNCE_SECONDS שניות בלי הודעה חדשה
+    מאותו איש-קשר - מאחדת את כל ההודעות שהצטברו למחרוזת אחת (מופרדות בשורה
+    חדשה) ורק אז מכניסה job יחיד לתור העיבוד הרגיל (ראו _process_incoming_
+    message_job) - מכאן והלאה הזרימה זהה לגמרי למה שהייתה קודם להודעה בודדת."""
+    with _message_buffer_lock:
+        messages = _pending_message_buffers.pop(buffer_key, None)
+        _pending_message_timers.pop(buffer_key, None)
+    if not messages:
+        return
+    contact_id, tenant_id, source = buffer_key
+    combined_text = "\n".join(messages)
+    if len(messages) > 1:
+        logger.info(
+            "📦 %d הודעות רצופות אוחדו לעיבוד אחד (debounce, tenant=%s, טלפון=%s)",
+            len(messages), tenant_id, contact_id,
+        )
+    _webhook_job_queue.put((contact_id, combined_text, tenant_id, source))
+    _kick_webhook_drain()
+
+
+def _enqueue_incoming_message(contact_id: str, message_text: str, tenant_id: str, source: str) -> None:
+    """מצטרפת לבאפר הממתין של איש-הקשר הזה (או פותחת אחד חדש) ומאפסת/מתזמנת
+    את טיימר ה-debounce - ראו ההערה המלאה מעל MESSAGE_DEBOUNCE_SECONDS. קוראת
+    הקיימת ל-_webhook_job_queue.put ישירות (לפני התוספת הזו) - עדיין הנקודה
+    היחידה שבאמת מכניסה job לתור, רק עטופה כאן בהשהיה."""
+    buffer_key = (contact_id, tenant_id, source)
+    with _message_buffer_lock:
+        _pending_message_buffers.setdefault(buffer_key, []).append(message_text)
+        existing_timer = _pending_message_timers.get(buffer_key)
+        if existing_timer:
+            existing_timer.cancel()
+        timer = threading.Timer(MESSAGE_DEBOUNCE_SECONDS, _flush_message_buffer, args=(buffer_key,))
+        timer.daemon = True
+        _pending_message_timers[buffer_key] = timer
+        timer.start()
+
+
 @app.route("/api/system/queue-status")
 def api_system_queue_status():
     """גודל תור עיבוד ה-webhook כרגע + האם ה-worker thread חי - אדמין-בלבד,
@@ -2370,10 +2474,17 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
             logger.info("🚷 שולח לא מאושר (APPROVED_SENDERS) - דולג בלי מענה: %s", f"{contact_id[:4]}…{contact_id[-4:]}")
             return Response(status=200)
         if contact_id and _normalize_phone(contact_id) in BLOCKED_CONTACTS:
-            # איש קשר חסום (BLOCKED_CONTACTS) - לפני כל עיבוד, אפילו לפני יצירת
-            # כרטיס - ראו ההערה שם. כוללת גם הודעות ל"שיחות ישנות"/כל הודעה
-            # עתידית מהמספר הזה, לא רק את זו.
+            # איש קשר חסום (BLOCKED_CONTACTS, env var) - לפני כל עיבוד, אפילו
+            # לפני יצירת כרטיס - ראו ההערה שם. כוללת גם הודעות ל"שיחות ישנות"/
+            # כל הודעה עתידית מהמספר הזה, לא רק את זו.
             logger.info("🚫 איש קשר חסום (BLOCKED_CONTACTS) - דולג בלי מענה: %s", f"{contact_id[:4]}…{contact_id[-4:]}")
+            return Response(status=200)
+        if contact_id and db.is_contact_blocked(_normalize_phone(contact_id) or contact_id, tenant_id=tenant_id):
+            # רשימת חסימה פר-tenant ב-DB (ראו db.add_blocked_contact) - ניתנת
+            # לניהול חי מהדשבורד ("🚫 חסום איש קשר זה" בפאנל הליד), בלי לגעת
+            # ב-Render/env var בכלל. אותה בדיקה בדיוק כמו BLOCKED_CONTACTS
+            # למעלה - שני המקורות משלימים זה את זה, לא מחליפים.
+            logger.info("🚫 איש קשר חסום (DB, tenant=%s) - דולג בלי מענה: %s", tenant_id, f"{contact_id[:4]}…{contact_id[-4:]}")
             return Response(status=200)
         logger.info(
             "🔎 חילוץ מההודעה: מספר/מזהה שולח=%r | טקסט=%r | source=%s | typeWebhook=%r",
@@ -2509,11 +2620,13 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
             return Response(twiml, mimetype="text/xml")
 
         # כל שאר הספקים/הערוצים (UltraMsg/Green API/Mock, instagram/facebook
-        # placeholder) - עיבוד ה-AI לא צריך להיכלל בתגובה הזו בכלל, אז מעבירים
-        # ל-worker ברקע (שלב 3) ומחזירים 200 מיידית. ההודעה הנכנסת כבר נרשמה
-        # למעלה בכל מקרה - גם אם ה-job ברקע ייכשל, שום דבר לא "נעלם".
-        _webhook_job_queue.put((contact_id, message_text, tenant_id, source))
-        _kick_webhook_drain()
+        # placeholder) - עיבוד ה-AI לא צריך להיכלל בתגובה הזו בכלל. ההודעה
+        # הנכנסת כבר נרשמה למעלה בכל מקרה (db.log_message/_log_incoming_message) -
+        # גם אם ה-job ברקע ייכשל/יתעכב, שום דבר לא "נעלם". _enqueue_incoming_
+        # message לא מכניסה job לתור מיידית - מצטרפת לבאפר debounce (ראו ההערה
+        # המלאה מעל MESSAGE_DEBOUNCE_SECONDS) כדי לאחד הודעות רצופות/מפוצלות
+        # מאותו איש-קשר לתגובת AI אחת מקיפה.
+        _enqueue_incoming_message(contact_id, message_text, tenant_id, source)
         return Response(status=200)
     except Exception as exc:
         # רשת ביטחון אחרונה (שלב 8): כל חריגה בלתי-צפויה שלא נתפסה למעלה (באג
