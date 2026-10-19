@@ -1193,20 +1193,28 @@ def compute_lead_score(phone: str, tenant_id: str = "default") -> int:
     ללא מענה - הציון נשאר נמוך/יורד, לא מזנק כלאפי "פעילות חדשה")."""
     conn = _get_connection()
     try:
+        # row_factory מפורש + גישה לפי שם עמודה (לא [0] עמדתי) - חובה כדי לעבוד
+        # נכון בשני הבאקאנדים: _PGConnection.execute משתמשת תמיד ב-RealDictCursor
+        # (שורה כ-dict לפי שם עמודה - [0] מעלה KeyError: 0 בפועל, לא IndexError!
+        # נתפס רק עכשיו, בריצה ראשונה אמיתית מול Postgres - ב-sqlite3 הסתמכות על
+        # tuple positional access "עבדה" בטעות, בלי row_factory מוגדר כלל).
+        # AS cnt/AS last_ts - בלי alias מפורש השם המשתמע (count/max) תלוי בגרסת/
+        # בהתנהגות ה-DB, לא ערובה חזקה כמו alias מוצהר.
+        conn.row_factory = sqlite3.Row
         message_count = conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE phone = ? AND tenant_id = ? "
+            "SELECT COUNT(*) AS cnt FROM messages WHERE phone = ? AND tenant_id = ? "
             "AND channel NOT IN ('followup', 'followup_final')",
             (phone, tenant_id),
-        ).fetchone()[0]
+        ).fetchone()["cnt"]
         call_count = conn.execute(
-            "SELECT COUNT(*) FROM calls WHERE phone = ? AND tenant_id = ?", (phone, tenant_id)
-        ).fetchone()[0]
+            "SELECT COUNT(*) AS cnt FROM calls WHERE phone = ? AND tenant_id = ?", (phone, tenant_id)
+        ).fetchone()["cnt"]
         done_task_count = conn.execute(
-            "SELECT COUNT(*) FROM calendar_tasks WHERE phone = ? AND tenant_id = ? AND status = 'done'",
+            "SELECT COUNT(*) AS cnt FROM calendar_tasks WHERE phone = ? AND tenant_id = ? AND status = 'done'",
             (phone, tenant_id),
-        ).fetchone()[0]
+        ).fetchone()["cnt"]
         last_activity = conn.execute(
-            "SELECT MAX(ts) FROM ("
+            "SELECT MAX(ts) AS last_ts FROM ("
             "SELECT MAX(timestamp) AS ts FROM messages WHERE phone = ? AND tenant_id = ? "
             "AND channel NOT IN ('followup', 'followup_final') "
             "UNION ALL "
@@ -1215,7 +1223,7 @@ def compute_lead_score(phone: str, tenant_id: str = "default") -> int:
             "SELECT MAX(updated_at) AS ts FROM calendar_tasks WHERE phone = ? AND tenant_id = ?"
             ")",
             (phone, tenant_id, phone, tenant_id, phone, tenant_id),
-        ).fetchone()[0]
+        ).fetchone()["last_ts"]
     finally:
         conn.close()
 
@@ -1226,7 +1234,15 @@ def compute_lead_score(phone: str, tenant_id: str = "default") -> int:
     )
 
     if last_activity:
-        age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(last_activity)).days
+        # last_activity מגיע כ-str מ-sqlite (עמודת TIMESTAMP שם היא בפועל TEXT) אבל
+        # כ-datetime כבר מפוענח מ-psycopg2 ב-postgres (type adaptation אוטומטי לעמודת
+        # TIMESTAMP) - fromisoformat על datetime קיים היה מעלה TypeError. גם naive
+        # (בלי tzinfo, כי העמודה TIMESTAMP רגילה לא TIMESTAMPTZ) - מניחים UTC, כמו
+        # שכל שאר הקוד כבר כותב (datetime.now(timezone.utc).isoformat()).
+        last_activity_dt = last_activity if isinstance(last_activity, datetime) else datetime.fromisoformat(last_activity)
+        if last_activity_dt.tzinfo is None:
+            last_activity_dt = last_activity_dt.replace(tzinfo=timezone.utc)
+        age_days = (datetime.now(timezone.utc) - last_activity_dt).days
         for max_age, points in _SCORE_RECENCY_BANDS:
             if age_days <= max_age:
                 score += points
@@ -1243,6 +1259,10 @@ def search_activity(query: str) -> list[tuple[str, str]]:
     like = f"%{query}%"
     conn = _get_connection()
     try:
+        # row_factory מפורש + גישה לפי שם עמודה - בלעדיו [0]/[1] מעלה KeyError
+        # על Postgres (RealDictCursor) - ראו ההערה המלאה ב-compute_lead_score,
+        # אותו באג בדיוק (לא נתפס קודם כי /api/search לא נבדק מול Postgres אמיתי).
+        conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT DISTINCT phone, tenant_id FROM messages WHERE message LIKE ? "
             "UNION "
@@ -1251,7 +1271,7 @@ def search_activity(query: str) -> list[tuple[str, str]]:
             "SELECT DISTINCT phone, tenant_id FROM calendar_tasks WHERE title LIKE ? OR notes LIKE ?",
             (like, like, like, like, like),
         ).fetchall()
-        return [(row[0], row[1]) for row in rows]
+        return [(row["phone"], row["tenant_id"]) for row in rows]
     finally:
         conn.close()
 
@@ -1406,13 +1426,14 @@ def count_sent_today(tenant_id: str) -> int:
     outbound_engine.DAILY_QUOTA נאכף מול המספר הזה, לא מול total_rows בתור."""
     conn = _get_connection()
     try:
+        conn.row_factory = sqlite3.Row
         today = datetime.now(timezone.utc).date().isoformat()
         row = conn.execute(
-            "SELECT COUNT(*) FROM outbound_queue "
+            "SELECT COUNT(*) AS cnt FROM outbound_queue "
             "WHERE tenant_id = ? AND status IN ('sent', 'simulated') AND sent_at LIKE ?",
             (tenant_id, f"{today}%"),
         ).fetchone()
-        return row[0] if row else 0
+        return row["cnt"] if row else 0
     finally:
         conn.close()
 

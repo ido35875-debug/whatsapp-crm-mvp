@@ -136,11 +136,19 @@ _last_run_at: str | None = None
 
 
 def _log(line: str) -> None:
-    """רושם שורת לוג של מנוע התזמון גם ל-chat_history.txt וגם למסך (stdout)."""
+    """רושם שורת לוג של מנוע התזמון גם ל-chat_history.txt וגם למסך (stdout).
+    הקובץ נפתח מפורשות עם encoding="utf-8" (עברית/אימוג'ים תקינים תמיד) - אבל
+    ה-print ל-stdout תלוי בקידוד הקונסולה של מערכת ההפעלה, וב-Windows (cp1252
+    כברירת מחדל) זה גורם ל-UnicodeEncodeError שמפיל את ה-thread (reactivation-
+    scheduler) כבר בסריקה הראשונה בהרצה מקומית - נצפה בפועל. ב-Render (Linux,
+    UTF-8) זה לעולם לא קורה, אבל הגנה כאן זולה ולא פוגעת בשום דבר שם."""
     timestamp = datetime.now(timezone.utc).isoformat()
     with CHAT_HISTORY_FILE.open("a", encoding="utf-8") as f:
         f.write(f"[{timestamp}] [scheduler] {line}\n")
-    print(f"[scheduler] {line}")
+    try:
+        print(f"[scheduler] {line}")
+    except UnicodeEncodeError:
+        print(f"[scheduler] {line}".encode("ascii", errors="backslashreplace").decode("ascii"))
 
 
 def _is_due(contact: dict, customers: dict, tenant_id: str, now: datetime) -> bool:
@@ -289,18 +297,23 @@ def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
                 log_manual_reply(phone, message, tenant_id=card_tenant, source_channel=channel, simulated=entry["simulated"])
                 db.log_message(phone, message, direction="out", tenant_id=card_tenant, channel=channel, simulated=entry["simulated"])
             status_label = "נשלח בפועל" if entry["sent"] else ("סימולציה (Trial)" if entry["simulated"] else f"נכשל: {entry['error']}")
+
+            if not is_final and card.get("lead_status") != "follow_up":
+                # רק בשלב 1 - מקדמים סגמנטציה ל-"follow_up" בלי לגעת ב-status_changed_at
+                # (ראו docstring מעל). טעינה/שמירה טריות - לא על ה-customers שנטען
+                # בתחילת הפונקציה, כדי לא לדרוס עדכונים מקביליים אחרים.
+                # ⚠️ בכוונה בתוך if AUTO_FOLLOWUP (לא מחוץ לו, כמו שהיה קודם - באג
+                # שתוקן: dry-run היה עדיין כותב את השינוי הזה בפועל ל-customers.json/
+                # DB, בניגוד מוחלט לעיקרון "dry-run = שום שינוי אמיתי לא קורה" שכל
+                # שאר הקובץ הזה מכבד. זה מה שגרם ללידים אמיתיים בקובץ ה-VIP המקומי
+                # לעבור ל-"follow_up" בלי אישור, רק מהרצה מקומית של השרת).
+                fresh_customers = load_customers()
+                fresh_card = fresh_customers.get(key)
+                if fresh_card is not None:
+                    fresh_card["lead_status"] = "follow_up"
+                    save_customers(fresh_customers)
         else:
             status_label = "dry-run - לא נשלח"
-
-        if not is_final and card.get("lead_status") != "follow_up":
-            # רק בשלב 1 - מקדמים סגמנטציה ל-"follow_up" בלי לגעת ב-status_changed_at
-            # (ראו docstring מעל). טעינה/שמירה טריות - לא על ה-customers שנטען
-            # בתחילת הפונקציה, כדי לא לדרוס עדכונים מקביליים אחרים.
-            fresh_customers = load_customers()
-            fresh_card = fresh_customers.get(key)
-            if fresh_card is not None:
-                fresh_card["lead_status"] = "follow_up"
-                save_customers(fresh_customers)
 
         stage_label = "סופי (72ש)" if is_final else "ראשון (24ש)"
         _log(f"פולו-אפ {stage_label} ({status_label}): {entry['name'] or phone} ({phone}, tenant={card_tenant})")
