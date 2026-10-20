@@ -449,6 +449,81 @@ def check_feature(feature_name: str):
     return decorator
 
 
+def _require_tenant_manager(tenant_id: str):
+    """403 אם המשתמש הנוכחי לא מורשה לנהל את דגלי התכונות של ה-tenant הזה -
+    ל-GET/PUT /api/tenant/features. "מנהל tenant" (Self-Service Tenant
+    Settings) לא תפקיד RBAC נוסף: הוא בדיוק role=partner, שכבר מקבל tenant_ids
+    מוקצים ברמת-חברה (לוחות עמלות/ROI, ראו _compute_commission_for_user) - כאן
+    רק נאכף שה-tenant_id המבוקש הוא אחד מהמוקצים לו, לא "תבטח שבקשה געה רק
+    בעצמה" כמו endpoints ותיקים יותר. admin: כל tenant. client: אסור לגמרי -
+    הוא "בעלים" של לידים בודדים (ראו _effective_client_id), לא מנהל חברה."""
+    user = g.current_user
+    if user["role"] not in ("admin", "partner"):
+        return jsonify({"error": "הפעולה הזו מוגבלת למנהלי tenant (admin/partner) בלבד"}), 403
+    if user["role"] == "partner" and tenant_id not in (user.get("tenant_ids") or []):
+        return jsonify({"error": "אין הרשאה לנהל את ה-tenant הזה"}), 403
+    return None
+
+
+@app.route("/api/tenant/features")
+def api_get_tenant_features():
+    """קוראת את דגלי התכונות של tenant נתון - partner בלי ?tenant_id נופל
+    לה-tenant הראשון המוקצה לו (ברוב המקרים יש לו רק אחד - "החברה שלו"); admin
+    חייב לציין tenant_id במפורש (אין לו "tenant יחיד" מובן מאליו)."""
+    tenant_id = request.args.get("tenant_id")
+    if not tenant_id:
+        user = g.current_user
+        if user["role"] == "partner":
+            allowed = user.get("tenant_ids") or []
+            tenant_id = allowed[0] if allowed else None
+    if not tenant_id:
+        return jsonify({"error": "tenant_id נדרש"}), 400
+    denied = _require_tenant_manager(tenant_id)
+    if denied:
+        return denied
+    return jsonify({"tenant_id": tenant_id, "features": db.get_tenant_features(tenant_id)})
+
+
+@app.route("/api/tenant/features", methods=["PUT"])
+def api_set_tenant_features():
+    """מעדכנת דגלי תכונות ל-tenant נתון (Self-Service Tenant Settings) - בדיוק
+    כמו api_get_tenant_features, partner מוגבל ל-tenant_ids המוקצים לו ו-client
+    חסום לגמרי (ראו _require_tenant_manager). מקבלת dict חלקי (רק הדגלים
+    שהשתנו, ראו db.set_tenant_features) - לא את כל שלושת הדגלים בכל פעם."""
+    data = request.get_json(silent=True) or {}
+    tenant_id = (data.get("tenant_id") or "").strip()
+    features = data.get("features")
+    if not tenant_id:
+        return jsonify({"error": "tenant_id נדרש"}), 400
+    denied = _require_tenant_manager(tenant_id)
+    if denied:
+        return denied
+    if not isinstance(features, dict) or not features:
+        return jsonify({"error": "features חייב להיות dict לא-ריק של flag_name->true/false"}), 400
+    unknown = sorted(set(features) - db.KNOWN_FEATURE_FLAGS)
+    if unknown:
+        return jsonify({
+            "error": f"flags לא מוכרים: {', '.join(unknown)} (מוכרים: {', '.join(sorted(db.KNOWN_FEATURE_FLAGS))})"
+        }), 400
+    non_bool = [k for k, v in features.items() if not isinstance(v, bool)]
+    if non_bool:
+        return jsonify({"error": f"ערכים חייבים להיות true/false בדיוק: {', '.join(non_bool)}"}), 400
+    updated = db.set_tenant_features(tenant_id, features)
+    return jsonify({"ok": True, "tenant_id": tenant_id, "features": updated})
+
+
+@app.route("/api/admin/tenants")
+def api_admin_list_tenants():
+    """רשימת כל ה-tenants הרשומים (id/name/subdomain/features) - אדמין-בלבד.
+    משמשת את לשונית ההגדרות בדשבורד כדי לאפשר לאדמין לבחור איזה tenant לנהל
+    (ל-partner אין בחירה - הוא מוגבל לtenant_ids המוקצים לו, ראו GET
+    /api/tenant/features)."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    return jsonify(db.get_all_tenants())
+
+
 @app.route("/api/me")
 def api_me():
     """זהות המשתמש הנוכחי (לפי מפתח ה-API שסופק) - ה-UI קורא לזה בעליית העמוד

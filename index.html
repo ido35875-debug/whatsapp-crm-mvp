@@ -1018,6 +1018,9 @@
       <button type="button" class="sidebar-nav-item flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 transition hover:bg-slate-800/60 hover:text-slate-100" data-section="analytics">
         <i data-lucide="bar-chart-3" class="h-4 w-4"></i><span>אנליטיקה ו-ROI</span>
       </button>
+      <button type="button" class="sidebar-nav-item flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 transition hover:bg-slate-800/60 hover:text-slate-100" data-section="settings" data-roles="admin,partner">
+        <i data-lucide="settings" class="h-4 w-4"></i><span>הגדרות החברה</span>
+      </button>
     </nav>
     <div class="mx-4 mb-3 flex items-center gap-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-3 py-2 text-xs" id="currentUserBadge">
       <i data-lucide="user-circle" class="h-3.5 w-3.5 text-indigo-400"></i>
@@ -1348,6 +1351,33 @@
             </select>
           </div>
           <div style="position:relative; height:320px;"><canvas id="analyticsChart"></canvas></div>
+        </div>
+      </section>
+
+      <!-- ==== הגדרות החברה - Self-Service Tenant Feature Flags (admin/partner) ==== -->
+      <section id="sectionSettings" class="app-section" style="display:none;">
+        <div class="mb-6">
+          <h1 class="text-2xl font-bold text-slate-100">הגדרות החברה</h1>
+          <p class="mt-1 text-sm text-slate-400">הדלקה/כיבוי תכונות עבור החברה שלכם - נכנס לתוקף מיידית, בלי להפעיל מחדש את השרת</p>
+        </div>
+        <div class="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_320px]">
+          <div class="glass rounded-2xl p-5">
+            <div class="mb-4 flex items-center gap-3" id="settingsTenantPickerWrap" style="display:none;">
+              <label class="text-sm text-slate-400" for="settingsTenantSelect">tenant:</label>
+              <select id="settingsTenantSelect" class="min-w-[220px]"></select>
+            </div>
+            <div id="settingsFeaturesBody" class="flex flex-col gap-2"><div class="loading">טוען...</div></div>
+          </div>
+          <aside class="flex flex-col gap-4">
+            <div class="cc-card glass">
+              <h3>⚙️ מה כל תכונה עושה</h3>
+              <ul class="flex flex-col gap-2 text-xs leading-relaxed text-slate-400" style="list-style: disc; padding-right: 16px;">
+                <li><b>מענה AI אוטומטי בוואטסאפ</b> - כבוי = לידים ממשיכים להיכנס ל-CRM בשקט, בלי תשובה אוטומטית.</li>
+                <li><b>שיחות Click-to-Call</b> - יזום שיחה מהדשבורד ללקוח.</li>
+                <li><b>סינון שיחות חולין</b> - זיהוי אוטומטי של הודעות לא-עסקיות מלידים/אנשי-קשר חדשים.</li>
+              </ul>
+            </div>
+          </aside>
         </div>
       </section>
     </main>
@@ -3957,11 +3987,11 @@ function refreshIcons() {
   if (typeof lucide !== "undefined") lucide.createIcons();
 }
 
-const APP_SECTIONS = ["overview", "crm", "campaigns", "ai-agents", "analytics"];
+const APP_SECTIONS = ["overview", "crm", "campaigns", "ai-agents", "analytics", "settings"];
 const SECTION_EL_IDS = {
   "overview": "sectionOverview", "crm": "sectionCrm",
   "campaigns": "sectionCampaigns", "ai-agents": "sectionAiAgents",
-  "analytics": "sectionAnalytics",
+  "analytics": "sectionAnalytics", "settings": "sectionSettings",
 };
 let currentSection = "overview";
 
@@ -3979,6 +4009,7 @@ function switchSection(section) {
   if (section === "campaigns") { loadCampaignsList(); }
   if (section === "ai-agents") { loadAiAgentsSection(); }
   if (section === "analytics") { loadAnalyticsSection(); }
+  if (section === "settings") { loadTenantSettingsSection(); }
 }
 document.querySelectorAll(".sidebar-nav-item[data-section]").forEach(btn => {
   btn.addEventListener("click", () => switchSection(btn.dataset.section));
@@ -4017,6 +4048,94 @@ document.getElementById("switchUserBtn").addEventListener("click", () => {
     else localStorage.removeItem("crm_api_key_override");
   } catch (e) { /* localStorage לא זמין - מתעלמים, נשארים על המפתח הראשי */ }
   location.reload();
+});
+
+// ---- הגדרות החברה - Self-Service Tenant Feature Flags (admin/partner, ראו
+// server.py: GET/PUT /api/tenant/features, GET /api/admin/tenants) ----
+const FEATURE_FLAG_ORDER = ["whatsapp_ai", "telephony_queue", "auto_not_relevant"];
+const FEATURE_FLAG_LABELS = {
+  whatsapp_ai: { label: "🤖 מענה AI אוטומטי בוואטסאפ", desc: "כבוי = לידים ממשיכים להיכנס ל-CRM בשקט, בלי תשובה אוטומטית" },
+  telephony_queue: { label: "📞 שיחות Click-to-Call", desc: "יזום שיחה מהדשבורד ללקוח" },
+  auto_not_relevant: { label: "🧹 סינון שיחות חולין לא-עסקיות", desc: "זיהוי אוטומטי של הודעות לא-רלוונטיות מלידים/אנשי-קשר חדשים" },
+};
+let settingsCurrentTenantId = null;
+
+function featureToggleHtml(featureName, enabled) {
+  const meta = FEATURE_FLAG_LABELS[featureName] || { label: featureName, desc: "" };
+  return `
+    <div class="flex items-center justify-between gap-3 rounded-lg border border-slate-800/80 bg-slate-900/40 px-4 py-3">
+      <div class="min-w-0">
+        <div class="text-sm font-semibold text-slate-100">${escapeHtml(meta.label)}</div>
+        <div class="text-xs text-slate-500">${escapeHtml(meta.desc)}</div>
+      </div>
+      <button type="button" class="ai-toggle-btn ${enabled ? "on" : "off"}" data-feature="${escapeHtml(featureName)}"
+        data-enabled="${enabled ? "1" : "0"}" title="${enabled ? "לחץ לכיבוי" : "לחץ להדלקה"}">${enabled ? "פעיל" : "כבוי"}</button>
+    </div>`;
+}
+
+async function refreshTenantFeatures() {
+  const body = document.getElementById("settingsFeaturesBody");
+  const select = document.getElementById("settingsTenantSelect");
+  const requestedTenantId = (currentUser && currentUser.role === "admin" && select.value) ? select.value : null;
+  body.innerHTML = '<div class="loading">טוען...</div>';
+  try {
+    const qs = requestedTenantId ? `?tenant_id=${encodeURIComponent(requestedTenantId)}` : "";
+    const res = await fetch(`/api/tenant/features${qs}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    settingsCurrentTenantId = data.tenant_id;
+    body.innerHTML = FEATURE_FLAG_ORDER.map(f => featureToggleHtml(f, data.features[f] !== false)).join("");
+  } catch (err) {
+    body.innerHTML = '<div class="error">שגיאה בטעינת הגדרות: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+async function loadTenantSettingsSection() {
+  const pickerWrap = document.getElementById("settingsTenantPickerWrap");
+  const select = document.getElementById("settingsTenantSelect");
+  if (currentUser && currentUser.role === "admin") {
+    pickerWrap.style.display = "";
+    if (!select.dataset.loaded) {
+      try {
+        const res = await fetch("/api/admin/tenants");
+        const tenants = await res.json();
+        select.innerHTML = tenants
+          .map(t => `<option value="${escapeHtml(t.subdomain)}">${escapeHtml(t.name || t.subdomain)} (${escapeHtml(t.subdomain)})</option>`)
+          .join("");
+        select.dataset.loaded = "1";
+      } catch (err) {
+        document.getElementById("settingsFeaturesBody").innerHTML =
+          '<div class="error">שגיאה בטעינת רשימת ה-tenants: ' + escapeHtml(err.message) + "</div>";
+        return;
+      }
+    }
+  } else {
+    pickerWrap.style.display = "none";
+  }
+  await refreshTenantFeatures();
+}
+
+document.getElementById("settingsTenantSelect").addEventListener("change", refreshTenantFeatures);
+
+document.getElementById("settingsFeaturesBody").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".ai-toggle-btn");
+  if (!btn || !settingsCurrentTenantId) return;
+  const feature = btn.dataset.feature;
+  const nextEnabled = btn.dataset.enabled !== "1";
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/tenant/features", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenant_id: settingsCurrentTenantId, features: { [feature]: nextEnabled } }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    await refreshTenantFeatures();
+  } catch (err) {
+    alert("שגיאה בעדכון התכונה: " + err.message);
+    btn.disabled = false;
+  }
 });
 
 // Quick Actions dropdown - נסגר בקליק מחוץ לתפריט או ב-Escape

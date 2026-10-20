@@ -77,6 +77,9 @@ _DEFAULT_FEATURES = {
     "auto_not_relevant": True,
 }
 _DEFAULT_FEATURES_JSON = json.dumps(_DEFAULT_FEATURES)
+# ציבורי בכוונה (בלי _) - server.py מייבא את זה לאימות שה-flags שמתקבלים מ-
+# PUT /api/tenant/features הם בדיוק אחד מהשמות הידועים, לא מפתח שרירותי כלשהו.
+KNOWN_FEATURE_FLAGS = set(_DEFAULT_FEATURES.keys())
 
 _MIGRATIONS = {
     "tenant_id": "ALTER TABLE messages ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'",
@@ -981,6 +984,49 @@ def set_tenant_feature(tenant_id: str, feature_name: str, enabled: bool) -> dict
         )
         conn.commit()
         return features
+    finally:
+        conn.close()
+
+
+def set_tenant_features(tenant_id: str, updates: dict) -> dict:
+    """כמו set_tenant_feature, אבל מעדכנת כמה דגלים בבת-אחת בכתיבה אחת (לא
+    לולאת set_tenant_feature שהייתה עושה read-modify-write נפרד לכל מפתח) -
+    ל-PUT /api/tenant/features (server.py), שמקבל dict שלם של שינויים מה-UI
+    בבקשה אחת. updates עובר merge על גבי הדגלים הקיימים, לא מחליף את כולם -
+    tenant ששינה רק whatsapp_ai לא מאבד בטעות את telephony_queue הקיים שלו."""
+    features = get_tenant_features(tenant_id)
+    features.update(updates)
+    features_json = json.dumps(features)
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO tenants (name, subdomain, features) VALUES (?, ?, ?) "
+            "ON CONFLICT (subdomain) DO UPDATE SET features = EXCLUDED.features, "
+            "updated_at = CURRENT_TIMESTAMP",
+            (tenant_id, tenant_id, features_json),
+        )
+        conn.commit()
+        return features
+    finally:
+        conn.close()
+
+
+def get_all_tenants() -> list[dict]:
+    """כל שורות tenants (id/name/subdomain/features-מפוענח) - ל-GET
+    /api/admin/tenants (אדמין-בלבד, בדיוק כמו get_users) - מאפשר לאדמין לבחור
+    איזה tenant לנהל בלשונית ההגדרות, בלי להכיר מראש את כל ה-subdomain-ים."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT id, name, subdomain, features FROM tenants ORDER BY subdomain").fetchall()
+        result = []
+        for row in rows:
+            try:
+                features = json.loads(row["features"])
+            except (TypeError, ValueError):
+                features = dict(_DEFAULT_FEATURES)
+            result.append({"id": row["id"], "name": row["name"], "subdomain": row["subdomain"], "features": features})
+        return result
     finally:
         conn.close()
 
