@@ -1853,13 +1853,33 @@ function showHotLeadToast(lead) {
   setTimeout(() => el.remove(), 10000);
 }
 
-async function loadLeads() {
+// Polling שקט (ראו pollDashboardUpdates) - loadLeads נקראת גם בטעינה הראשונה
+// וגם בכל טיק polling, אבל ההתנהגות חייבת להיות שונה: בטעינה ראשונה מראים
+// "טוען..." (אין עדיין מה להציג), אבל בטיק polling רגיל - אם הנתונים בפועל לא
+// השתנו מאז הטיק הקודם - לא נוגעים ב-DOM בכלל (לא "טוען...", לא רינדור מחדש
+// של הטבלה/כרטיסים) - זה מה שגרם לתחושת "מתרענן בלופים קבועים" שדווחה: הבהוב
+// "טוען לידים..." + רינדור מלא מחדש של כל הטבלה כל 5 שניות, גם כשאין שום שינוי
+// בפועל. lastLeadsSnapshot - JSON.stringify זול מספיק (מאות לידים, לא עשרות
+// אלפים) - עדיף על דיף שדה-by-שדה מורכב בשביל יתרון שולי בהיקף הזה.
+let lastLeadsSnapshot = null;
+
+// מחזירה true אם בפועל עודכן משהו (allLeads/DOM), false אם זה היה no-op שקט
+// (אין שינוי מאז הטיק הקודם) - כך ש-pollDashboardUpdates יכולה לדלג גם על
+// renderOverviewCards/loadAiAgentsSection/renderInboxList במקרה הזה, לא רק על
+// הטבלה עצמה - אחרת היו עדיין מתרנדרים מחדש (בלי שינוי בתוצאה) בכל טיק.
+async function loadLeads({ silent = false } = {}) {
   const wrap = document.getElementById("tableWrap");
-  wrap.innerHTML = '<div class="loading">טוען לידים...</div>';
+  if (!silent) wrap.innerHTML = '<div class="loading">טוען לידים...</div>';
   try {
     const res = await fetch("/api/leads?include_score=1&include_last_message=1");
     if (!res.ok) throw new Error("HTTP " + res.status);
-    allLeads = await res.json();
+    const freshLeads = await res.json();
+    const freshSnapshot = JSON.stringify(freshLeads);
+    if (silent && freshSnapshot === lastLeadsSnapshot) {
+      return false; // אין שינוי בפועל - לא נוגעים ב-DOM, לא קוראים לאף render
+    }
+    lastLeadsSnapshot = freshSnapshot;
+    allLeads = freshLeads;
     checkHotLeadAlerts();
     populateTenantFilter();
     populateCategoryFilter();
@@ -1867,8 +1887,11 @@ async function loadLeads() {
     renderTable();
     loadControlCenter();
     if (document.getElementById("kanbanView").style.display !== "none") renderKanban();
+    return true;
   } catch (err) {
-    wrap.innerHTML = '<div class="error">שגיאה בטעינת הלידים: ' + escapeHtml(err.message) + "</div>";
+    if (!silent) wrap.innerHTML = '<div class="error">שגיאה בטעינת הלידים: ' + escapeHtml(err.message) + "</div>";
+    else console.error("רענון שקט של הלידים נכשל:", err);
+    return false;
   }
 }
 
@@ -4074,10 +4097,12 @@ async function pollDashboardUpdates() {
   if (dashboardPollInFlight) return;
   dashboardPollInFlight = true;
   try {
-    await loadLeads();
-    if (currentSection === "overview") renderOverviewCards();
-    if (currentSection === "ai-agents") loadAiAgentsSection();
-    if (currentSection === "crm" && document.getElementById("inboxView").style.display !== "none") renderInboxList();
+    const changed = await loadLeads({ silent: true });
+    if (changed) {
+      if (currentSection === "overview") renderOverviewCards();
+      if (currentSection === "ai-agents") loadAiAgentsSection();
+      if (currentSection === "crm" && document.getElementById("inboxView").style.display !== "none") renderInboxList();
+    }
     await checkDueCallbacks();
   } catch (err) {
     console.error("רענון תקופתי של הדשבורד נכשל:", err);
@@ -4085,7 +4110,11 @@ async function pollDashboardUpdates() {
     dashboardPollInFlight = false;
   }
 }
-setInterval(pollDashboardUpdates, 5000);
+// הוגדל מ-5 ל-12 שניות (בטווח 10-15 שניות שהתבקש) - כל טיק מפעיל כמה בקשות
+// (leads עם include_score/include_last_message - N+1 שאילתות ל-Postgres לכל
+// ליד בחישוב הציון - plus tasks/feedback/callbacks) - מרווח ארוך יותר מקטין
+// את הנפח הכולל על Postgres של Render, לא רק את תחושת ה"הבהוב" בדפדפן.
+setInterval(pollDashboardUpdates, 12000);
 
 // ---- B2B Campaigns (outbound_engine.py) - ייבוא CSV/Excel, תור שליחה חי,
 // הפעלת שליחה (עם קליק אנושי מפורש - חוק בטיחות #1) ----
