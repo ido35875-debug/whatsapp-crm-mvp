@@ -35,6 +35,7 @@ scheduler.py לפני שמדליקים שליחה אוטומטית אמיתית 
 """
 
 import csv
+import functools
 import io
 import json
 import logging
@@ -416,6 +417,36 @@ def _ai_enabled_for(phone: str, tenant_id: str) -> bool:
     הרצויה לליד חדש, לא "לא ידוע = כבוי"."""
     card = load_customers().get(f"{tenant_id}::{phone}")
     return bool(card.get("ai_enabled", True)) if card else True
+
+
+def check_feature(feature_name: str):
+    """Decorator ל-endpoints שצריכים לחסום לגמרי (403) כש-feature כבוי ל-tenant
+    (ראו db.is_feature_enabled/get_tenant_features) - בניגוד ל-/webhook, שבו
+    whatsapp_ai כבוי אמור לבלוע את ההודעה בשקט ולא לחסום (ראו _process_incoming_
+    message_job) - כאן, endpoint שלם שתלוי בפיצ'ר (כמו /api/calls/start, תלוי
+    telephony_queue) אין לו שום מצב "תקין אבל שקט", ולכן 403 ישיר הוא הבחירה
+    הנכונה.
+
+    ה-tenant_id נלקח, בסדר הזה: (1) kwargs של ה-route כש-קיים (למשל /webhook/
+    <tenant_id>), (2) גוף JSON של הבקשה (POST, כמו /api/calls/start), (3)
+    query string (GET), (4) DEFAULT_TENANT_ID - בדיוק אותו סדר-עדיפויות
+    שה-endpoints הקיימים משתמשים בו בעצמם (ראו data.get("tenant_id")/
+    request.args.get("tenant_id") למעלה)."""
+
+    def decorator(view_func):
+        @functools.wraps(view_func)
+        def wrapped(*args, **kwargs):
+            tenant_id = kwargs.get("tenant_id")
+            if not tenant_id:
+                body = request.get_json(silent=True) or {}
+                tenant_id = body.get("tenant_id") or request.args.get("tenant_id") or DEFAULT_TENANT_ID
+            if not db.is_feature_enabled(tenant_id, feature_name):
+                return jsonify({"error": f"התכונה '{feature_name}' כבויה עבור tenant זה"}), 403
+            return view_func(*args, **kwargs)
+
+        return wrapped
+
+    return decorator
 
 
 @app.route("/api/me")
@@ -1573,6 +1604,7 @@ def api_calls_config_status():
 
 
 @app.route("/api/calls/start", methods=["POST"])
+@check_feature("telephony_queue")
 def api_calls_start():
     """יוזם Click-to-Call (גישור נציג→לקוח). אישור אנושי = הקליק על '📞 שיחה' בדשבורד.
     אם תצורת Voice חסרה ב-.env (ראו voice_call.get_missing_voice_config) - זה ייתפס כאן
@@ -2222,7 +2254,12 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
             except Exception as exc:
                 logger.warning("בדיקת רלוונטיות עסקית נכשלה - ממשיכים כברירת מחדל (לא חוסמים): %s", exc)
     try:
-        if source == "whatsapp" and _ai_enabled_for(contact_id, tenant_id) and not skip_reason:
+        if (
+            source == "whatsapp"
+            and _ai_enabled_for(contact_id, tenant_id)
+            and db.is_feature_enabled(tenant_id, "whatsapp_ai")
+            and not skip_reason
+        ):
             # תגובה בתוך חלון השיחה שהלקוח פתח - לא הודעה יזומה - ולכן אינה
             # דורשת הודעת-תבנית מאושרת מול מטא.
             card, reply_text = process_message_with_reply(
@@ -2578,7 +2615,7 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
         if source == "whatsapp" and provider.requires_twiml_reply():
             reply_text = None
             try:
-                if _ai_enabled_for(contact_id, tenant_id) and not DRY_RUN:
+                if _ai_enabled_for(contact_id, tenant_id) and not DRY_RUN and db.is_feature_enabled(tenant_id, "whatsapp_ai"):
                     card, reply_text = process_message_with_reply(
                         contact_id, message_text, tenant_id=tenant_id, source_channel=source
                     )

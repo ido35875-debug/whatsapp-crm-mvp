@@ -69,6 +69,15 @@ else:
 # במדויק בשני הבסיסים.
 _PK = "SERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
 
+# ברירת המחדל עבור tenants.features - גם ל-DDL (DEFAULT בעמודה) וגם לקוד הפייתון
+# (get_tenant_features נופל לזה כש-tenant לא רשום בטבלה בכלל - ראו שם).
+_DEFAULT_FEATURES = {
+    "whatsapp_ai": True,
+    "telephony_queue": True,
+    "auto_not_relevant": True,
+}
+_DEFAULT_FEATURES_JSON = json.dumps(_DEFAULT_FEATURES)
+
 _MIGRATIONS = {
     "tenant_id": "ALTER TABLE messages ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'",
     "channel": "ALTER TABLE messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'whatsapp'",
@@ -392,6 +401,40 @@ def _init_schema(conn) -> None:
             data TEXT NOT NULL
         )
         """
+    )
+    # ---- Tenants & Feature Flags (ראו check_feature/is_feature_enabled ב-server.py/
+    # db.py) - "subdomain" הוא בפועל אותו מחרוזת tenant_id שכבר בשימוש בכל שאר
+    # הטבלאות (customers/messages/calls וכו') - לא דומיין DNS אמיתי בהכרח, רק
+    # מפתח ה-tenant הקיים, כדי לא לדרוש שינוי בשום מקום אחר באפליקציה.
+    # ⚠️ features הוא TEXT (JSON מסודרר), **לא** JSONB - בכוונה, לא השמטה: ההערה
+    # בראש הקובץ הזה כבר קובעת במפורש שכל טיפוסי העמודות זהים בדיוק בין שני
+    # הבאקאנדים (היחיד שונה הוא _PK) - וגם customers.data (JSON דומה) הוא TEXT,
+    # לא JSONB, מאותה סיבה. JSONB אמיתי היה דורש טיפול א-סימטרי (psycopg2
+    # מפענח JSONB לdict אוטומטית בקריאה, אבל *לא* מקודד dict לJSONB בכתיבה בלי
+    # cast/adapter מפורש) - בדיוק אותה מחלקת באג (str/native type לפי backend)
+    # שתוקנה הרגע ב-compute_lead_score (last_activity, TIMESTAMP). TEXT+json.
+    # dumps/loads נשאר סימטרי ופשוט בשני הבסיסים - ראו _parse_features למטה.
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS tenants (
+            id {_PK},
+            name TEXT,
+            subdomain TEXT UNIQUE,
+            features TEXT NOT NULL DEFAULT '{_DEFAULT_FEATURES_JSON}',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    # "default" הוא ה-tenant_id הקיים בכל שאר הפרויקט (DEFAULT_TENANT_ID ב-
+    # extract.py) - נוצר כאן אוטומטית כדי שיהיה תמיד tenant אחד אמיתי וניתן-
+    # לעריכה בטבלה, לא רק ברירת-המחדל ההתנהגותית (ראו get_tenant_features
+    # שעדיין נופלת בעדינות לכל התכונות=True גם ל-tenant שלא קיים כלל בטבלה -
+    # לא שינוי התנהגות רטרואקטיבי ל-tenant-ים קיימים שלא נרשמו).
+    conn.execute(
+        "INSERT INTO tenants (name, subdomain, features) VALUES (?, ?, ?) "
+        "ON CONFLICT (subdomain) DO NOTHING",
+        ("Default", "default", _DEFAULT_FEATURES_JSON),
     )
     conn.commit()
 
@@ -886,6 +929,58 @@ def is_contact_blocked(phone: str, tenant_id: str = "default") -> bool:
             "SELECT 1 FROM blocked_contacts WHERE tenant_id = ? AND phone = ?", (tenant_id, phone)
         ).fetchone()
         return row is not None
+    finally:
+        conn.close()
+
+
+def get_tenant_features(tenant_id: str) -> dict:
+    """מחזיר את dict התכונות עבור tenant (מפתח tenants.subdomain, לא tenants.id -
+    זה אותו tenant_id string שכל שאר הטבלאות משתמשות בו). tenant שלא רשום בטבלת
+    tenants בכלל (כל ה-tenant_id-ים הקיימים טרום הפיצ'ר הזה) מקבל בחזרה את
+    ברירת המחדל המלאה (הכל True) - כדי לא לשנות בדיעבד התנהגות לאף tenant
+    שלא נרשם במפורש, רק tenant שכן רשום וכן הוגדר עם features=false מפסיק
+    לקבל את ההתנהגות הזו."""
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT features FROM tenants WHERE subdomain = ?", (tenant_id,)
+        ).fetchone()
+        if row is None:
+            return dict(_DEFAULT_FEATURES)
+        try:
+            features = json.loads(row["features"])
+        except (TypeError, ValueError):
+            return dict(_DEFAULT_FEATURES)
+        merged = dict(_DEFAULT_FEATURES)
+        merged.update(features)
+        return merged
+    finally:
+        conn.close()
+
+
+def is_feature_enabled(tenant_id: str, feature_name: str) -> bool:
+    """נבדק ב-check_feature (server.py) ובwebhook() לבדיקת whatsapp_ai - ברירת
+    מחדל True עבור feature_name שלא קיים כלל ב-dict (עקבי עם get_tenant_features)."""
+    return get_tenant_features(tenant_id).get(feature_name, True)
+
+
+def set_tenant_feature(tenant_id: str, feature_name: str, enabled: bool) -> dict:
+    """מעדכן תכונה בודדת עבור tenant (יוצר את שורת ה-tenant אם לא קיימת עדיין -
+    upsert, בדיוק כמו set_blocked_contact) ומחזיר את ה-dict המלא המעודכן."""
+    features = get_tenant_features(tenant_id)
+    features[feature_name] = enabled
+    features_json = json.dumps(features)
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO tenants (name, subdomain, features) VALUES (?, ?, ?) "
+            "ON CONFLICT (subdomain) DO UPDATE SET features = EXCLUDED.features, "
+            "updated_at = CURRENT_TIMESTAMP",
+            (tenant_id, tenant_id, features_json),
+        )
+        conn.commit()
+        return features
     finally:
         conn.close()
 
