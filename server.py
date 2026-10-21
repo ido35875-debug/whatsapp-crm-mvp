@@ -931,6 +931,10 @@ def api_update_lead():
     lead_status = data.get("lead_status")
     if lead_status is not None and lead_status not in VALID_LEAD_STATUSES:
         return jsonify({"error": "סטטוס לא תקין"}), 400
+    # לפני העדכון - נדרש כדי לדעת אם lead_status בפועל *השתנה* (ראו _log_status_change),
+    # לא רק נשלח מחדש באותו ערך. נטען לפי ה-phone הסופי (אחרי rekey, אם היה) - ראו
+    # ההערה למעלה על רה-מיפוי המפתח קודם לכל שאר השדות.
+    old_status = (load_customers().get(f"{tenant_id}::{phone}") or {}).get("lead_status")
 
     card = update_lead_fields(
         phone,
@@ -944,6 +948,8 @@ def api_update_lead():
         notes=data.get("notes"),
         client_id=_requested_client_id(data),
     )
+    if lead_status is not None:
+        _log_status_change(phone, tenant_id, old_status, lead_status)
     return jsonify({"ok": True, "card": card, "phone": phone})
 
 
@@ -1001,12 +1007,36 @@ def api_search():
 
 
 VALID_LEAD_STATUSES = {"new", "contacted", "follow_up", "hot", "not_relevant", "reactivation", "human_handling", "no_answer"}
+# תוויות עבריות - זהות בדיוק לטקסט באפשרויות ה-<select> ב-index.html (statusFilter/
+# bulkStatusSelect) - לבניית הודעת "הסטטוס השתנה מ-X ל-Y" קריאה (ראו _log_status_change).
+LEAD_STATUS_LABELS = {
+    "new": "חדש", "contacted": "נוצר קשר", "follow_up": "פולו-אפ", "hot": "חם",
+    "human_handling": "בטיפול אנושי", "no_answer": "לא ענה", "not_relevant": "לא רלוונטי",
+    "reactivation": "החייאת לידים",
+}
+
+
+def _log_status_change(phone: str, tenant_id: str, old_status: str | None, new_status: str) -> None:
+    """רושם שינוי סטטוס ידני כאירוע ב-messages (channel='status_change') - כדי
+    שיופיע בציר הזמן המאוחד של הליד (/api/messages, ראו renderBubble ב-index.html)
+    לצד הודעות וואטסאפ/תקצירי שיחה/הערות פנימיות, לא רק כשדה שקט על הכרטיס.
+    לא נקרא אם הסטטוס לא השתנה בפועל (old_status == new_status) - "עדכון" סטטוס
+    לאותו ערך (למשל שמירה חזרה מה-UI) הוא לא אירוע שמעניין לראות בציר הזמן."""
+    old_label = LEAD_STATUS_LABELS.get(old_status or "new", old_status or "חדש")
+    new_label = LEAD_STATUS_LABELS.get(new_status, new_status)
+    if (old_status or "new") == new_status:
+        return
+    db.log_message(
+        phone, f'🔄 הסטטוס השתנה מ-"{old_label}" ל-"{new_label}"',
+        direction="out", tenant_id=tenant_id, channel="status_change",
+    )
 
 
 @app.route("/api/leads/status", methods=["POST"])
 def api_update_lead_status():
-    """מעדכן lead_status ידנית מהדשבורד (שורת הטבלה או פאנל ההיסטוריה). זו רק עדכון
-    סטטוס ב-customers.json - לא הודעה, ולכן לא נרשם בטבלת messages.
+    """מעדכן lead_status ידנית מהדשבורד (שורת הטבלה, הפעולה המרוכזת, או פאנל
+    ההיסטוריה). השינוי נרשם גם כאירוע ב-messages (channel='status_change', ראו
+    _log_status_change) כדי שיופיע בציר הזמן המאוחד של הליד, לא רק כשדה שקט.
     שלב 6 (סגירת פיילוט): אוכף בעלות (tenant_id+client_id) לפני השינוי -
     ראו _authorize_lead_access."""
     data = request.get_json(silent=True) or {}
@@ -1016,11 +1046,12 @@ def api_update_lead_status():
 
     if not phone or status not in VALID_LEAD_STATUSES:
         return jsonify({"error": "טלפון או סטטוס לא תקינים"}), 400
-    _, err = _authorize_lead_access(phone, tenant_id)
+    old_card, err = _authorize_lead_access(phone, tenant_id)
     if err:
         return err
 
     card = update_lead_status(phone, status, tenant_id=tenant_id)
+    _log_status_change(phone, tenant_id, old_card.get("lead_status"), status)
     return jsonify({"ok": True, "card": card})
 
 
