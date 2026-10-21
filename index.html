@@ -383,23 +383,28 @@
     max-width: 100%; box-sizing: border-box;
   }
   /* table-layout:fixed + <colgroup> מפורש (ראו renderTable) - רוחב כל עמודה
-     קבוע כאחוז/פיקסלים, לא "נדחף" לפי התוכן הארוך ביותר בעמודה - בדיוק מה
-     שמבטיח שהטבלה לעולם לא תחרוג מרוחב #tableWrap, גם ב-12 עמודות, בלי גלילה
-     אופקית (ראו גם overflow-x:hidden למטה - הגנה כפולה, לא רק "תקווה" שהעמודות
-     יספיקו). תוכן שחורג מהעמודה שלו נגזר ומסומן בשלוש-נקודות (ellipsis), לא
-     נשבר לשורה חדשה - טבלה צפופה נשארת קריאה, ופרטים מלאים זמינים בקליק על
-     השורה (פותח את פאנל ה-Timeline המלא, ראו wireRowClickToOpen). */
+     קבוע **באחוזים בלבד, שסוכמים ל-100% בדיוק** - לא "נדחף" לפי התוכן הארוך
+     ביותר בעמודה. ⚠️ חשוב: כל העמודות חייבות להיות אחוזים (לא פיקסלים קבועים
+     בנוסף לאחוזים שכבר סוכמים ל-100%!) - שילוב כזה גורם לטבלה לרנדר ברוחב
+     100%+Npx, חורג מ-#tableWrap, ומוסתר בשקט ע"י overflow-x:hidden למטה (בלי
+     scrollbar גלוי, אבל גם בלי שגיאה - בדיוק זה גרם לכפתורי הפעולות בעמודה
+     האחרונה "להיחתך" בלי שום אינדיקציה חזותית לבאג). תוכן שחורג מהעמודה שלו
+     נגזר ומסומן בשלוש-נקודות (ellipsis), לא נשבר לשורה חדשה - פרטים מלאים
+     זמינים בקליק על השורה (פותח את פאנל ה-Timeline המלא, ראו wireRowClickToOpen). */
   #tableWrap { overflow-x: hidden; max-width: 100%; }
   table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13.5px; }
   thead th {
-    text-align: start; padding: 12px 10px; font-weight: 700;
+    text-align: start; padding: 10px 6px; font-weight: 700;
     color: var(--accent); font-size: 11px; letter-spacing: 0.8px; text-transform: uppercase;
     border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   tbody td {
-    padding: 10px 10px; border-bottom: 1px solid var(--gridline); vertical-align: middle;
+    padding: 8px 6px; border-bottom: 1px solid var(--gridline); vertical-align: middle;
     transition: background .12s; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* עמודת הפעולות (כפתורי אייקון 💬/✏️) - פחות padding אופקי מכל שאר העמודות,
+     כדי להקצות לכפתורים עצמם כמה שיותר מה-8.5% שהוקצו לעמודה הזו (ראו colgroup) */
+  td.row-actions, th.col-actions { padding-inline: 4px; }
   tbody tr:last-child td { border-bottom: none; }
   /* hover שורה - הילת accent שקופה-חלקית, לא מילוי אפור שטוח - מתאים לשפת ה-glass הכללית */
   tbody tr:hover td { background: rgba(205,164,94,0.07); }
@@ -722,8 +727,8 @@
   /* שתי כפתורי פעולה בתא אחד בטבלה (היסטוריה + ערוך) */
   /* כפתורי אייקון-בלבד (לא טקסט מלא) - חוסך רוחב עמודה יקר בטבלה דחוסה;
      התווית המלאה עדיין נגישה כ-title (tooltip בריחוף עכבר) */
-  .row-actions { display: flex; gap: 4px; justify-content: center; white-space: nowrap; }
-  .row-actions button { padding: 5px 7px; font-size: 14px; line-height: 1; }
+  .row-actions { display: flex; gap: 3px; justify-content: center; white-space: nowrap; min-width: 0; }
+  .row-actions button { padding: 4px 6px; font-size: 14px; line-height: 1; min-width: 0; flex-shrink: 0; }
 
   /* מודאל אישור כללי (כרגע: מחיקת ליד) */
   .modal-overlay {
@@ -2103,16 +2108,16 @@ function renderTable() {
   wrap.innerHTML = `
     <table>
       <colgroup>
-        <col style="width:36px"><col style="width:28px"><col style="width:24%">
-        <col style="width:10%"><col style="width:12%"><col style="width:7%">
-        <col style="width:11%"><col style="width:7%"><col style="width:13%">
-        <col style="width:9%"><col style="width:7%"><col style="width:64px">
+        <col style="width:3%"><col style="width:3%"><col style="width:19%">
+        <col style="width:12%"><col style="width:9%"><col style="width:6%">
+        <col style="width:10%"><col style="width:6%"><col style="width:10%">
+        <col style="width:6%"><col style="width:5.5%"><col style="width:10.5%">
       </colgroup>
       <thead>
         <tr>
           <th><input type="checkbox" class="row-checkbox" id="selectAllCheckbox" ${allVisibleSelected ? "checked" : ""}></th>
           <th>#</th><th>שם</th><th>טלפון</th><th title="סוכן מטפל">סוכן</th><th>ערוץ</th><th>סטטוס</th>
-          <th title="ציון חום">חום</th><th title="פעילות אחרונה">פעילות</th><th>קטגוריה</th><th>עסק</th><th></th>
+          <th title="ציון חום">חום</th><th title="פעילות אחרונה">פעילות</th><th>קטגוריה</th><th>עסק</th><th class="col-actions"></th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
