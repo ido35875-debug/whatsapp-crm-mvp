@@ -537,6 +537,59 @@
 
   .panel-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
 
+  /* ===== Lead Details - תצוגה מלאה-מסך (לא drawer צר) =====
+     #panel הוא עדיין אותו .panel בסיסי (אותה אנימציית slide חלקה, אותו
+     overlay/closeAllPanels) - רק דורס את מידות ה-drawer ואת פריסת-העמודה-
+     האחת שלו ל-overlay ברוחב מלא עם שתי עמודות (ציר-זמן רחב + סיידבר פרטים),
+     בלי לגעת ב-.panel/.panel-header/.panel-body הבסיסיים ששאר הפאנלים
+     (callPanel/tasksPanel/editLeadPanel וכו') ממשיכים להשתמש בהם כמו שהיו -
+     ראו ההבדל בסלקטור (#panel, לא .panel) בכל חריגה למטה. */
+  #panel {
+    inset-inline-start: 0; width: 100%; max-width: 100%; z-index: 55;
+  }
+
+  #panel .panel-topbar {
+    padding: 16px 28px; border-bottom: 1px solid var(--gridline);
+    display: flex; align-items: center; gap: 16px; flex-shrink: 0;
+  }
+  #panel .panel-back-btn {
+    display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
+    color: var(--text-secondary); font-size: 13.5px; padding: 8px 14px;
+  }
+  #panel .panel-back-btn:hover { background: var(--surface-3); color: var(--text-primary); }
+  #panel .panel-topbar-title h2 { font-size: 18px; margin: 0 0 2px; }
+  #panel .panel-topbar-title p { margin: 0; font-size: 13px; color: var(--text-secondary); }
+
+  #panel .panel-layout { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+  #panel .panel-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #panel .panel-body { padding: 20px min(8vw, 64px); }
+  #panel .panel-sidebar {
+    width: 360px; flex-shrink: 0; overflow-y: auto; padding: 20px;
+    border-inline-start: 1px solid var(--gridline); background: var(--surface-1);
+    display: flex; flex-direction: column; gap: 18px;
+  }
+  #panel .panel-sidebar-section { display: flex; flex-direction: column; gap: 2px; }
+  #panel .panel-sidebar-label {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+    color: var(--text-muted); margin-bottom: 6px;
+  }
+  #panel .panel-sidebar-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  #panel .panel-sidebar-actions .call-btn { width: 100%; box-sizing: border-box; text-align: center; }
+  #panel .panel-sidebar-note .note-form { flex-direction: column; margin-top: 0; }
+  #panel .panel-sidebar-note input {
+    width: 100%; box-sizing: border-box; font-size: 13.5px; padding: 12px 14px;
+  }
+  #panel .panel-sidebar-note button { width: 100%; }
+  @media (max-width: 980px) {
+    #panel .panel-layout { flex-direction: column; overflow-y: auto; }
+    #panel .panel-sidebar {
+      width: 100%; border-inline-start: none; border-top: 1px solid var(--gridline);
+      flex-direction: row; flex-wrap: wrap; overflow-y: visible;
+    }
+    #panel .panel-sidebar-actions { flex: 1 1 100%; }
+  }
+
   .msg-row { display: flex; margin-block: 10px; }
   .msg-row.out { justify-content: flex-start; }
   .msg-row.in { justify-content: flex-end; }
@@ -1455,48 +1508,79 @@
 
 
 <div class="overlay" id="overlay"></div>
+<!-- Lead Details - תצוגה מלאה-מסך (לא drawer צר, ראו ההערה המלאה ב-CSS
+     #panel למעלה). שימוש בדיוק באותם ID-ים שהיו ב-drawer הקודם (panelBody/
+     panelName/panelSub/panelStatusWrap/.../panelClose) - createChatController
+     (panelIds, למטה בקובץ) ממשיך לעבוד מילה-במילה בלי שום שינוי קוד JS;
+     רק הסידור המרחבי של אותם אלמנטים עצמם השתנה (עמודת ציר-זמן רחבה +
+     סיידבר פרטים, במקום מחסן-אחד-צר-מלמעלה-למטה). -->
 <aside class="panel glass" id="panel">
-  <div class="panel-header">
-    <div>
+  <div class="panel-topbar">
+    <button class="panel-back-btn" id="panelClose" aria-label="חזרה לדשבורד">
+      <i data-lucide="arrow-right" class="h-4 w-4"></i><span>חזרה</span>
+    </button>
+    <div class="panel-topbar-title">
       <h2>
         <span id="panelName">היסטוריית הודעות</span>
         <span class="live-badge" title="חלון חי - מתעדכן אוטומטית">🟢 חי</span>
       </h2>
       <p id="panelSub"></p>
-      <div id="panelStatusWrap" class="panel-status-wrap"></div>
-      <div id="panelAiToggleWrap" class="panel-status-wrap"></div>
-      <div id="panelScoreWrap" class="panel-score-wrap"></div>
-      <div id="panelPropertyWrap" class="panel-property-wrap"></div>
-      <div id="panelSummaryWrap" class="panel-summary-wrap"></div>
-      <div id="panelMissingFieldsWrap" class="panel-property-wrap"></div>
-      <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
-      <button type="button" class="call-btn" id="panelCallbackBtn">⏰ חזור בהמשך</button>
-      <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
-      <button type="button" class="call-btn" id="panelCallHistoryBtn">📋 היסטוריית שיחות</button>
-      <button type="button" class="call-btn" id="panelQuickEditBtn">✏️ ערוך פרטים</button>
-      <button type="button" class="call-btn danger" id="panelBlockBtn">🚫 חסום איש קשר</button>
     </div>
-    <button class="panel-close" id="panelClose" aria-label="סגור">✕</button>
   </div>
-  <div class="panel-body" id="panelBody"></div>
-  <div class="ai-copilot" id="aiCopilotWrap">
-    <div class="ai-copilot-buttons">
-      <button type="button" id="objectionBtn">🎯 הצעות תגובה (סוכן מכירות)</button>
-      <button type="button" id="execSummaryBtn">📋 סיכום מנהלים</button>
-      <button type="button" id="missingFieldsBtn" style="display:none;">🧩 הצע השלמת פרטים</button>
+  <div class="panel-layout">
+    <div class="panel-main">
+      <div class="panel-body" id="panelBody"></div>
+      <div class="ai-copilot" id="aiCopilotWrap">
+        <div class="ai-copilot-buttons">
+          <button type="button" id="objectionBtn">🎯 הצעות תגובה (סוכן מכירות)</button>
+          <button type="button" id="execSummaryBtn">📋 סיכום מנהלים</button>
+          <button type="button" id="missingFieldsBtn" style="display:none;">🧩 הצע השלמת פרטים</button>
+        </div>
+        <div class="ai-copilot-result" id="aiCopilotResult" style="display:none;"></div>
+      </div>
+      <div class="composer">
+        <div class="composer-error" id="composerError"></div>
+        <form id="composerForm">
+          <textarea id="composerInput" placeholder="כתוב הודעה..." rows="1" required></textarea>
+          <button type="submit" class="primary" id="composerSend">שלח</button>
+        </form>
+      </div>
     </div>
-    <div class="ai-copilot-result" id="aiCopilotResult" style="display:none;"></div>
-  </div>
-  <div class="composer">
-    <div class="composer-error" id="composerError"></div>
-    <form id="composerForm">
-      <textarea id="composerInput" placeholder="כתוב הודעה..." rows="1" required></textarea>
-      <button type="submit" class="primary" id="composerSend">שלח</button>
-    </form>
-    <form id="noteForm" class="note-form">
-      <input type="text" id="noteInput" placeholder="🗒️ הוסף הערה פנימית (לא נשלח ללקוח)...">
-      <button type="submit" id="noteSend">הוסף הערה</button>
-    </form>
+    <aside class="panel-sidebar">
+      <div class="panel-sidebar-section">
+        <div class="panel-sidebar-label">סטטוס ומענה</div>
+        <div id="panelStatusWrap" class="panel-status-wrap"></div>
+        <div id="panelAiToggleWrap" class="panel-status-wrap"></div>
+        <div id="panelScoreWrap" class="panel-score-wrap"></div>
+      </div>
+      <div class="panel-sidebar-section">
+        <div class="panel-sidebar-label">נדל"ן ותקציב</div>
+        <div id="panelPropertyWrap" class="panel-property-wrap"></div>
+        <div id="panelMissingFieldsWrap" class="panel-property-wrap"></div>
+      </div>
+      <div class="panel-sidebar-section">
+        <div class="panel-sidebar-label">תקציר פעילות</div>
+        <div id="panelSummaryWrap" class="panel-summary-wrap"></div>
+      </div>
+      <div class="panel-sidebar-section">
+        <div class="panel-sidebar-label">פעולות</div>
+        <div class="panel-sidebar-actions">
+          <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
+          <button type="button" class="call-btn" id="panelCallbackBtn">⏰ חזור בהמשך</button>
+          <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
+          <button type="button" class="call-btn" id="panelCallHistoryBtn">📋 היסטוריית שיחות</button>
+          <button type="button" class="call-btn" id="panelQuickEditBtn">✏️ ערוך פרטים</button>
+          <button type="button" class="call-btn danger" id="panelBlockBtn">🚫 חסום איש קשר</button>
+        </div>
+      </div>
+      <div class="panel-sidebar-section panel-sidebar-note">
+        <div class="panel-sidebar-label">הערה פנימית מהירה</div>
+        <form id="noteForm" class="note-form">
+          <input type="text" id="noteInput" placeholder="🗒️ לדוגמה: התקשרתי - מעוניין בדירת 4 חדרים...">
+          <button type="submit" id="noteSend">הוסף הערה</button>
+        </form>
+      </div>
+    </aside>
   </div>
 </aside>
 
