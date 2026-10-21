@@ -754,6 +754,44 @@
   .modal-box p { margin: 0 0 20px; color: var(--text-secondary); font-size: 13.5px; line-height: 1.5; }
   .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
 
+  /* Command Copilot - פס פקודות מהיר (Ctrl/Cmd+K) - קלט חופשי -> preview
+     מובנה -> ביצוע, הכל באותו modal אחד (לא modal-בתוך-modal) כדי שהזרימה
+     תישאר מהירה ונקייה, כמתבקש ("enterprise-grade", "uncluttered"). */
+  .copilot-box { max-width: 560px; text-align: start; }
+  .copilot-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
+    font-weight: 700; font-size: 14px; color: var(--text-primary);
+  }
+  .copilot-mic-btn {
+    margin-inline-start: auto; border: none; background: var(--surface-3);
+    color: var(--text-secondary); border-radius: 999px; padding: 6px; line-height: 1;
+  }
+  .copilot-mic-btn.recording { background: var(--status-critical-soft); color: var(--status-critical); animation: callbackPulse 1.6s ease-in-out infinite; }
+  #copilotInput {
+    width: 100%; box-sizing: border-box; font-family: inherit; font-size: 15px;
+    padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface-1); color: var(--text-primary); outline: none;
+  }
+  #copilotInput:focus { border-color: var(--accent); }
+  .copilot-hint { margin-top: 6px; font-size: 11.5px; color: var(--text-muted); }
+  .copilot-result { margin-top: 16px; }
+  .copilot-lead-match {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border-radius: 10px; background: var(--surface-2); margin-bottom: 10px; font-size: 13.5px;
+  }
+  .copilot-lead-match b { color: var(--text-primary); }
+  .copilot-action-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .copilot-action-item {
+    display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+    border-radius: 9px; background: var(--surface-2); font-size: 13px; color: var(--text-secondary);
+  }
+  .copilot-action-item .copilot-action-icon { flex-shrink: 0; }
+  .copilot-clarification {
+    padding: 10px 12px; border-radius: 10px; font-size: 13px;
+    background: var(--status-warning-soft); color: var(--status-warning); margin-bottom: 10px;
+  }
+  .copilot-success { padding: 10px 12px; border-radius: 10px; font-size: 13.5px; background: var(--status-good-soft); color: var(--status-good); }
+
   /* תזכורת חזרה לליד (Callback) - "משימה בולטת" שלא ניתן לפספס (ראו
      checkDueCallbacks) - גבול/כותרת בולטים בגוון critical, נבדל ממודאל
      האישור הכללי (confirmModalOverlay) שמעל */
@@ -1072,6 +1110,11 @@
         <div class="hidden items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-400 sm:flex" title="בקשות /api/* מאובטחות ב-API Key">
           <i data-lucide="shield-check" class="h-3.5 w-3.5"></i><span>API מאובטח</span>
         </div>
+        <button type="button" id="copilotOpenBtn" title="Command Copilot (Ctrl/Cmd+K)"
+          class="flex items-center gap-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-3.5 py-2 text-sm font-medium text-slate-300 transition hover:border-indigo-500/60 hover:text-slate-100">
+          <i data-lucide="wand-2" class="h-4 w-4 text-indigo-400"></i><span>Command</span>
+          <span class="rounded border border-slate-700 bg-slate-800/80 px-1.5 py-0.5 text-[10px] text-slate-400">Ctrl+K</span>
+        </button>
         <div class="relative">
           <button type="button" id="quickActionsBtn" class="flex items-center gap-2 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 px-3.5 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-950/40 transition hover:opacity-90">
             <i data-lucide="zap" class="h-4 w-4"></i><span>פעולות מהירות</span><i data-lucide="chevron-down" class="h-3.5 w-3.5"></i>
@@ -1639,6 +1682,26 @@
       <button type="button" id="confirmModalCancel">ביטול</button>
       <button type="button" id="confirmModalConfirm" class="danger"></button>
     </div>
+  </div>
+</div>
+
+<!-- Command Copilot (Quick Action Bar) - הוראה חופשית -> preview -> ביצוע
+     (ראו server.py: POST /api/copilot/parse, POST /api/copilot/execute) -->
+<div class="modal-overlay" id="copilotOverlay">
+  <div class="modal-box glass copilot-box">
+    <div class="copilot-header">
+      <i data-lucide="sparkles" class="h-4 w-4"></i>
+      <span>Command Copilot</span>
+      <button type="button" id="copilotMicBtn" class="copilot-mic-btn" style="display:none;" title="דיקטציה קולית">
+        <i data-lucide="mic" class="h-4 w-4"></i>
+      </button>
+    </div>
+    <form id="copilotForm">
+      <input type="text" id="copilotInput" dir="auto" autocomplete="off"
+        placeholder="לדוגמה: עדכן את יארין גבאי לחם, הוסף הערה שקבענו פגישה, ותזמן פולו-אפ למחר">
+    </form>
+    <div class="copilot-hint" id="copilotHint">Enter לניתוח · Esc לסגירה</div>
+    <div id="copilotResultWrap"></div>
   </div>
 </div>
 
@@ -4904,6 +4967,157 @@ function showConfirmModal({ title, body, confirmLabel = "אישור", danger = t
     cancelBtn.addEventListener("click", onCancel);
   });
 }
+
+// ---- Command Copilot (Quick Action Bar) - הוראה חופשית -> preview -> ביצוע
+// (ראו server.py: POST /api/copilot/parse, POST /api/copilot/execute) ----
+let copilotLastParseResult = null; // {lead_match, phone, tenant_id, actions, ...} - נשלח כפי שהוא ל-/execute, לא משוחזר מה-DOM
+
+function openCopilot() {
+  document.getElementById("copilotOverlay").classList.add("open");
+  const input = document.getElementById("copilotInput");
+  document.getElementById("copilotResultWrap").innerHTML = "";
+  input.value = "";
+  copilotLastParseResult = null;
+  setTimeout(() => input.focus(), 50); // אחרי שה-modal נראה בפועל (display:flex)
+}
+function closeCopilot() {
+  document.getElementById("copilotOverlay").classList.remove("open");
+  if (copilotRecognition) { try { copilotRecognition.stop(); } catch (e) { /* לא בהקלטה - תקין */ } }
+}
+document.getElementById("copilotOpenBtn").addEventListener("click", openCopilot);
+document.getElementById("copilotOverlay").addEventListener("click", (e) => {
+  if (e.target.id === "copilotOverlay") closeCopilot();
+});
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    openCopilot();
+  }
+  if (e.key === "Escape" && document.getElementById("copilotOverlay").classList.contains("open")) {
+    closeCopilot();
+  }
+});
+
+const COPILOT_ACTION_ICONS = { status_update: "🔄", add_note: "🗒️", schedule_task: "📅" };
+
+function renderCopilotActionItem(action) {
+  const icon = COPILOT_ACTION_ICONS[action.type] || "•";
+  return `<div class="copilot-action-item"><span class="copilot-action-icon">${icon}</span><span>${escapeHtml(action.label)}</span></div>`;
+}
+
+async function handleCopilotParse(commandText) {
+  const resultWrap = document.getElementById("copilotResultWrap");
+  resultWrap.innerHTML = '<div class="loading">מנתח את ההוראה...</div>';
+  try {
+    const res = await fetch("/api/copilot/parse", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: commandText }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    renderCopilotPreview(data);
+  } catch (err) {
+    resultWrap.innerHTML = '<div class="error">שגיאה: ' + escapeHtml(err.message) + "</div>";
+  }
+}
+
+function renderCopilotPreview(data) {
+  const resultWrap = document.getElementById("copilotResultWrap");
+  copilotLastParseResult = data;
+
+  if (data.lead_match === "not_found") {
+    resultWrap.innerHTML = '<div class="copilot-clarification">❌ ' + escapeHtml(data.clarification || "לא נמצא ליד מתאים") + "</div>";
+    return;
+  }
+  if (data.lead_match === "ambiguous") {
+    const names = (data.matched_candidates || []).map(c => escapeHtml(c.customer_name || c.phone)).join(", ");
+    resultWrap.innerHTML =
+      '<div class="copilot-clarification">⚠️ ' + escapeHtml(data.clarification || "יותר מליד אחד מתאים להוראה") +
+      (names ? `<br>התאמות אפשריות: ${names}` : "") + "</div>";
+    return;
+  }
+
+  // lead_match === "found"
+  const lead = findLead(data.phone, data.tenant_id);
+  const leadName = (lead && lead.customer_name) || data.phone;
+
+  if (!data.actions || data.actions.length === 0) {
+    resultWrap.innerHTML =
+      `<div class="copilot-lead-match">🎯 ליד שזוהה: <b>${escapeHtml(leadName)}</b></div>` +
+      '<div class="copilot-clarification">' + escapeHtml(data.clarification || "לא זוהתה פעולה מתאימה בהוראה") + "</div>";
+    return;
+  }
+
+  resultWrap.innerHTML = `
+    <div class="copilot-result">
+      <div class="copilot-lead-match">🎯 ליד שזוהה: <b>${escapeHtml(leadName)}</b> · ${escapeHtml(data.phone)}</div>
+      <div class="copilot-action-list">${data.actions.map(renderCopilotActionItem).join("")}</div>
+      <div class="modal-actions">
+        <button type="button" id="copilotCancelBtn">ביטול</button>
+        <button type="button" id="copilotConfirmBtn" class="primary">✅ אשר וביצוע</button>
+      </div>
+    </div>
+  `;
+  document.getElementById("copilotCancelBtn").addEventListener("click", closeCopilot);
+  document.getElementById("copilotConfirmBtn").addEventListener("click", handleCopilotExecute);
+}
+
+async function handleCopilotExecute() {
+  if (!copilotLastParseResult) return;
+  const { phone, tenant_id, actions } = copilotLastParseResult;
+  const confirmBtn = document.getElementById("copilotConfirmBtn");
+  if (confirmBtn) confirmBtn.disabled = true;
+  const resultWrap = document.getElementById("copilotResultWrap");
+  try {
+    const res = await fetch("/api/copilot/execute", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, tenant_id, actions }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    resultWrap.innerHTML = '<div class="copilot-success">✅ בוצע: ' + escapeHtml(data.executed.join(", ")) + "</div>";
+    await loadLeads();
+    setTimeout(closeCopilot, 1400);
+  } catch (err) {
+    resultWrap.innerHTML = '<div class="error">שגיאה בביצוע: ' + escapeHtml(err.message) + "</div>";
+    if (confirmBtn) confirmBtn.disabled = false;
+  }
+}
+
+document.getElementById("copilotForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = document.getElementById("copilotInput").value.trim();
+  if (text) handleCopilotParse(text);
+});
+
+// דיקטציה קולית (Web Speech API, ראו הבקשה "type or dictate") - תוספת-נוחות,
+// לא תלות קשיחה: נעלמת בשקט בדפדפן בלי תמיכה (למשל Firefox) - copilotMicBtn
+// מתחיל עם display:none ב-HTML, ונחשף רק אם ה-API הזה קיים בפועל בדפדפן.
+let copilotRecognition = null;
+(function setupCopilotMic() {
+  const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognitionCtor) return;
+  const micBtn = document.getElementById("copilotMicBtn");
+  micBtn.style.display = "";
+  copilotRecognition = new SpeechRecognitionCtor();
+  copilotRecognition.lang = "he-IL";
+  copilotRecognition.interimResults = false;
+  copilotRecognition.onresult = (e) => {
+    const text = e.results[0][0].transcript;
+    const input = document.getElementById("copilotInput");
+    input.value = (input.value ? input.value + " " : "") + text;
+  };
+  copilotRecognition.onend = () => micBtn.classList.remove("recording");
+  copilotRecognition.onerror = () => micBtn.classList.remove("recording");
+  micBtn.addEventListener("click", () => {
+    if (micBtn.classList.contains("recording")) {
+      copilotRecognition.stop();
+      return;
+    }
+    micBtn.classList.add("recording");
+    try { copilotRecognition.start(); } catch (e) { micBtn.classList.remove("recording"); }
+  });
+})();
 
 // ---- עריכת ליד קיים (Full CRUD - Update/Delete) ----
 function openEditLeadPanel(phone, tenantId) {

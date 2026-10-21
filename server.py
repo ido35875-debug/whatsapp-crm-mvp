@@ -70,6 +70,7 @@ try:
     # ישירות - תלויים ב-extract.py, שדורש ANTHROPIC_API_KEY בזמן טעינה (os.environ[...]).
     # לכן כל השרשרת חייבת להיות בתוך אותו try/except - אחרת ה-KeyError קורה כבר
     # ב-"import reactivate" למשל, לפני שמגיעים בכלל לבלוק שתופס אותו.
+    import command_copilot
     import db
     import outbound_engine
     import reactivate
@@ -951,6 +952,99 @@ def api_update_lead():
     if lead_status is not None:
         _log_status_change(phone, tenant_id, old_status, lead_status)
     return jsonify({"ok": True, "card": card, "phone": phone})
+
+
+# ---- Command Copilot (Quick Action Bar) - הוראה חופשית -> תצוגת-אישור -> ביצוע ----
+# שני שלבים נפרדים בכוונה (parse ואז execute), לא endpoint אחד - "חוק בטיחות #1"
+# (ראו CLAUDE.md + command_copilot.py): אף פעולה לא מבוצעת בלי שהנציג ראה preview
+# מפורש ואישר אותו ב-UI. parse לא כותבת שום דבר ל-DB; execute מבצעת, אבל גם היא
+# מאמתת מחדש כל פעולה (command_copilot.sanitize_action) ומאמתת מחדש הרשאות על
+# הליד (_authorize_lead_access) - לא בוטחת בכך ש-parse "כבר בדקה את זה" פעם אחת,
+# כי execute יכולה לקבל כל JSON שהלקוח שולח, לא רק את מה ש-parse החזירה בעצמה.
+
+def _copilot_candidate_leads() -> list[dict]:
+    """רשימת לידים מועמדים לזיהוי AI ב-Command Copilot - מסוננת בדיוק באותה
+    לוגיקת בידוד Multi-Tenant/client_id כמו GET /api/leads (ראו שם), כדי
+    שה-AI לעולם לא יקבל ליד שהמשתמש המחובר לא מורשה לראות מלכתחילה."""
+    allowed_tenant_ids = _effective_tenant_ids(None)
+    required_client_id = _effective_client_id()
+    candidates = []
+    for key, card in load_customers().items():
+        tenant_id, _, key_phone = key.partition("::")
+        resolved_tenant_id = card.get("tenant_id", tenant_id)
+        if allowed_tenant_ids is not None and resolved_tenant_id not in allowed_tenant_ids:
+            continue
+        if required_client_id is not None and card.get("client_id") != required_client_id:
+            continue
+        candidates.append({
+            "phone": card.get("phone", key_phone),
+            "tenant_id": resolved_tenant_id,
+            "customer_name": card.get("customer_name"),
+            "business_name": card.get("business_name"),
+            "lead_status": card.get("lead_status"),
+        })
+    return candidates
+
+
+@app.route("/api/copilot/parse", methods=["POST"])
+def api_copilot_parse():
+    """שלב 1/2: מנתחת הוראה חופשית (command_copilot.parse_command) ומחזירה
+    preview - זיהוי ליד + רשימת פעולות מוצעות - **בלי לבצע שום דבר**. ה-UI
+    מציג את זה כתצוגת-אישור; הביצוע בפועל קורה רק ב-POST /api/copilot/execute,
+    ורק בלחיצה מפורשת על 'אשר' (ראו הערת הבטיחות למעלה)."""
+    data = request.get_json(silent=True) or {}
+    command_text = (data.get("command") or "").strip()
+    if not command_text:
+        return jsonify({"error": "חסרה הוראה"}), 400
+    result = command_copilot.parse_command(command_text, _copilot_candidate_leads())
+    return jsonify(result)
+
+
+@app.route("/api/copilot/execute", methods=["POST"])
+def api_copilot_execute():
+    """שלב 2/2: מבצעת את הפעולות שאושרו ב-preview - נקראת **רק** אחרי קליק
+    מפורש על 'אשר וביצוע' ב-UI. מקבלת phone/tenant_id/actions (בדיוק המבנה
+    שהוחזר מ-parse, אך לעולם לא בוטחת בו כפשוטו - ראו ההערה למעלה): מאמתת
+    מחדש הרשאות על הליד (_authorize_lead_access) וכל פעולה בנפרד
+    (command_copilot.sanitize_action) לפני שמבצעת אותה בפועל. כל הפעולות
+    התקינות מבוצעות (לא all-or-nothing) - פעולה פגומה בודדת מדווחת ב-skipped
+    בלי לחסום את שאר הפעולות התקינות באותה בקשה."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = (data.get("tenant_id") or "").strip()
+    raw_actions = data.get("actions")
+    if not phone or not tenant_id or not isinstance(raw_actions, list) or not raw_actions:
+        return jsonify({"error": "חסר phone/tenant_id/actions"}), 400
+
+    old_card, err = _authorize_lead_access(phone, tenant_id)
+    if err:
+        return err
+
+    executed = []
+    skipped = 0
+    for raw_action in raw_actions:
+        action = command_copilot.sanitize_action(raw_action)
+        if not action:
+            skipped += 1
+            continue
+        if action["type"] == "status_update":
+            old_status = old_card.get("lead_status")
+            update_lead_status(phone, action["status"], tenant_id=tenant_id)
+            _log_status_change(phone, tenant_id, old_status, action["status"])
+            old_card["lead_status"] = action["status"]  # פעולות הבאות באותה בקשה רואות את הערך המעודכן
+            executed.append(action["label"])
+        elif action["type"] == "add_note":
+            db.log_message(phone, action["text"], direction="out", tenant_id=tenant_id, channel="note")
+            executed.append(action["label"])
+        elif action["type"] == "schedule_task":
+            db.create_task(
+                phone, tenant_id=tenant_id, title=action["title"],
+                due_date=action["due_date"], due_time=action["due_time"],
+                status="pending", source="command_copilot",
+            )
+            executed.append(action["label"])
+
+    return jsonify({"ok": True, "executed": executed, "skipped": skipped})
 
 
 @app.route("/api/leads/delete", methods=["POST"])
