@@ -145,8 +145,8 @@
   .page { max-width: 1680px; margin: 0 auto; padding: 32px 24px 64px; }
 
   /* פריסת עמוד ראשית: טבלה + מרכז בקרה בצד (רק בתצוגת הטבלה - לא ב-Inbox) */
-  .dashboard-layout { display: flex; gap: 20px; align-items: flex-start; }
-  .dashboard-main { flex: 1; min-width: 0; }
+  .dashboard-layout { display: flex; gap: 24px; align-items: flex-start; max-width: 100%; }
+  .dashboard-main { flex: 1; min-width: 0; max-width: 100%; }
   .control-center { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; }
   @media (max-width: 1100px) {
     .dashboard-layout { flex-direction: column; }
@@ -279,9 +279,10 @@
 
   .serial-cell { color: var(--text-muted); font-variant-numeric: tabular-nums; }
   input.agent-input {
-    width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12.5px;
+    width: 100%; max-width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12.5px;
     padding: 5px 8px; border-radius: 8px; border: 1px solid transparent;
     background: transparent; color: var(--text-secondary);
+    overflow: hidden; text-overflow: ellipsis;
   }
   input.agent-input:hover, input.agent-input:focus {
     border-color: var(--border); background: var(--surface-2); outline: none;
@@ -379,17 +380,26 @@
 
   .table-card {
     border-radius: 20px; overflow: hidden; box-shadow: var(--glass-shadow);
+    max-width: 100%; box-sizing: border-box;
   }
-  /* עמודות רבות (עם סרגל הצד) עלולות לחרוג מהרוחב הזמין - גלילה אופקית פנימית
-     על #tableWrap עצמו, כדי ש-.table-card ישמור על הפינות המעוגלות בלי לגזור */
-  #tableWrap { overflow-x: auto; }
-  table { width: 100%; min-width: 1080px; border-collapse: collapse; font-size: 13.5px; }
+  /* table-layout:fixed + <colgroup> מפורש (ראו renderTable) - רוחב כל עמודה
+     קבוע כאחוז/פיקסלים, לא "נדחף" לפי התוכן הארוך ביותר בעמודה - בדיוק מה
+     שמבטיח שהטבלה לעולם לא תחרוג מרוחב #tableWrap, גם ב-12 עמודות, בלי גלילה
+     אופקית (ראו גם overflow-x:hidden למטה - הגנה כפולה, לא רק "תקווה" שהעמודות
+     יספיקו). תוכן שחורג מהעמודה שלו נגזר ומסומן בשלוש-נקודות (ellipsis), לא
+     נשבר לשורה חדשה - טבלה צפופה נשארת קריאה, ופרטים מלאים זמינים בקליק על
+     השורה (פותח את פאנל ה-Timeline המלא, ראו wireRowClickToOpen). */
+  #tableWrap { overflow-x: hidden; max-width: 100%; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13.5px; }
   thead th {
-    text-align: start; padding: 14px 16px; font-weight: 700;
+    text-align: start; padding: 12px 10px; font-weight: 700;
     color: var(--accent); font-size: 11px; letter-spacing: 0.8px; text-transform: uppercase;
-    border-bottom: 1px solid var(--border); white-space: nowrap;
+    border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  tbody td { padding: 13px 16px; border-bottom: 1px solid var(--gridline); vertical-align: middle; transition: background .12s; }
+  tbody td {
+    padding: 10px 10px; border-bottom: 1px solid var(--gridline); vertical-align: middle;
+    transition: background .12s; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   tbody tr:last-child td { border-bottom: none; }
   /* hover שורה - הילת accent שקופה-חלקית, לא מילוי אפור שטוח - מתאים לשפת ה-glass הכללית */
   tbody tr:hover td { background: rgba(205,164,94,0.07); }
@@ -402,9 +412,10 @@
   td.phone { font-variant-numeric: tabular-nums; direction: ltr; text-align: right; }
 
   .tag {
-    display: inline-block; padding: 3px 9px; border-radius: 999px;
+    display: inline-block; max-width: 100%; padding: 3px 9px; border-radius: 999px;
     font-size: 12px; background: var(--surface-3); color: var(--text-secondary);
-    border: 1px solid var(--border);
+    border: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; box-sizing: border-box; vertical-align: middle;
   }
 
   .badge {
@@ -432,7 +443,8 @@
   select.status-select {
     border: none; border-radius: 999px; padding: 3px 10px;
     font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
-    color: inherit; outline: none;
+    color: inherit; outline: none; width: 100%; max-width: 100%; box-sizing: border-box;
+    overflow: hidden; text-overflow: ellipsis;
   }
   select.status-select.new { background: var(--surface-3); color: var(--text-secondary); }
   select.status-select.contacted { background: var(--status-warning-soft); color: var(--status-warning); }
@@ -472,9 +484,10 @@
 
   /* קטגוריה חופשית (נדל"ן/פרטי/משפחה וכו') - שדה טקסט ניתן לעריכה בטבלה */
   input.category-input {
-    width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12.5px;
+    width: 100%; max-width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12.5px;
     padding: 5px 8px; border-radius: 8px; border: 1px solid transparent;
     background: transparent; color: var(--text-secondary);
+    overflow: hidden; text-overflow: ellipsis;
   }
   input.category-input:hover, input.category-input:focus {
     border-color: var(--border); background: var(--surface-2); outline: none;
@@ -707,7 +720,10 @@
   button.danger:hover { background: var(--status-critical); color: #fff; }
 
   /* שתי כפתורי פעולה בתא אחד בטבלה (היסטוריה + ערוך) */
-  .row-actions { display: flex; gap: 6px; white-space: nowrap; }
+  /* כפתורי אייקון-בלבד (לא טקסט מלא) - חוסך רוחב עמודה יקר בטבלה דחוסה;
+     התווית המלאה עדיין נגישה כ-title (tooltip בריחוף עכבר) */
+  .row-actions { display: flex; gap: 4px; justify-content: center; white-space: nowrap; }
+  .row-actions button { padding: 5px 7px; font-size: 14px; line-height: 1; }
 
   /* מודאל אישור כללי (כרגע: מחיקת ליד) */
   .modal-overlay {
@@ -837,11 +853,6 @@
     font-family: inherit; font-size: 12px; line-height: 1.45; padding: 8px 10px;
     border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2);
     color: var(--text-primary); direction: rtl;
-  }
-
-  @media (max-width: 720px) {
-    .table-card { overflow-x: auto; }
-    table { min-width: 760px; }
   }
 
   /* Unified Inbox - תצוגה חלופית לטבלה: רשימת שיחות בצד אחד, חלון צ'אט קבוע בצד שני */
@@ -2079,8 +2090,8 @@ function renderTable() {
         <td><input type="text" class="category-input" placeholder="קטגוריה..." value="${escapeHtml(lead.category || "")}" data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}"></td>
         <td><span class="tag">${escapeHtml(tenantId)}</span></td>
         <td class="row-actions">
-          <button data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}" data-name="${escapeHtml(lead.customer_name || lead.phone)}" class="history-btn">💬 היסטוריה</button>
-          <button data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}" class="edit-lead-btn">✏️ ערוך</button>
+          <button data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}" data-name="${escapeHtml(lead.customer_name || lead.phone)}" class="history-btn" title="היסטוריית הודעות">💬</button>
+          <button data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}" class="edit-lead-btn" title="ערוך פרטים">✏️</button>
         </td>
       </tr>
     `;
@@ -2091,11 +2102,17 @@ function renderTable() {
 
   wrap.innerHTML = `
     <table>
+      <colgroup>
+        <col style="width:36px"><col style="width:28px"><col style="width:24%">
+        <col style="width:10%"><col style="width:12%"><col style="width:7%">
+        <col style="width:11%"><col style="width:7%"><col style="width:13%">
+        <col style="width:9%"><col style="width:7%"><col style="width:64px">
+      </colgroup>
       <thead>
         <tr>
           <th><input type="checkbox" class="row-checkbox" id="selectAllCheckbox" ${allVisibleSelected ? "checked" : ""}></th>
-          <th>#</th><th>שם</th><th>טלפון</th><th>סוכן מטפל</th><th>ערוץ</th><th>סטטוס</th>
-          <th>ציון חום</th><th>פעילות אחרונה</th><th>קטגוריה</th><th>עסק</th><th></th>
+          <th>#</th><th>שם</th><th>טלפון</th><th title="סוכן מטפל">סוכן</th><th>ערוץ</th><th>סטטוס</th>
+          <th title="ציון חום">חום</th><th title="פעילות אחרונה">פעילות</th><th>קטגוריה</th><th>עסק</th><th></th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
