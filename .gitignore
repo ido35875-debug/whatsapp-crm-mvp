@@ -39,6 +39,9 @@ ngrok.exe
 # --- קבצי עזר/בדיקה חד-פעמיים (סקריפטי ניפוי-שגיאות/ייבוא/ניתוח ידניים -
 # לא חלק מהרצת השרת עצמה, ולא נחוצים ב-deployment בענן. נשארים על הדיסק
 # המקומי לשימוש עתידי אם צריך - רק לא נכנסים ל-git/לפריסה) ---
+# ⚠️ import_leads.py בכוונה *לא* ברשימה הזו (למרות השם/הצורה הדומים) - הוא
+# מודול משותף ש-server.py מייבא בזמן אמת (POST /api/leads/import), לא סקריפט
+# חד-פעמי מקומי בלבד; חייב להיות ב-git/בפריסה, אחרת השרת קורס ב-ImportError.
 _debug_payload.py
 _pilot_reset_status.py
 _pilot_run.py
@@ -46,7 +49,6 @@ analyze_simulation.py
 create_db.py
 debug_twilio.py
 deduplicate_customers.py
-import_leads.py
 make_doc.py
 send_bulk.py
 simulate_webhook.py

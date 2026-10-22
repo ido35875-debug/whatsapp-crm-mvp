@@ -56,7 +56,6 @@ from dotenv import load_dotenv
 from flask import Flask, Response, g, jsonify, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from openpyxl import load_workbook
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import Dial, VoiceResponse
 from werkzeug.exceptions import HTTPException
@@ -72,6 +71,7 @@ try:
     # ב-"import reactivate" למשל, לפני שמגיעים בכלל לבלוק שתופס אותו.
     import command_copilot
     import db
+    import import_leads
     import outbound_engine
     import reactivate
     import sales_agent
@@ -83,6 +83,7 @@ try:
     import voice_call
     from extract import (
         DEFAULT_TENANT_ID,
+        VALID_LEAD_STATUSES,
         delete_lead,
         generate_call_summary,
         generate_executive_summary,
@@ -1108,7 +1109,8 @@ def api_search():
     return jsonify([{"phone": phone, "tenant_id": tenant_id} for phone, tenant_id in matches])
 
 
-VALID_LEAD_STATUSES = {"new", "contacted", "follow_up", "hot", "not_relevant", "reactivation", "human_handling", "no_answer"}
+# VALID_LEAD_STATUSES עבר ל-extract.py (ראו שם) - import_leads.py צריך אותו גם,
+# בלי תלות מעגלית ב-server.py. מיובא בבלוק from extract import (...) למעלה.
 # תוויות עבריות - זהות בדיוק לטקסט באפשרויות ה-<select> ב-index.html (statusFilter/
 # bulkStatusSelect) - לבניית הודעת "הסטטוס השתנה מ-X ל-Y" קריאה (ראו _log_status_change).
 LEAD_STATUS_LABELS = {
@@ -1260,23 +1262,14 @@ def api_update_lead_ai_enabled():
     return jsonify({"ok": True, "card": card})
 
 
-# ייבוא לידים מ-CSV/Excel - מיפוי אוטומטי של עמודות (בעברית או באנגלית) לשדות הסטנדרטיים
-ALLOWED_IMPORT_EXTENSIONS = {".csv", ".xlsx"}
-IMPORT_FIELD_ALIASES = {
-    "customer_name": {"name", "customer_name", "full name", "שם", "שם לקוח", "שם מלא"},
-    "phone": {"phone", "phone_number", "mobile", "טלפון", "מספר טלפון", "נייד", "מס' טלפון"},
-    "business_name": {"business", "business_name", "company", "עסק", "שם עסק", "חברה"},
-    "location": {"location", "city", "מיקום", "עיר", "אזור"},
-    "import_source": {"source", "lead_source", "מקור", "מקור ליד", "ערוץ מקור"},
-    "lead_status": {"status", "lead_status", "סטטוס"},
-    "category": {"category", "vertical", "קטגוריה", "סיווג"},
-    "agent": {"agent", "assigned_agent", "owner", "סוכן", "סוכן מטפל", "נציג"},
-    "notes": {"notes", "note", "comments", "הערות", "הערה"},
-}
+# ייבוא לידים מ-CSV/Excel (BMBY/Monday.com/כל קובץ דומה) - המיפוי/הנרמול/לוגיקת
+# ה-upsert כולה עברה ל-import_leads.py, כדי שגם סקריפט CLI עצמאי (python
+# import_leads.py <file>) יוכל להשתמש באותו קוד בדיוק בלי Flask - ראו שם.
+ALLOWED_IMPORT_EXTENSIONS = import_leads.ALLOWED_IMPORT_EXTENSIONS
 
 # ייבוא קמפייני B2B (POST /api/campaigns/import, ראו outbound_engine.py) - מיפוי
-# נפרד מ-IMPORT_FIELD_ALIASES למעלה: שדות שונים (company/category, לא business_
-# name/lead_status/notes וכו' שרלוונטיים ספציפית לכרטיס ליד ב-customers.json).
+# נפרד לגמרי מ-import_leads.IMPORT_FIELD_ALIASES: שדות שונים (company/category,
+# לא business_name/lead_status/notes וכו' שרלוונטיים ספציפית לכרטיס ליד).
 CAMPAIGN_FIELD_ALIASES = {
     "phone": {"phone", "phone_number", "mobile", "טלפון", "מספר טלפון", "נייד", "מס' טלפון"},
     "name": {"name", "full name", "contact", "שם", "שם איש קשר", "איש קשר"},
@@ -1285,55 +1278,28 @@ CAMPAIGN_FIELD_ALIASES = {
 }
 
 
-def _normalize_header(h) -> str:
-    return str(h or "").strip().lower()
-
-
-def _map_row(raw_row: dict, field_aliases: dict = IMPORT_FIELD_ALIASES) -> dict:
+def _map_row(raw_row: dict, field_aliases: dict) -> dict:
     """ממפה שורת CSV/Excel גולמית (עמודות בכל שם סביר, עברית או אנגלית) לשדות
-    התקניים, לפי מילון aliases נתון - משותף לייבוא לידים (IMPORT_FIELD_ALIASES)
-    וגם לייבוא קמפייני B2B (CAMPAIGN_FIELD_ALIASES, ראו api_import_campaign)."""
-    normalized = {_normalize_header(k): v for k, v in raw_row.items()}
+    התקניים, לפי מילון aliases נתון - בשימוש כאן רק לייבוא קמפייני B2B
+    (CAMPAIGN_FIELD_ALIASES); ייבוא לידים עצמו עבר ל-import_leads.map_row."""
+    normalized = {import_leads.normalize_header(k): v for k, v in raw_row.items()}
     mapped = {}
     for field, aliases in field_aliases.items():
         for alias in aliases:
-            value = normalized.get(_normalize_header(alias))
+            value = normalized.get(import_leads.normalize_header(alias))
             if value not in (None, ""):
                 mapped[field] = str(value).strip()
                 break
     return mapped
 
 
-def _map_import_row(raw_row: dict) -> dict:
-    return _map_row(raw_row, IMPORT_FIELD_ALIASES)
-
-
-def _parse_import_csv(file_stream) -> list[dict]:
-    text = file_stream.read().decode("utf-8-sig")  # utf-8-sig סופג BOM מ-CSV שיוצא מ-Excel
-    return list(csv.DictReader(io.StringIO(text)))
-
-
-def _parse_import_excel(file_stream) -> list[dict]:
-    workbook = load_workbook(file_stream, read_only=True, data_only=True)
-    sheet = workbook.active
-    rows_iter = sheet.iter_rows(values_only=True)
-    try:
-        headers = [str(h).strip() if h is not None else "" for h in next(rows_iter)]
-    except StopIteration:
-        return []
-    rows = []
-    for row in rows_iter:
-        if all(cell is None for cell in row):
-            continue
-        rows.append({headers[i]: row[i] for i in range(min(len(headers), len(row)))})
-    return rows
-
-
 @app.route("/api/leads/import", methods=["POST"])
 def api_import_leads():
-    """מייבא לידים מקובץ CSV/XLSX שהועלה מהדשבורד. ממפה אוטומטית שם/טלפון/עסק/מקור/
-    סטטוס (בעברית או באנגלית), ומונע כפילויות ע"י upsert לפי מספר טלפון מנורמל
-    (E.164) + tenant_id - ראו import_lead ב-extract.py."""
+    """מייבא לידים מקובץ CSV/XLSX שהועלה מהדשבורד (ייצוא BMBY/Monday.com, או
+    כל קובץ דומה) - ממפה אוטומטית שם/טלפון/אימייל/כתובת/עסק/מקור/סטטוס/נדל"ן/
+    תקציב/הערות (עברית או אנגלית), מנרמלת טלפון לתקן +972, ומונעת כפילויות
+    ע"י upsert לפי tenant_id+טלפון מנורמל - כל הלוגיקה בפועל ב-import_leads.py
+    (import_rows), המשותף גם לסקריפט ה-CLI העצמאי."""
     if "file" not in request.files:
         return jsonify({"error": "לא צורף קובץ (שדה 'file')"}), 400
 
@@ -1345,47 +1311,12 @@ def api_import_leads():
     tenant_id = request.form.get("tenant_id") or DEFAULT_TENANT_ID
 
     try:
-        raw_rows = _parse_import_csv(upload.stream) if ext == ".csv" else _parse_import_excel(upload.stream)
+        raw_rows = import_leads.parse_rows(upload.stream, ext)
     except Exception as exc:
         return jsonify({"error": f"שגיאה בקריאת הקובץ: {exc}"}), 400
 
-    imported = updated = 0
-    skipped = []
-    for row_num, raw_row in enumerate(raw_rows, start=2):  # שורה 1 = כותרות
-        mapped = _map_import_row(raw_row)
-        phone = mapped.get("phone")
-        if not phone:
-            skipped.append({"row": row_num, "reason": "אין מספר טלפון"})
-            continue
-
-        status = mapped.get("lead_status", "").lower()
-        if status not in VALID_LEAD_STATUSES:
-            status = None  # סטטוס לא מוכר - מתעלמים ממנו, לא נכשלים על כל השורה
-
-        _card, is_new = import_lead(
-            resolve_existing_phone(phone, tenant_id=tenant_id),
-            tenant_id=tenant_id,
-            customer_name=mapped.get("customer_name"),
-            business_name=mapped.get("business_name"),
-            location=mapped.get("location"),
-            lead_status=status,
-            import_source=mapped.get("import_source"),
-            category=mapped.get("category"),
-            agent=mapped.get("agent"),
-            notes=mapped.get("notes"),
-        )
-        if is_new:
-            imported += 1
-        else:
-            updated += 1
-
-    return jsonify({
-        "ok": True,
-        "total_rows": len(raw_rows),
-        "imported": imported,
-        "updated": updated,
-        "skipped": skipped,
-    })
+    result = import_leads.import_rows(raw_rows, tenant_id=tenant_id)
+    return jsonify({"ok": True, **result})
 
 
 EXPORT_COLUMNS = [
@@ -1652,7 +1583,7 @@ def api_campaigns_import():
     message_template = request.form.get("message_template") or None
 
     try:
-        raw_rows = _parse_import_csv(upload.stream) if ext == ".csv" else _parse_import_excel(upload.stream)
+        raw_rows = import_leads.parse_csv(upload.stream) if ext == ".csv" else import_leads.parse_excel(upload.stream)
     except Exception as exc:
         return jsonify({"error": f"שגיאה בקריאת הקובץ: {exc}"}), 400
 

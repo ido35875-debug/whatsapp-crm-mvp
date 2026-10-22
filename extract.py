@@ -27,6 +27,16 @@ import db  # noqa: E402 - לשימוש rekey_lead/delete_lead (rekey/מחיקה 
 CUSTOMERS_FILE = DATA_DIR / "customers.json"
 DEFAULT_TENANT_ID = "default"  # מזהה העסק כשאין tenant_id מפורש (תאימות לאחור)
 
+# מקור האמת היחיד לערכי lead_status תקינים - הועבר לכאן מ-server.py כדי
+# ש-import_leads.py (סקריפט CLI + /api/leads/import) יוכל להשתמש באותו set
+# בלי ליצור תלות מעגלית ב-server.py (טעינת server.py כוללת יצירת Flask app
+# מלאה - כבד ולא מתאים לייבוא ממודול CLI עצמאי). server.py ממשיך להשתמש
+# באותו שם משתנה בדיוק (from extract import VALID_LEAD_STATUSES) - אין שינוי
+# התנהגות, רק מיקום הגדרה אחד.
+VALID_LEAD_STATUSES = {
+    "new", "contacted", "follow_up", "hot", "not_relevant", "reactivation", "human_handling", "no_answer",
+}
+
 EXTRACTION_PROMPT = """\
 אתה עוזר שמחלץ פרטי לקוח מהודעת וואטסאפ בעברית או באנגלית.
 מתוך ההודעה הבאה, חלץ חמישה שדות: customer_name (שם הלקוח), business_name (שם העסק שלו, אם צוין),
@@ -694,13 +704,25 @@ def import_lead(
     agent: str | None = None,
     notes: str | None = None,
     client_id: str | None = None,
+    email: str | None = None,
+    address: str | None = None,
+    property_type: str | None = None,
+    budget: str | None = None,
+    requirements: str | None = None,
 ) -> tuple[dict, bool]:
-    """יוצר/מעדכן כרטיס לקוח - מייבוא CSV/Excel (ראו /api/leads/import) או מהוספת
-    ליד בודד ידנית (POST /api/leads) ב-server.py. לא הודעה - אין רישום ב-history.
-    Upsert לפי phone+tenant_id (מונע כפילויות). מחזיר (card, is_new) - is_new=True
-    אם זה ליד חדש שלא היה קיים קודם. client_id (שלב 5, אופציונלי) - ראו
-    update_lead_fields; ai_enabled לא מוגדר כאן בכוונה (ברירת המחדל True נאכפת
-    ב-server.py._ai_enabled_for בקריאה, לא צריך לכתוב אותה מפורשות בכל כרטיס)."""
+    """יוצר/מעדכן כרטיס לקוח - מייבוא CSV/Excel (ראו import_leads.py/
+    /api/leads/import) או מהוספת ליד בודד ידנית (POST /api/leads) ב-server.py.
+    לא הודעה - אין רישום ב-history. Upsert לפי phone+tenant_id (מונע כפילויות,
+    ראו resolve_existing_phone לפתרון התאמת-פורמט). מחזיר (card, is_new) -
+    is_new=True אם זה ליד חדש שלא היה קיים קודם. client_id (שלב 5, אופציונלי) -
+    ראו update_lead_fields; ai_enabled לא מוגדר כאן בכוונה (ברירת המחדל True
+    נאכפת ב-server.py._ai_enabled_for בקריאה, לא צריך לכתוב אותה מפורשות בכל
+    כרטיס).
+
+    כל הפרמטרים כאן הם upsert תוסף-בלבד (בניגוד ל-update_lead_fields, שם ""
+    מפורש מוחק שדה): ערך ריק/None פשוט לא נוגע בשדה הקיים - ייבוא חזרה של
+    אותו קובץ, או קובץ עם עמודות חסרות לחלק מהשורות, לא ימחק נתונים שכבר
+    קיימים בכרטיס מהיסטוריה/עריכה ידנית קודמת."""
     customers = load_customers()
     key = _customer_key(tenant_id, phone)
     is_new = key not in customers
@@ -721,6 +743,16 @@ def import_lead(
         card["agent"] = agent
     if notes:
         card["notes"] = notes
+    if email:
+        card["email"] = email
+    if address:
+        card["address"] = address
+    if property_type:
+        card["property_type"] = property_type
+    if budget:
+        card["budget"] = budget
+    if requirements:
+        card["requirements"] = requirements
     if client_id:
         card["client_id"] = client_id
     customers[key] = card
