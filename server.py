@@ -72,6 +72,7 @@ try:
     import command_copilot
     import db
     import import_leads
+    import note_entity_extraction
     import outbound_engine
     import reactivate
     import sales_agent
@@ -845,6 +846,8 @@ def api_leads():
             "property_type": card.get("property_type"),
             "budget": card.get("budget"),
             "requirements": card.get("requirements"),
+            "rooms": card.get("rooms"),
+            "project": card.get("project"),
             "email": card.get("email"),
             "address": card.get("address"),
             "activity_summary": card.get("activity_summary"),
@@ -957,6 +960,8 @@ def api_update_lead():
         property_type=data.get("property_type"),
         budget=data.get("budget"),
         requirements=data.get("requirements"),
+        rooms=data.get("rooms"),
+        project=data.get("project"),
     )
     if lead_status is not None:
         _log_status_change(phone, tenant_id, old_status, lead_status)
@@ -1383,7 +1388,49 @@ def api_add_note():
     if not phone or not text:
         return jsonify({"error": "חסר טלפון או תוכן הערה"}), 400
     db.log_message(phone, text, direction="out", tenant_id=tenant_id, channel="note")
+    # ניתוח NLP + מילוי שדות/תזמון פולו-אפ אוטומטי - ברקע (thread נפרד), לא
+    # חוסם את תגובת ה-HTTP הזו (ההערה עצמה כבר נשמרה למעלה בלי תלות בניתוח
+    # הזה - כשל בניתוח לא אמור למנוע/לעכב שמירת ההערה). ראו _process_note_
+    # entities_background + note_entity_extraction.py לפירוט מלא.
+    threading.Thread(
+        target=_process_note_entities_background, args=(phone, tenant_id, text),
+        daemon=True, name=f"note-nlp-{phone}",
+    ).start()
     return jsonify({"ok": True})
+
+
+def _process_note_entities_background(phone: str, tenant_id: str, text: str) -> None:
+    """רץ ב-thread רקע מ-api_add_note - מנתח את ההערה (note_entity_extraction.
+    extract_note_entities, קריאת Claude אחת read-only) ומממש את התוצאה: שדות
+    מבניים (rooms/project/city->location) נכתבים על הכרטיס (update_lead_fields -
+    "" לא נשלח, רק ערכים שבאמת זוהו, כך שלא דורסים/מוחקים שדות קיימים בטעות),
+    ומשימת פולו-אפ (status="pending", source="note_nlp") נוצרת אם זוהתה כוונת
+    תזמון מפורשת - בדיוק כמו "⏰ חזור בהמשך" (openCallbackPanel), רק אוטומטי."""
+    try:
+        entities = note_entity_extraction.extract_note_entities(text)
+    except Exception as exc:
+        logger.warning("ניתוח NLP על הערה נכשל (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc)
+        return
+
+    if entities.get("rooms") or entities.get("project") or entities.get("city"):
+        try:
+            update_lead_fields(
+                phone, tenant_id=tenant_id,
+                rooms=entities.get("rooms"), project=entities.get("project"),
+                location=entities.get("city"),
+            )
+        except Exception as exc:
+            logger.warning("עדכון שדות מ-NLP נכשל (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc)
+
+    if entities.get("has_followup") and entities.get("followup_date"):
+        try:
+            db.create_task(
+                phone, tenant_id=tenant_id, title="פולו-אפ (זוהה אוטומטית מהערה)",
+                due_date=entities["followup_date"], due_time=entities.get("followup_time"),
+                status="pending", source="note_nlp",
+            )
+        except Exception as exc:
+            logger.warning("יצירת משימת פולו-אפ מ-NLP נכשלה (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc)
 
 
 @app.route("/api/sales/suggest-reply", methods=["POST"])

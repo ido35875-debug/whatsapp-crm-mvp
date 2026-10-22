@@ -709,6 +709,8 @@ def import_lead(
     property_type: str | None = None,
     budget: str | None = None,
     requirements: str | None = None,
+    rooms: str | None = None,
+    project: str | None = None,
 ) -> tuple[dict, bool]:
     """יוצר/מעדכן כרטיס לקוח - מייבוא CSV/Excel (ראו import_leads.py/
     /api/leads/import) או מהוספת ליד בודד ידנית (POST /api/leads) ב-server.py.
@@ -753,6 +755,10 @@ def import_lead(
         card["budget"] = budget
     if requirements:
         card["requirements"] = requirements
+    if rooms:
+        card["rooms"] = rooms
+    if project:
+        card["project"] = project
     if client_id:
         card["client_id"] = client_id
     customers[key] = card
@@ -885,6 +891,8 @@ def update_lead_fields(
     property_type: str | None = None,
     budget: str | None = None,
     requirements: str | None = None,
+    rooms: str | None = None,
+    project: str | None = None,
 ) -> dict:
     """שמירה מלאה מפאנל עריכת ליד (#editLeadPanel) או מהגריד הנגיש-לעריכה
     בתצוגת פרטי הליד המלאה (Lead Details, BMBY-style - ראו index.html) -
@@ -929,6 +937,8 @@ def update_lead_fields(
     _set("property_type", property_type)
     _set("budget", budget)
     _set("requirements", requirements)
+    _set("rooms", rooms)
+    _set("project", project)
     if lead_status:
         card["lead_status"] = lead_status
 

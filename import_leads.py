@@ -78,6 +78,8 @@ IMPORT_FIELD_ALIASES = {
     },
     "budget": {"budget", "price range", "budget range", "price", "תקציב", "טווח תקציב", "מחיר"},
     "requirements": {"requirements", "preferences", "needs", "דרישות", "העדפות", "צרכים"},
+    "rooms": {"rooms", "number of rooms", "room count", "חדרים", "מספר חדרים", "כמות חדרים"},
+    "project": {"project", "project name", "development", "פרויקט", "שם פרויקט"},
     "notes": {
         "notes", "note", "comments", "remarks", "description", "historical notes", "history",
         "הערות", "הערה", "תיאור", "הערות היסטוריות", "היסטוריה",
@@ -262,6 +264,8 @@ def import_rows(
             property_type=mapped.get("property_type"),
             budget=mapped.get("budget"),
             requirements=mapped.get("requirements"),
+            rooms=mapped.get("rooms"),
+            project=mapped.get("project"),
         )
         if is_new:
             imported += 1

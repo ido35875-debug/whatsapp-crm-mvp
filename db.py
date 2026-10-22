@@ -503,16 +503,20 @@ def get_messages(phone: str, tenant_id: str = "default", since: str | None = Non
         conn.row_factory = sqlite3.Row
         if since:
             rows = conn.execute(
-                "SELECT channel, direction, message, timestamp, simulated FROM messages "
-                "WHERE phone = ? AND tenant_id = ? AND timestamp > ? ORDER BY timestamp ASC",
+                "SELECT id, channel, direction, message, timestamp, simulated FROM messages "
+                "WHERE phone = ? AND tenant_id = ? AND timestamp > ? ORDER BY timestamp ASC, id ASC",
                 (phone, tenant_id, since),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT channel, direction, message, timestamp, simulated FROM messages "
-                "WHERE phone = ? AND tenant_id = ? ORDER BY timestamp ASC",
+                "SELECT id, channel, direction, message, timestamp, simulated FROM messages "
+                "WHERE phone = ? AND tenant_id = ? ORDER BY timestamp ASC, id ASC",
                 (phone, tenant_id),
             ).fetchall()
+        # id נוסף כאן (שלב חדש) - מזהה יחיד ויציב לכל שורה, בשימוש בצד הלקוח
+        # למניעת רינדור כפול (ראו renderedMessageIds ב-index.html createChatController) -
+        # לפני כן ה-polling הסתמך רק על timestamp, שיכול להיות זהה בין כמה
+        # שורות שנכתבו באותה מילישנייה, ולגרום להצגה כפולה/חסרה.
         return [dict(row) | {"simulated": bool(row["simulated"])} for row in rows]
     finally:
         conn.close()

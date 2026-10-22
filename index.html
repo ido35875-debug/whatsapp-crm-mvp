@@ -554,9 +554,18 @@
      שה-.panel הבסיסי כבר קבע, עם תוצאה לא-עקבית בין דפדפנים/widths. top/
      right/bottom/left מפורשים מבטלים את כל ארבע התכונות הבסיסיות בבת-אחת,
      בלי תלות בכיוון המסמך - #panel הוא overlay מסך-מלא תמיד, לא עמוד/שמאל. */
+  /* ⚠️ בכוונה *לא* z-index גבוה מ-50 (ברירת המחדל מ-.panel הבסיסי) - זה היה
+     באג אמיתי שתוקן כאן: z-index:55 הציב את #panel *מעל* כל שאר הפאנלים
+     המשניים (callbackPanel/tasksPanel/callPanel/editLeadPanel/...) שנפתחים
+     *מתוכו* (כולם עדיין ב-z-index:50 הבסיסי) - התוצאה: טופס תזכורת/משימה/
+     שיחה/עריכה שנפתח מתוך תצוגת פרטי הליד נרנדר *מתחת* ל-#panel, ונראה
+     כאילו "שום דבר לא קרה" בלחיצה על הכפתור (זה ה"follow-up button broken").
+     עם z-index שווה לכל שאר ה-.panel-ים, סדר ה-DOM (הפאנלים המשניים מוגדרים
+     *אחרי* #panel בקובץ) קובע נכון מי מעל מי - בדיוק כמו ששאר הפרויקט כבר
+     עובד, בלי צורך בהתאמת z-index פרטנית לכל פאנל. */
   #panel {
     top: 0; right: 0; bottom: 0; left: 0; width: auto; max-width: none;
-    z-index: 55; overflow: hidden;
+    overflow: hidden;
   }
 
   #panel .panel-topbar {
@@ -622,6 +631,28 @@
   .lead-field input:disabled { color: var(--text-secondary); cursor: default; opacity: .85; }
   .lead-field textarea { resize: vertical; min-height: 60px; }
   .lead-field-readout { display: flex; align-items: center; min-height: 37px; }
+
+  /* BMBY-style - 5 אריחים נפרדים ואלגנטיים (City/Project/Rooms/Budget/
+     Scheduled Follow-up) - לא עוד שדה-בתוך-טופס-צפוף; כל אריח עומד בפני
+     עצמו עם אייקון+תווית+ערך, בדיוק כמו .stat-tile הקיים בעמוד הסקירה. */
+  .bmby-tile-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;
+  }
+  .bmby-tile {
+    border-radius: 14px; padding: 14px 16px; background: var(--surface-2);
+    border: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px;
+  }
+  .bmby-tile-icon { font-size: 20px; line-height: 1; }
+  .bmby-tile-label {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.4px; color: var(--text-muted);
+  }
+  .bmby-tile-input {
+    border: none; background: transparent; padding: 0; font-size: 15px; font-weight: 600;
+    color: var(--text-primary); width: 100%; box-sizing: border-box;
+  }
+  .bmby-tile-input:focus { outline: none; border-bottom: 1px solid var(--accent); }
+  .bmby-tile-followup { background: var(--accent-soft); border-color: var(--accent); }
+  .bmby-tile-readout { font-size: 14px; font-weight: 700; color: var(--accent); }
 
   #panel .panel-activity-notewrap { margin-bottom: 16px; }
   #panel .panel-activity-notewrap .note-form { flex-direction: column; margin-top: 0; }
@@ -1667,19 +1698,46 @@
       </div>
 
       <div class="lead-detail-card">
-        <h3>🏠 העדפות נדל"ן</h3>
-        <div class="lead-field-grid">
-          <div class="lead-field">
-            <label for="panelFieldPropertyType">סוג נכס</label>
-            <input type="text" id="panelFieldPropertyType" class="lead-field-input" data-field="property_type" placeholder="למשל: דירת 4 חדרים">
+        <h3>🏠 נדל"ן ותזמון - BMBY</h3>
+        <!-- חמשת ה"אריחים" המבוקשים (City/Project/Rooms/Budget/Scheduled
+             Follow-up) - כרטיסים נפרדים ואלגנטיים, לא טופס-טבלה אחד צפוף.
+             כל אריח (חוץ מ"מועד פגישה") הוא input נגיש-לעריכה רגיל (אותו
+             mechanism כמו שאר lead-field-input) - רק עטוף בעיצוב-אריח, לא
+             מכניקה חדשה. "מועד פגישה" הוא תצוגה-בלבד (נטען מ-GET /api/tasks,
+             ראו loadNextFollowupTile) - נקבע/משתנה דרך "⏰ חזור בהמשך" או
+             אוטומטית מה-NLP על הערות (ראו note_entity_extraction.py), לא
+             דרך עריכה ישירה של האריח הזה עצמו. -->
+        <div class="bmby-tile-grid">
+          <div class="bmby-tile">
+            <div class="bmby-tile-icon">🏙️</div>
+            <label class="bmby-tile-label" for="panelFieldLocation">עיר</label>
+            <input type="text" id="panelFieldLocation" class="lead-field-input bmby-tile-input" data-field="location" placeholder="עיר">
           </div>
-          <div class="lead-field">
-            <label for="panelFieldBudget">תקציב</label>
-            <input type="text" id="panelFieldBudget" class="lead-field-input" data-field="budget" placeholder="למשל: 2,500,000 ₪">
+          <div class="bmby-tile">
+            <div class="bmby-tile-icon">🏗️</div>
+            <label class="bmby-tile-label" for="panelFieldProject">פרויקט</label>
+            <input type="text" id="panelFieldProject" class="lead-field-input bmby-tile-input" data-field="project" placeholder="שם פרויקט">
           </div>
+          <div class="bmby-tile">
+            <div class="bmby-tile-icon">🚪</div>
+            <label class="bmby-tile-label" for="panelFieldRooms">חדרים</label>
+            <input type="text" id="panelFieldRooms" class="lead-field-input bmby-tile-input" data-field="rooms" placeholder="מס' חדרים">
+          </div>
+          <div class="bmby-tile">
+            <div class="bmby-tile-icon">💰</div>
+            <label class="bmby-tile-label" for="panelFieldBudget">תקציב</label>
+            <input type="text" id="panelFieldBudget" class="lead-field-input bmby-tile-input" data-field="budget" placeholder="תקציב">
+          </div>
+          <div class="bmby-tile bmby-tile-followup">
+            <div class="bmby-tile-icon">📅</div>
+            <div class="bmby-tile-label">מועד פגישה</div>
+            <div class="bmby-tile-readout" id="panelNextFollowupReadout">—</div>
+          </div>
+        </div>
+        <div class="lead-field-grid" style="margin-top: 16px;">
           <div class="lead-field">
-            <label for="panelFieldLocation">אזור מועדף</label>
-            <input type="text" id="panelFieldLocation" class="lead-field-input" data-field="location" placeholder="אזור/שכונה מועדפת">
+            <label for="panelFieldPropertyType">סוג נכס (טקסט חופשי)</label>
+            <input type="text" id="panelFieldPropertyType" class="lead-field-input" data-field="property_type" placeholder="למשל: פנטהאוז">
           </div>
           <div class="lead-field lead-field-wide">
             <label for="panelFieldRequirements">דרישות נוספות</label>
@@ -2589,7 +2647,7 @@ function renderBubble(m) {
   // ברור מיד שזו לא הודעה שהלקוח ראה בכלל (בניגוד לתקציר שיחה/וואטסאפ)
   if (isNote) {
     return `
-      <div class="msg-row note">
+      <div class="msg-row note" data-msg-id="${escapeHtml(String(m.id))}">
         <div class="bubble-wrap">
           <div class="bubble note">🗒️ ${escapeHtml(m.message)}</div>
           <div class="msg-meta note"><span>הערה פנימית — לא נשלח ללקוח</span><span>·</span><span>${time}</span></div>
@@ -2602,7 +2660,7 @@ function renderBubble(m) {
   // תוכן שנכתב ע"י אדם ולא נשלח/התקבל בכלל, רק עדכון מצב בציר הזמן.
   if (isStatusChange) {
     return `
-      <div class="msg-row status-change">
+      <div class="msg-row status-change" data-msg-id="${escapeHtml(String(m.id))}">
         <div class="bubble-wrap">
           <div class="bubble status-change">${escapeHtml(m.message)}</div>
           <div class="msg-meta status-change">${time}</div>
@@ -2614,7 +2672,7 @@ function renderBubble(m) {
     ? "⚠️ סימולציה - לא נשלח בפועל"
     : isVoice ? "📞 תקציר שיחה" : (dir === "out" ? "נשלח" : "התקבל");
   return `
-    <div class="msg-row ${dir}">
+    <div class="msg-row ${dir}" data-msg-id="${escapeHtml(String(m.id))}">
       <div class="bubble-wrap">
         <div class="bubble${m.simulated ? " simulated" : ""}${isVoice ? " voice" : ""}">${escapeHtml(m.message)}</div>
         <div class="msg-meta${m.simulated ? " simulated" : ""}"><span>${statusLabel}</span><span>·</span><span>${time}</span></div>
@@ -2627,12 +2685,34 @@ function renderBubble(m) {
 // messages ריק, כדי שאפשר לקרוא לה בלי בדיקת-אורך חוזרת בכל מקום קריאה
 // (ראו createChatController.pollForNew, שקוראת לה פעמיים באותו tick כש-
 // ids.chatBody מוגדר - אחת לציר הפעילות, אחת למגירת הצ'אט).
+// הגנה כפולה/שלישית מפני כפילות (ראו appendMessagesTo) - מסננת id-ים חזרתיים
+// *בתוך אותה תשובת שרת אחת*, לא רק מול מה שכבר ב-DOM. שומרת את ההופעה
+// הראשונה של כל id (לא האחרונה) כדי לא לשבש סדר כרונולוגי.
+function dedupeMessagesById(messages) {
+  const seen = new Set();
+  return messages.filter(m => {
+    const key = String(m.id);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function appendMessagesTo(el, messages) {
   if (!el || messages.length === 0) return;
+  // הגנה מפני רינדור כפול (באג שדווח: אותה הערה/פעילות מופיעה כמה פעמים) -
+  // מסננים כל הודעה שה-id שלה *כבר* קיים בפועל ב-DOM (data-msg-id, ראו
+  // renderBubble) לפני ה-append, לא בוטחים שה-since/timestamp מהשרת כבר
+  // מנע כפילות בעצמו - הגנה כפולה, לא רק תקווה שצד אחד מספיק.
+  const alreadyRendered = new Set(
+    Array.from(el.querySelectorAll("[data-msg-id]")).map(node => node.dataset.msgId)
+  );
+  const newMessages = messages.filter(m => !alreadyRendered.has(String(m.id)));
+  if (newMessages.length === 0) return;
   const empty = el.querySelector(".empty, .inbox-chat-empty");
   if (empty) el.innerHTML = "";
   const wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  el.insertAdjacentHTML("beforeend", messages.map(renderBubble).join(""));
+  el.insertAdjacentHTML("beforeend", newMessages.map(renderBubble).join(""));
   if (wasNearBottom) el.scrollTop = el.scrollHeight;
 }
 
@@ -2736,7 +2816,7 @@ function createChatController(ids) {
 
         const res = await fetch(url);
         if (res.ok) {
-          const messages = await res.json();
+          const messages = dedupeMessagesById(await res.json());
           if (messages.length > 0) {
             const chatEl = ids.chatBody ? document.getElementById(ids.chatBody) : null;
             if (chatEl) {
@@ -2776,7 +2856,7 @@ function createChatController(ids) {
     try {
       const res = await fetch(`/api/messages?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`);
       if (!res.ok) throw new Error("HTTP " + res.status);
-      const messages = await res.json();
+      const messages = dedupeMessagesById(await res.json());
       if (chatEl) {
         const activityMsgs = messages.filter(m => ACTIVITY_ONLY_CHANNELS.has(m.channel));
         const chatMsgs = messages.filter(m => !ACTIVITY_ONLY_CHANNELS.has(m.channel));
@@ -2867,6 +2947,10 @@ function createChatController(ids) {
         if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
         inputEl.value = "";
         await pollForNew();
+        // ניתוח ה-NLP על ההערה (note_entity_extraction.py) רץ ברקע בשרת, לא
+        // מסתנכרן עם התגובה הזו - רענון מושהה (לא מדויק אבל סביר) כדי שהשדות
+        // המבניים/אריח "מועד פגישה" יתעדכנו בלי שהמשתמש יצטרך לרענן ביד.
+        if (ids.onNoteAdded) setTimeout(() => ids.onNoteAdded(currentLead), 4000);
       } catch (err) {
         alert("הוספת הערה נכשלה: " + err.message);
       }
@@ -3020,6 +3104,15 @@ const panelChat = createChatController({
   noteForm: "noteForm", noteInput: "noteInput",
   objectionBtn: "objectionBtn", execSummaryBtn: "execSummaryBtn", missingFieldsBtn: "missingFieldsBtn",
   aiCopilotResult: "aiCopilotResult",
+  // רענון מושהה אחרי הוספת הערה (ראו ids.onNoteAdded למעלה) - טוען leads
+  // מחדש (rooms/project/location עשויים להתעדכן מ-NLP ברקע) ואז ממלא שוב
+  // את הגריד + אריח "מועד פגישה" (שגם הוא יכול להתעדכן, אם ה-NLP זיהה
+  // כוונת-תזמון בהערה).
+  onNoteAdded: async (lead) => {
+    await loadLeads();
+    panelChat.syncStatus();
+    loadNextFollowupTile(lead.phone, lead.tenantId);
+  },
   // Lead Details (BMBY-style) - שדות הגריד הנגישים-לעריכה בעמודה המרכזית (לא
   // badges קריאה-בלבד כמו propertyBadgeChips שהיה כאן קודם) - ראו syncStatus
   // ו-document.addEventListener("change", ...) ל-".lead-field-input" למטה.
@@ -3027,7 +3120,7 @@ const panelChat = createChatController({
     customer_name: "panelFieldName", phone: "panelFieldPhone", email: "panelFieldEmail", address: "panelFieldAddress",
     business_name: "panelFieldBusiness", agent: "panelFieldAgent", category: "panelFieldCategory",
     property_type: "panelFieldPropertyType", budget: "panelFieldBudget", location: "panelFieldLocation",
-    requirements: "panelFieldRequirements",
+    requirements: "panelFieldRequirements", rooms: "panelFieldRooms", project: "panelFieldProject",
   },
 });
 
@@ -3411,6 +3504,9 @@ document.getElementById("callbackForm").addEventListener("submit", async (e) => 
     if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
     closeCallbackPanel();
     loadControlCenter();
+    if (activeCallbackLead && panelChat.currentLead && activeCallbackLead.phone === panelChat.currentLead.phone) {
+      loadNextFollowupTile(activeCallbackLead.phone, activeCallbackLead.tenantId);
+    }
   } catch (err) {
     errEl.textContent = "קביעת התזכורת נכשלה: " + err.message;
     errEl.classList.add("show");
@@ -4265,6 +4361,31 @@ function openHistory(phone, tenantId, name) {
   document.getElementById("panel").classList.add("open");
   document.getElementById("panelChatDrawer").classList.remove("open"); // סגורה כברירת מחדל בכל פתיחה - לא "זוכרת" מצב מליד קודם
   panelChat.open(phone, tenantId, name);
+  loadNextFollowupTile(phone, tenantId);
+}
+
+// אריח "מועד פגישה" (Scheduled Follow-up) - המשימה הפתוחה (status=pending)
+// הקרובה ביותר ללידה זו; db.get_tasks כבר ממיינת לפי due_date/due_time עולה
+// (ראו find_related_task ב-scheduling_agent.py), כך שהראשונה ברשימה היא
+// הבאה בתור - בלי צורך במיון נוסף בצד הלקוח. תצוגה-בלבד (לא נגיש-לעריכה
+// ישירות כאן) - נקבע דרך "⏰ חזור בהמשך" או אוטומטית מ-NLP על הערות.
+async function loadNextFollowupTile(phone, tenantId) {
+  const el = document.getElementById("panelNextFollowupReadout");
+  el.textContent = "טוען...";
+  try {
+    const res = await fetch(`/api/tasks?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}&status=pending`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const tasks = await res.json();
+    if (tasks.length === 0) {
+      el.textContent = "אין פולו-אפ מתוזמן";
+      return;
+    }
+    const next = tasks[0];
+    const dateLabel = new Date(next.due_date + "T00:00:00").toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", year: "numeric" });
+    el.textContent = next.due_time ? `${dateLabel} · ${next.due_time}` : dateLabel;
+  } catch (err) {
+    el.textContent = "שגיאה בטעינה";
+  }
 }
 
 document.getElementById("panelChatDrawerToggle").addEventListener("click", () => {
