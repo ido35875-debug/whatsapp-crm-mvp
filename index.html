@@ -548,8 +548,15 @@
      בלי תמלול וואטסאפ גולמי בתוכה בכלל - הוא עבר ל-panel-chatdrawer, מגירה
      נגללת-בנפרד שנפתחת/נסגרת מעל העמודה המרכזית (לא דוחקת אותה בצד) -
      "לא עמוסה" כברירת מחדל (סגורה), בלחיצה על טאב/כפתור. */
+  /* פיסיות מפורשות (לא logical/inset-inline-*) בכוונה - #panel.panel הבסיסי
+     כבר מגדיר inset-inline-end:0 + width מוגבל; דריסה חלקית בלבד (רק
+     inset-inline-start, כמו שהיה) יכולה ליצור over-constraint מול הערכים
+     שה-.panel הבסיסי כבר קבע, עם תוצאה לא-עקבית בין דפדפנים/widths. top/
+     right/bottom/left מפורשים מבטלים את כל ארבע התכונות הבסיסיות בבת-אחת,
+     בלי תלות בכיוון המסמך - #panel הוא overlay מסך-מלא תמיד, לא עמוד/שמאל. */
   #panel {
-    inset-inline-start: 0; width: 100%; max-width: 100%; z-index: 55; overflow: hidden;
+    top: 0; right: 0; bottom: 0; left: 0; width: auto; max-width: none;
+    z-index: 55; overflow: hidden;
   }
 
   #panel .panel-topbar {
@@ -578,9 +585,17 @@
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   }
 
+  /* מכיל את panel-main + panel-chatdrawer יחד, בשורת flex אחת, אחרי ה-topbar/
+     toolbar בזרימת ה-flex-column של #panel - ראו ההערה המלאה למטה ב-
+     panel-chatdrawer על *למה* זו שורת flex אמיתית (שני אחים זה-לצד-זה, לא
+     overlay), לא רק מיקום absolute עם z-index. */
+  #panel .panel-content-area { position: relative; flex: 1; min-height: 0; display: flex; overflow: hidden; }
+
   /* עמודה מרכזית אחת, גוללת, ברוחב קריאה נוח (לא דביקה לקצוות המסך על
-     מוניטורים רחבים) - ראו max-width+margin:auto, בדיוק כמו .page הקיים */
-  #panel .panel-main { flex: 1; min-height: 0; overflow-y: auto; }
+     מוניטורים רחבים) - ראו max-width+margin:auto, בדיוק כמו .page הקיים.
+     flex:1 + min-width:0 - כש-panel-chatdrawer נפתח (ראו שם) העמודה הזו
+     *מתכווצת בפועל* כדי לפנות לה מקום אמיתי, לא נחצית ע"י overlay מעליה. */
+  #panel .panel-main { flex: 1; min-width: 0; overflow-y: auto; }
   #panel .panel-main-inner { max-width: 980px; margin: 0 auto; padding: 24px 28px 60px; }
 
   .lead-detail-card {
@@ -613,18 +628,29 @@
   #panel .panel-activity-notewrap input { width: 100%; box-sizing: border-box; font-size: 13.5px; padding: 11px 14px; }
   #panel .panel-body { max-height: 480px; overflow-y: auto; border-radius: 12px; background: var(--surface-2); padding: 14px 16px; }
 
-  /* מגירת צ'אט וואטסאפ - נגללת (collapsible), overlay מעל העמודה המרכזית,
-     לא דוחקת אותה בצד - ברירת מחדל סגורה (ראו .open) כדי לא לעמוס את התצוגה
-     הראשית בתמלול גולמי, בדיוק כמו שהתבקש. */
+  /* מגירת צ'אט וואטסאפ - נגללת (collapsible), אח אמיתי ב-flex row של
+     panel-content-area (לא position:absolute/overlay מעל panel-main) -
+     ברירת מחדל סגורה: width:0 + overflow:hidden, כך ש-panel-main (flex:1)
+     תופסת את כל הרוחב באופן טבעי. בלחיצה על .open, הרוחב גדל ל-440px
+     *ו-panel-main מתכווצת אוטומטית* (flex:1 עם min-width:0) כדי לפנות לה
+     מקום אמיתי בצד - שני תאים זה-לצד-זה בשורת flex אחת, לא קופסה אחת
+     שחופפת מעל השנייה. זו הסיבה שזה flex ולא absolute+transform כמו
+     שהיה: "NEVER pop up over the center content" - גם כש*פתוחה*, לא רק
+     כש*סגורה* - מגירת-overlay (גם אם ה-transform תוקן נכון) עדיין "קופצת
+     מעל" את התוכן המרכזי כשפתוחה; כאן היא פשוט לא יכולה - הגיאומטריה
+     שלהן לא חופפת בשום שלב, מבנית, לא רק חזותית. */
   #panel .panel-chatdrawer {
-    position: absolute; top: 0; bottom: 0; inset-inline-start: 0; width: min(440px, 100vw);
-    background: var(--glass-bg-solid); box-shadow: 0 0 60px rgba(0,0,0,0.5);
-    border-inline-end: 1px solid var(--gridline); z-index: 60;
-    display: flex; flex-direction: column; transform: translateX(100%);
-    transition: transform .25s ease;
+    flex-shrink: 0; width: 0; overflow: hidden;
+    background: var(--glass-bg-solid); box-shadow: -4px 0 24px rgba(0,0,0,0.25);
+    border-left: 1px solid var(--gridline);
+    display: flex; flex-direction: column;
+    transition: width .25s ease;
   }
-  [dir="rtl"] #panel .panel-chatdrawer { transform: translateX(-100%); }
-  #panel .panel-chatdrawer.open { transform: translateX(0); }
+  #panel .panel-chatdrawer.open { width: min(440px, 100vw); }
+  #panel .panel-chatdrawer-header, #panel .panel-chatdrawer > #panelChatBody,
+  #panel .panel-chatdrawer > .ai-copilot, #panel .panel-chatdrawer > .composer {
+    width: min(440px, 100vw); /* רוחב תוכן קבוע, לא נדחס/עוטף תוך כדי אנימציית ה-width על ההורה */
+  }
   #panel .panel-chatdrawer-header {
     padding: 16px 20px; border-bottom: 1px solid var(--gridline); flex-shrink: 0;
     display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 700; font-size: 14px;
@@ -633,7 +659,9 @@
   #panel #panelChatBody { flex: 1; overflow-y: auto; padding: 16px 20px; }
 
   @media (max-width: 720px) {
-    #panel .panel-chatdrawer { width: 100%; }
+    #panel .panel-chatdrawer.open { width: 100%; }
+    #panel .panel-chatdrawer-header, #panel .panel-chatdrawer > #panelChatBody,
+    #panel .panel-chatdrawer > .ai-copilot, #panel .panel-chatdrawer > .composer { width: 100vw; }
     #panel .panel-main-inner { padding: 18px 16px 48px; }
     .lead-field-grid { grid-template-columns: 1fr; }
   }
@@ -1596,6 +1624,7 @@
     <button type="button" class="call-btn danger" id="panelBlockBtn">🚫 חסום איש קשר</button>
   </div>
 
+  <div class="panel-content-area">
   <div class="panel-main">
     <div class="panel-main-inner">
 
@@ -1704,6 +1733,7 @@
       </form>
     </div>
   </aside>
+  </div>
 </aside>
 
 <aside class="panel glass" id="callPanel">
