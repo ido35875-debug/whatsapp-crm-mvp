@@ -843,6 +843,9 @@ def api_leads():
             "agent": card.get("agent"),
             "property_type": card.get("property_type"),
             "budget": card.get("budget"),
+            "requirements": card.get("requirements"),
+            "email": card.get("email"),
+            "address": card.get("address"),
             "activity_summary": card.get("activity_summary"),
             "notes": card.get("notes"),
             "client_id": card.get("client_id"),
@@ -948,6 +951,11 @@ def api_update_lead():
         category=data.get("category"),
         notes=data.get("notes"),
         client_id=_requested_client_id(data),
+        email=data.get("email"),
+        address=data.get("address"),
+        property_type=data.get("property_type"),
+        budget=data.get("budget"),
+        requirements=data.get("requirements"),
     )
     if lead_status is not None:
         _log_status_change(phone, tenant_id, old_status, lead_status)

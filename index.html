@@ -537,15 +537,19 @@
 
   .panel-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
 
-  /* ===== Lead Details - תצוגה מלאה-מסך (לא drawer צר) =====
+  /* ===== Lead Details - תצוגת רשומה מלאה-מסך, בסטנדרט BMBY =====
      #panel הוא עדיין אותו .panel בסיסי (אותה אנימציית slide חלקה, אותו
      overlay/closeAllPanels) - רק דורס את מידות ה-drawer ואת פריסת-העמודה-
-     האחת שלו ל-overlay ברוחב מלא עם שתי עמודות (ציר-זמן רחב + סיידבר פרטים),
-     בלי לגעת ב-.panel/.panel-header/.panel-body הבסיסיים ששאר הפאנלים
-     (callPanel/tasksPanel/editLeadPanel וכו') ממשיכים להשתמש בהם כמו שהיו -
-     ראו ההבדל בסלקטור (#panel, לא .panel) בכל חריגה למטה. */
+     האחת שלו, בלי לגעת ב-.panel/.panel-header/.panel-body הבסיסיים ששאר
+     הפאנלים (callPanel/tasksPanel/editLeadPanel וכו') ממשיכים להשתמש בהם
+     כמו שהיו - ראו ההבדל בסלקטור (#panel, לא .panel) בכל חריגה למטה.
+
+     מבנה: עמודה מרכזית אחת גוללת (סקירה כללית → נדל"ן ותקציב → ציר פעילות),
+     בלי תמלול וואטסאפ גולמי בתוכה בכלל - הוא עבר ל-panel-chatdrawer, מגירה
+     נגללת-בנפרד שנפתחת/נסגרת מעל העמודה המרכזית (לא דוחקת אותה בצד) -
+     "לא עמוסה" כברירת מחדל (סגורה), בלחיצה על טאב/כפתור. */
   #panel {
-    inset-inline-start: 0; width: 100%; max-width: 100%; z-index: 55;
+    inset-inline-start: 0; width: 100%; max-width: 100%; z-index: 55; overflow: hidden;
   }
 
   #panel .panel-topbar {
@@ -560,34 +564,78 @@
   #panel .panel-back-btn:hover { background: var(--surface-3); color: var(--text-primary); }
   #panel .panel-topbar-title h2 { font-size: 18px; margin: 0 0 2px; }
   #panel .panel-topbar-title p { margin: 0; font-size: 13px; color: var(--text-secondary); }
+  #panel .panel-chatdrawer-toggle {
+    margin-inline-start: auto; display: flex; align-items: center; gap: 6px;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
+    color: var(--text-secondary); font-size: 13.5px; padding: 8px 14px; flex-shrink: 0;
+  }
+  #panel .panel-chatdrawer-toggle:hover { background: var(--surface-3); color: var(--text-primary); }
 
-  #panel .panel-layout { flex: 1; display: flex; min-height: 0; overflow: hidden; }
-  #panel .panel-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  #panel .panel-body { padding: 20px min(8vw, 64px); }
-  #panel .panel-sidebar {
-    width: 360px; flex-shrink: 0; overflow-y: auto; padding: 20px;
-    border-inline-start: 1px solid var(--gridline); background: var(--surface-1);
-    display: flex; flex-direction: column; gap: 18px;
+  /* שורת פעולות (חיוג/callback/משימות/היסטוריית שיחות/ערוך/חסימה + מתג AI) -
+     תחת ה-topbar, מעל העמודה המרכזית - לא עוד "מוחבא" בתוך כרטיס פרטים */
+  #panel .panel-toolbar {
+    padding: 12px 28px; border-bottom: 1px solid var(--gridline); flex-shrink: 0;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   }
-  #panel .panel-sidebar-section { display: flex; flex-direction: column; gap: 2px; }
-  #panel .panel-sidebar-label {
-    font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
-    color: var(--text-muted); margin-bottom: 6px;
+
+  /* עמודה מרכזית אחת, גוללת, ברוחב קריאה נוח (לא דביקה לקצוות המסך על
+     מוניטורים רחבים) - ראו max-width+margin:auto, בדיוק כמו .page הקיים */
+  #panel .panel-main { flex: 1; min-height: 0; overflow-y: auto; }
+  #panel .panel-main-inner { max-width: 980px; margin: 0 auto; padding: 24px 28px 60px; }
+
+  .lead-detail-card {
+    border-radius: 16px; padding: 20px 22px; margin-bottom: 20px;
+    background: var(--surface-1); border: 1px solid var(--border);
   }
-  #panel .panel-sidebar-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  #panel .panel-sidebar-actions .call-btn { width: 100%; box-sizing: border-box; text-align: center; }
-  #panel .panel-sidebar-note .note-form { flex-direction: column; margin-top: 0; }
-  #panel .panel-sidebar-note input {
-    width: 100%; box-sizing: border-box; font-size: 13.5px; padding: 12px 14px;
+  .lead-detail-card h3 {
+    margin: 0 0 16px; font-size: 14px; display: flex; align-items: center; gap: 8px;
   }
-  #panel .panel-sidebar-note button { width: 100%; }
-  @media (max-width: 980px) {
-    #panel .panel-layout { flex-direction: column; overflow-y: auto; }
-    #panel .panel-sidebar {
-      width: 100%; border-inline-start: none; border-top: 1px solid var(--gridline);
-      flex-direction: row; flex-wrap: wrap; overflow-y: visible;
-    }
-    #panel .panel-sidebar-actions { flex: 1 1 100%; }
+  .lead-field-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px 18px;
+  }
+  .lead-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .lead-field.lead-field-wide { grid-column: 1 / -1; }
+  .lead-field label {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.4px; color: var(--text-muted);
+  }
+  .lead-field input, .lead-field textarea {
+    width: 100%; box-sizing: border-box; font-family: inherit; font-size: 13.5px;
+    padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text-primary);
+  }
+  .lead-field input:focus, .lead-field textarea:focus { outline: none; border-color: var(--accent); }
+  .lead-field input:disabled { color: var(--text-secondary); cursor: default; opacity: .85; }
+  .lead-field textarea { resize: vertical; min-height: 60px; }
+  .lead-field-readout { display: flex; align-items: center; min-height: 37px; }
+
+  #panel .panel-activity-notewrap { margin-bottom: 16px; }
+  #panel .panel-activity-notewrap .note-form { flex-direction: column; margin-top: 0; }
+  #panel .panel-activity-notewrap input { width: 100%; box-sizing: border-box; font-size: 13.5px; padding: 11px 14px; }
+  #panel .panel-body { max-height: 480px; overflow-y: auto; border-radius: 12px; background: var(--surface-2); padding: 14px 16px; }
+
+  /* מגירת צ'אט וואטסאפ - נגללת (collapsible), overlay מעל העמודה המרכזית,
+     לא דוחקת אותה בצד - ברירת מחדל סגורה (ראו .open) כדי לא לעמוס את התצוגה
+     הראשית בתמלול גולמי, בדיוק כמו שהתבקש. */
+  #panel .panel-chatdrawer {
+    position: absolute; top: 0; bottom: 0; inset-inline-start: 0; width: min(440px, 100vw);
+    background: var(--glass-bg-solid); box-shadow: 0 0 60px rgba(0,0,0,0.5);
+    border-inline-end: 1px solid var(--gridline); z-index: 60;
+    display: flex; flex-direction: column; transform: translateX(100%);
+    transition: transform .25s ease;
+  }
+  [dir="rtl"] #panel .panel-chatdrawer { transform: translateX(-100%); }
+  #panel .panel-chatdrawer.open { transform: translateX(0); }
+  #panel .panel-chatdrawer-header {
+    padding: 16px 20px; border-bottom: 1px solid var(--gridline); flex-shrink: 0;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 700; font-size: 14px;
+  }
+  #panel .panel-chatdrawer-close { border: none; background: transparent; font-size: 18px; color: var(--text-secondary); }
+  #panel #panelChatBody { flex: 1; overflow-y: auto; padding: 16px 20px; }
+
+  @media (max-width: 720px) {
+    #panel .panel-chatdrawer { width: 100%; }
+    #panel .panel-main-inner { padding: 18px 16px 48px; }
+    .lead-field-grid { grid-template-columns: 1fr; }
   }
 
   .msg-row { display: flex; margin-block: 10px; }
@@ -1514,6 +1562,12 @@
      (panelIds, למטה בקובץ) ממשיך לעבוד מילה-במילה בלי שום שינוי קוד JS;
      רק הסידור המרחבי של אותם אלמנטים עצמם השתנה (עמודת ציר-זמן רחבה +
      סיידבר פרטים, במקום מחסן-אחד-צר-מלמעלה-למטה). -->
+<!-- Lead Details - רשומה מלאה-מסך בסטנדרט BMBY: עמודה מרכזית אחת עם Contact
+     Info / Property Preferences / Activity History, ותמלול הצ'אט הגולמי
+     עבר למגירה נגללת בצד (panelChatDrawer) - לא מציף יותר את התצוגה הראשית.
+     אותם ID-ים מהגרסה הקודמת (panelBody/panelStatusWrap/.../composerForm/
+     noteForm/panelClose) עדיין קיימים - createChatController ממשיך לעבוד -
+     רק הסידור המרחבי + שדות הטופס החדשים (אימייל/כתובת/דרישות) התווספו. -->
 <aside class="panel glass" id="panel">
   <div class="panel-topbar">
     <button class="panel-back-btn" id="panelClose" aria-label="חזרה לדשבורד">
@@ -1526,62 +1580,130 @@
       </h2>
       <p id="panelSub"></p>
     </div>
+    <button type="button" class="panel-chatdrawer-toggle" id="panelChatDrawerToggle">
+      <i data-lucide="message-circle" class="h-4 w-4"></i><span>צ'אט וואטסאפ</span>
+    </button>
   </div>
-  <div class="panel-layout">
-    <div class="panel-main">
-      <div class="panel-body" id="panelBody"></div>
-      <div class="ai-copilot" id="aiCopilotWrap">
-        <div class="ai-copilot-buttons">
-          <button type="button" id="objectionBtn">🎯 הצעות תגובה (סוכן מכירות)</button>
-          <button type="button" id="execSummaryBtn">📋 סיכום מנהלים</button>
-          <button type="button" id="missingFieldsBtn" style="display:none;">🧩 הצע השלמת פרטים</button>
+
+  <div class="panel-toolbar">
+    <div id="panelStatusWrap" class="panel-status-wrap"></div>
+    <div id="panelAiToggleWrap" class="panel-status-wrap"></div>
+    <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
+    <button type="button" class="call-btn" id="panelCallbackBtn">⏰ חזור בהמשך</button>
+    <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
+    <button type="button" class="call-btn" id="panelCallHistoryBtn">📋 היסטוריית שיחות</button>
+    <button type="button" class="call-btn" id="panelQuickEditBtn">✏️ ערוך פרטים</button>
+    <button type="button" class="call-btn danger" id="panelBlockBtn">🚫 חסום איש קשר</button>
+  </div>
+
+  <div class="panel-main">
+    <div class="panel-main-inner">
+
+      <div class="lead-detail-card">
+        <h3>🪪 פרטי קשר</h3>
+        <div class="lead-field-grid">
+          <div class="lead-field">
+            <label for="panelFieldName">שם מלא</label>
+            <input type="text" id="panelFieldName" class="lead-field-input" data-field="customer_name" placeholder="שם מלא">
+          </div>
+          <div class="lead-field">
+            <label for="panelFieldPhone">טלפון</label>
+            <input type="text" id="panelFieldPhone" disabled>
+          </div>
+          <div class="lead-field">
+            <label for="panelFieldEmail">אימייל</label>
+            <input type="email" id="panelFieldEmail" class="lead-field-input" data-field="email" placeholder="example@mail.com">
+          </div>
+          <div class="lead-field">
+            <label for="panelFieldAddress">כתובת</label>
+            <input type="text" id="panelFieldAddress" class="lead-field-input" data-field="address" placeholder="כתובת">
+          </div>
+          <div class="lead-field">
+            <label for="panelFieldBusiness">עסק / חברה</label>
+            <input type="text" id="panelFieldBusiness" class="lead-field-input" data-field="business_name" placeholder="עסק">
+          </div>
+          <div class="lead-field">
+            <label for="panelFieldAgent">סוכן מטפל</label>
+            <input type="text" id="panelFieldAgent" class="lead-field-input" data-field="agent" placeholder="סוכן מטפל">
+          </div>
+          <div class="lead-field">
+            <label for="panelFieldCategory">קטגוריה / תגית</label>
+            <input type="text" id="panelFieldCategory" class="lead-field-input" data-field="category" placeholder="קטגוריה">
+          </div>
+          <div class="lead-field">
+            <label>ציון חום</label>
+            <div class="lead-field-readout" id="panelScoreWrap"></div>
+          </div>
         </div>
-        <div class="ai-copilot-result" id="aiCopilotResult" style="display:none;"></div>
       </div>
-      <div class="composer">
-        <div class="composer-error" id="composerError"></div>
-        <form id="composerForm">
-          <textarea id="composerInput" placeholder="כתוב הודעה..." rows="1" required></textarea>
-          <button type="submit" class="primary" id="composerSend">שלח</button>
-        </form>
+
+      <div class="lead-detail-card">
+        <h3>🏠 העדפות נדל"ן</h3>
+        <div class="lead-field-grid">
+          <div class="lead-field">
+            <label for="panelFieldPropertyType">סוג נכס</label>
+            <input type="text" id="panelFieldPropertyType" class="lead-field-input" data-field="property_type" placeholder="למשל: דירת 4 חדרים">
+          </div>
+          <div class="lead-field">
+            <label for="panelFieldBudget">תקציב</label>
+            <input type="text" id="panelFieldBudget" class="lead-field-input" data-field="budget" placeholder="למשל: 2,500,000 ₪">
+          </div>
+          <div class="lead-field">
+            <label for="panelFieldLocation">אזור מועדף</label>
+            <input type="text" id="panelFieldLocation" class="lead-field-input" data-field="location" placeholder="אזור/שכונה מועדפת">
+          </div>
+          <div class="lead-field lead-field-wide">
+            <label for="panelFieldRequirements">דרישות נוספות</label>
+            <textarea id="panelFieldRequirements" class="lead-field-input" data-field="requirements" rows="2" placeholder="חניה, מרפסת, קומה גבוהה..."></textarea>
+          </div>
+          <div class="lead-field lead-field-wide">
+            <div id="panelMissingFieldsWrap" class="panel-property-wrap"></div>
+          </div>
+        </div>
       </div>
-    </div>
-    <aside class="panel-sidebar">
-      <div class="panel-sidebar-section">
-        <div class="panel-sidebar-label">סטטוס ומענה</div>
-        <div id="panelStatusWrap" class="panel-status-wrap"></div>
-        <div id="panelAiToggleWrap" class="panel-status-wrap"></div>
-        <div id="panelScoreWrap" class="panel-score-wrap"></div>
-      </div>
-      <div class="panel-sidebar-section">
-        <div class="panel-sidebar-label">נדל"ן ותקציב</div>
-        <div id="panelPropertyWrap" class="panel-property-wrap"></div>
-        <div id="panelMissingFieldsWrap" class="panel-property-wrap"></div>
-      </div>
-      <div class="panel-sidebar-section">
-        <div class="panel-sidebar-label">תקציר פעילות</div>
+
+      <div class="lead-detail-card">
+        <h3>📋 תקציר פעילות</h3>
         <div id="panelSummaryWrap" class="panel-summary-wrap"></div>
       </div>
-      <div class="panel-sidebar-section">
-        <div class="panel-sidebar-label">פעולות</div>
-        <div class="panel-sidebar-actions">
-          <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
-          <button type="button" class="call-btn" id="panelCallbackBtn">⏰ חזור בהמשך</button>
-          <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
-          <button type="button" class="call-btn" id="panelCallHistoryBtn">📋 היסטוריית שיחות</button>
-          <button type="button" class="call-btn" id="panelQuickEditBtn">✏️ ערוך פרטים</button>
-          <button type="button" class="call-btn danger" id="panelBlockBtn">🚫 חסום איש קשר</button>
+
+      <div class="lead-detail-card">
+        <h3>🕒 ציר פעילות - שיחות, הערות ושינויי סטטוס</h3>
+        <div class="panel-activity-notewrap">
+          <form id="noteForm" class="note-form">
+            <input type="text" id="noteInput" placeholder="🗒️ הוסף הערה - לדוגמה: התקשרתי, מעוניין בדירת 4 חדרים...">
+            <button type="submit" id="noteSend">הוסף הערה</button>
+          </form>
         </div>
+        <div class="panel-body" id="panelBody"></div>
       </div>
-      <div class="panel-sidebar-section panel-sidebar-note">
-        <div class="panel-sidebar-label">הערה פנימית מהירה</div>
-        <form id="noteForm" class="note-form">
-          <input type="text" id="noteInput" placeholder="🗒️ לדוגמה: התקשרתי - מעוניין בדירת 4 חדרים...">
-          <button type="submit" id="noteSend">הוסף הערה</button>
-        </form>
-      </div>
-    </aside>
+
+    </div>
   </div>
+
+  <!-- מגירת צ'אט וואטסאפ - נגללת, סגורה כברירת מחדל (ראו panelChatDrawerToggle) -->
+  <aside class="panel-chatdrawer" id="panelChatDrawer">
+    <div class="panel-chatdrawer-header">
+      <span>💬 שיחת וואטסאפ (AI + ידני)</span>
+      <button type="button" class="panel-chatdrawer-close" id="panelChatDrawerClose" aria-label="סגור צ'אט">✕</button>
+    </div>
+    <div id="panelChatBody"></div>
+    <div class="ai-copilot" id="aiCopilotWrap">
+      <div class="ai-copilot-buttons">
+        <button type="button" id="objectionBtn">🎯 הצעות תגובה (סוכן מכירות)</button>
+        <button type="button" id="execSummaryBtn">📋 סיכום מנהלים</button>
+        <button type="button" id="missingFieldsBtn" style="display:none;">🧩 הצע השלמת פרטים</button>
+      </div>
+      <div class="ai-copilot-result" id="aiCopilotResult" style="display:none;"></div>
+    </div>
+    <div class="composer">
+      <div class="composer-error" id="composerError"></div>
+      <form id="composerForm">
+        <textarea id="composerInput" placeholder="כתוב הודעה..." rows="1" required></textarea>
+        <button type="submit" class="primary" id="composerSend">שלח</button>
+      </form>
+    </div>
+  </aside>
 </aside>
 
 <aside class="panel glass" id="callPanel">
@@ -2471,9 +2593,30 @@ function renderBubble(m) {
   `;
 }
 
+// מוסיפה הודעות חדשות (polling) לתחתית אלמנט תצוגה נתון - no-op בשקט אם
+// messages ריק, כדי שאפשר לקרוא לה בלי בדיקת-אורך חוזרת בכל מקום קריאה
+// (ראו createChatController.pollForNew, שקוראת לה פעמיים באותו tick כש-
+// ids.chatBody מוגדר - אחת לציר הפעילות, אחת למגירת הצ'אט).
+function appendMessagesTo(el, messages) {
+  if (!el || messages.length === 0) return;
+  const empty = el.querySelector(".empty, .inbox-chat-empty");
+  if (empty) el.innerHTML = "";
+  const wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  el.insertAdjacentHTML("beforeend", messages.map(renderBubble).join(""));
+  if (wasNearBottom) el.scrollTop = el.scrollHeight;
+}
+
+// ערוצים שהם "פעילות מערכת" (תקציר שיחה/הערה פנימית/שינוי סטטוס) - לא שיחת
+// וואטסאפ גולמית. ה-Lead Details view (BMBY-style) מפריד בין שני הזרמים
+// האלה לשתי תצוגות שונות (ציר פעילות מרכזי מול מגירת צ'אט) - ראו ids.chatBody
+// למטה. ה-Unified Inbox לא מגדיר chatBody בכלל, ולכן ממשיך לקבל הכל בזרם אחד
+// כמו קודם (בדיוק אותה התנהגות - שום שינוי שם).
+const ACTIVITY_ONLY_CHANNELS = new Set(["voice", "note", "status_change"]);
+
 // חלון צ'אט חי (היסטוריה + polling + composer) - לוגיקה משותפת בין הפאנל הנגלל
 // (טבלה) לבין ה-Unified Inbox, כדי לא לשכפל את מנגנון ה-polling/composer פעמיים.
-// ids: {body, name, sub, statusWrap, composerForm, composerInput, composerSend, composerError, onOpen, onClose}
+// ids: {body, chatBody?, name, sub, statusWrap, composerForm, composerInput, composerSend, composerError, leadFields?, onOpen, onClose}
+// chatBody/leadFields הם אופציונליים (רק panelChat מגדיר אותם) - ראו ACTIVITY_ONLY_CHANNELS.
 function createChatController(ids) {
   let currentLead = null;
   let lastMessageTimestamp = null;
@@ -2528,6 +2671,15 @@ function createChatController(ids) {
       const hasMissing = !!(lead && lead.missing_fields && lead.missing_fields.length > 0);
       document.getElementById(ids.missingFieldsBtn).style.display = (hasMissing && hasHistory) ? "" : "none";
     }
+    // שדות הגריד הנגישים-לעריכה (Lead Details, BMBY-style) - קביעת .value
+    // ישירה על input-ים קיימים-מראש (לא innerHTML מחדש) כדי לא לגנוב פוקוס/
+    // מיקום סמן משדה שהמשתמש דווקא עריכה בו כרגע באותו רגע בדיוק.
+    if (ids.leadFields) {
+      for (const [field, elId] of Object.entries(ids.leadFields)) {
+        const el = document.getElementById(elId);
+        if (el) el.value = (lead && lead[field]) || "";
+      }
+    }
   }
 
   function stopPolling() {
@@ -2556,13 +2708,14 @@ function createChatController(ids) {
         if (res.ok) {
           const messages = await res.json();
           if (messages.length > 0) {
-            const el = bodyEl();
-            const empty = el.querySelector(".empty, .inbox-chat-empty");
-            if (empty) el.innerHTML = "";
-            const wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-            el.insertAdjacentHTML("beforeend", messages.map(renderBubble).join(""));
+            const chatEl = ids.chatBody ? document.getElementById(ids.chatBody) : null;
+            if (chatEl) {
+              appendMessagesTo(bodyEl(), messages.filter(m => ACTIVITY_ONLY_CHANNELS.has(m.channel)));
+              appendMessagesTo(chatEl, messages.filter(m => !ACTIVITY_ONLY_CHANNELS.has(m.channel)));
+            } else {
+              appendMessagesTo(bodyEl(), messages);
+            }
             lastMessageTimestamp = messages[messages.length - 1].timestamp;
-            if (wasNearBottom) el.scrollTop = el.scrollHeight;
           }
         }
       } catch (err) {
@@ -2586,21 +2739,30 @@ function createChatController(ids) {
     if (ids.onOpen) ids.onOpen();
 
     const el = bodyEl();
+    const chatEl = ids.chatBody ? document.getElementById(ids.chatBody) : null;
     el.innerHTML = '<div class="loading">טוען היסטוריה...</div>';
+    if (chatEl) chatEl.innerHTML = '<div class="loading">טוען שיחה...</div>';
 
     try {
       const res = await fetch(`/api/messages?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`);
       if (!res.ok) throw new Error("HTTP " + res.status);
       const messages = await res.json();
-      if (messages.length === 0) {
+      if (chatEl) {
+        const activityMsgs = messages.filter(m => ACTIVITY_ONLY_CHANNELS.has(m.channel));
+        const chatMsgs = messages.filter(m => !ACTIVITY_ONLY_CHANNELS.has(m.channel));
+        el.innerHTML = activityMsgs.length ? activityMsgs.map(renderBubble).join("") : '<div class="empty">אין עדיין פעילות רשומה לליד זה</div>';
+        chatEl.innerHTML = chatMsgs.length ? chatMsgs.map(renderBubble).join("") : '<div class="empty">אין הודעות וואטסאפ רשומות לליד זה</div>';
+        chatEl.scrollTop = chatEl.scrollHeight;
+      } else if (messages.length === 0) {
         el.innerHTML = '<div class="empty">אין הודעות רשומות למסד הנתונים עבור ליד זה</div>';
       } else {
         el.innerHTML = messages.map(renderBubble).join("");
         el.scrollTop = el.scrollHeight;
-        lastMessageTimestamp = messages[messages.length - 1].timestamp;
       }
+      if (messages.length > 0) lastMessageTimestamp = messages[messages.length - 1].timestamp;
     } catch (err) {
       el.innerHTML = '<div class="error">שגיאה בטעינת ההיסטוריה: ' + escapeHtml(err.message) + "</div>";
+      if (chatEl) chatEl.innerHTML = "";
     }
 
     startPolling();
@@ -2820,13 +2982,23 @@ function createChatController(ids) {
 }
 
 const panelChat = createChatController({
-  body: "panelBody", name: "panelName", sub: "panelSub", statusWrap: "panelStatusWrap", scoreWrap: "panelScoreWrap",
-  propertyWrap: "panelPropertyWrap", summaryWrap: "panelSummaryWrap", missingFieldsWrap: "panelMissingFieldsWrap", aiToggleWrap: "panelAiToggleWrap",
+  body: "panelBody", chatBody: "panelChatBody", name: "panelName", sub: "panelSub",
+  statusWrap: "panelStatusWrap", scoreWrap: "panelScoreWrap",
+  summaryWrap: "panelSummaryWrap", missingFieldsWrap: "panelMissingFieldsWrap", aiToggleWrap: "panelAiToggleWrap",
   composerForm: "composerForm", composerInput: "composerInput",
   composerSend: "composerSend", composerError: "composerError",
   noteForm: "noteForm", noteInput: "noteInput",
   objectionBtn: "objectionBtn", execSummaryBtn: "execSummaryBtn", missingFieldsBtn: "missingFieldsBtn",
   aiCopilotResult: "aiCopilotResult",
+  // Lead Details (BMBY-style) - שדות הגריד הנגישים-לעריכה בעמודה המרכזית (לא
+  // badges קריאה-בלבד כמו propertyBadgeChips שהיה כאן קודם) - ראו syncStatus
+  // ו-document.addEventListener("change", ...) ל-".lead-field-input" למטה.
+  leadFields: {
+    customer_name: "panelFieldName", phone: "panelFieldPhone", email: "panelFieldEmail", address: "panelFieldAddress",
+    business_name: "panelFieldBusiness", agent: "panelFieldAgent", category: "panelFieldCategory",
+    property_type: "panelFieldPropertyType", budget: "panelFieldBudget", location: "panelFieldLocation",
+    requirements: "panelFieldRequirements",
+  },
 });
 
 const inboxChat = createChatController({
@@ -4061,8 +4233,16 @@ document.getElementById("promptsPanelBody").addEventListener("click", async (e) 
 function openHistory(phone, tenantId, name) {
   document.getElementById("overlay").classList.add("open");
   document.getElementById("panel").classList.add("open");
+  document.getElementById("panelChatDrawer").classList.remove("open"); // סגורה כברירת מחדל בכל פתיחה - לא "זוכרת" מצב מליד קודם
   panelChat.open(phone, tenantId, name);
 }
+
+document.getElementById("panelChatDrawerToggle").addEventListener("click", () => {
+  document.getElementById("panelChatDrawer").classList.toggle("open");
+});
+document.getElementById("panelChatDrawerClose").addEventListener("click", () => {
+  document.getElementById("panelChatDrawer").classList.remove("open");
+});
 
 function closeAllPanels() {
   document.getElementById("overlay").classList.remove("open");
@@ -4949,6 +5129,41 @@ document.addEventListener("change", async (e) => {
   } catch (err) {
     alert("עדכון סוכן מטפל נכשל: " + err.message);
     await loadLeads();
+  }
+});
+
+// עדכון כל שדה בגריד הנגיש-לעריכה ב-Lead Details (BMBY-style, ראו #panel
+// .lead-field-grid) - handler גנרי אחד לכל השדות (data-field קובע את השם
+// בפועל), דרך POST /api/leads/update הקיים (מקבל תת-קבוצה חלקית של שדות -
+// שדות שלא נשלחים בבקשה הזו, phone/panelChat.currentLead מלבד, לא נוגעים
+// בהם בכלל, ראו extract.update_lead_fields). לא טבלה-של-10-handlers נפרדים
+// כמו agent/category למעלה - אלה כבר קיימים כנתיבים ייעודיים, לא כופלים אותם.
+document.addEventListener("change", async (e) => {
+  const input = e.target.closest(".lead-field-input");
+  if (!input || !panelChat.currentLead) return;
+
+  const field = input.dataset.field;
+  const value = input.value.trim();
+  input.disabled = true;
+
+  try {
+    const res = await fetch("/api/leads/update", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        phone: panelChat.currentLead.phone, tenant_id: panelChat.currentLead.tenantId,
+        [field]: value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    await loadLeads();
+    panelChat.syncStatus();
+  } catch (err) {
+    alert("שמירת השדה נכשלה: " + err.message);
+    await loadLeads();
+    panelChat.syncStatus();
+  } finally {
+    input.disabled = false;
   }
 });
 

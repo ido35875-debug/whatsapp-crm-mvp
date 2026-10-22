@@ -848,17 +848,30 @@ def update_lead_fields(
     category: str | None = None,
     notes: str | None = None,
     client_id: str | None = None,
+    email: str | None = None,
+    address: str | None = None,
+    property_type: str | None = None,
+    budget: str | None = None,
+    requirements: str | None = None,
 ) -> dict:
-    """שמירה מלאה מפאנל עריכת ליד (#editLeadPanel ב-index.html) - בניגוד ל-
-    import_lead/upsert_customer (שאף פעם לא מוחקים שדה, רק מוסיפים/דורסים ערך
-    לא-ריק), זו פונקציית טופס-עריכה מפורש: None = השדה לא נשלח בכלל (לא נוגעים
-    בו), "" = המשתמש ניקה את השדה בפועל בטופס - השדה נמחק מהכרטיס (מראה
-    update_lead_category/update_lead_agent). לא נוגעת ב-phone עצמו - לשינוי
-    מספר טלפון ראו rekey_lead (rekey מלא, לא רק דריסת ערך).
+    """שמירה מלאה מפאנל עריכת ליד (#editLeadPanel) או מהגריד הנגיש-לעריכה
+    בתצוגת פרטי הליד המלאה (Lead Details, BMBY-style - ראו index.html) -
+    בניגוד ל-import_lead/upsert_customer (שאף פעם לא מוחקים שדה, רק מוסיפים/
+    דורסים ערך לא-ריק), זו פונקציית טופס-עריכה מפורש: None = השדה לא נשלח
+    בכלל (לא נוגעים בו), "" = המשתמש ניקה את השדה בפועל בטופס - השדה נמחק
+    מהכרטיס (מראה update_lead_category/update_lead_agent). לא נוגעת ב-phone
+    עצמו - לשינוי מספר טלפון ראו rekey_lead (rekey מלא, לא רק דריסת ערך).
     client_id (שלב 5): מזהה "בעלים" הליד (user_id של משתמש RBAC בתפקיד client)
     לבידוד קשיח - ראו server.py._effective_client_id. הקורא (server.py) אחראי
     להגביל מי מותר לו בכלל להעביר ערך לפרמטר הזה (admin/partner בלבד) - הפונקציה
-    כאן לא בודקת הרשאות, כמו כל שאר extract.py."""
+    כאן לא בודקת הרשאות, כמו כל שאר extract.py.
+
+    email/address/requirements הם שדות חדשים (לא קיימים בשום מקום אחר בפרויקט
+    עד כה) - נוספו ללא מיגרציית DB כלשהי כי כרטיס הליד הוא JSON blob גמיש
+    (עמודת customers.data) ולא עמודות SQL נפרדות; שדה חסר בכרטיס ישן פשוט
+    None/undefined בתגובת ה-API, בלי שום "ברירת מחדל" מטעה. property_type/
+    budget היו קיימים כבר (ממולאים אוטומטית ע"י extract_voice_message_fields),
+    אבל עד כה לא היו ניתנים לעריכה ידנית בשום UI - כאן זו הדרך הראשונה."""
     customers = load_customers()
     key = _customer_key(tenant_id, phone)
     card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
@@ -879,6 +892,11 @@ def update_lead_fields(
     _set("category", category)
     _set("notes", notes)
     _set("client_id", client_id)
+    _set("email", email)
+    _set("address", address)
+    _set("property_type", property_type)
+    _set("budget", budget)
+    _set("requirements", requirements)
     if lead_status:
         card["lead_status"] = lead_status
 
