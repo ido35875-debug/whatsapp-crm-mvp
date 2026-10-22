@@ -73,12 +73,15 @@ IMPORT_FIELD_ALIASES = {
         "סוכן", "סוכן מטפל", "נציג", "אחראי",
     },
     "property_type": {
-        "property_type", "property type", "apartment type", "unit type", "asset type",
-        "סוג נכס", "סוג דירה", "סוג הנכס",
+        "property_type", "property type", "property preferences", "apartment type", "unit type", "asset type",
+        "סוג נכס", "סוג דירה", "סוג הנכס", "העדפות נכס",
     },
     "budget": {"budget", "price range", "budget range", "price", "תקציב", "טווח תקציב", "מחיר"},
     "requirements": {"requirements", "preferences", "needs", "דרישות", "העדפות", "צרכים"},
-    "notes": {"notes", "note", "comments", "remarks", "description", "הערות", "הערה", "תיאור"},
+    "notes": {
+        "notes", "note", "comments", "remarks", "description", "historical notes", "history",
+        "הערות", "הערה", "תיאור", "הערות היסטוריות", "היסטוריה",
+    },
 }
 
 # ערכי סטטוס חופשיים נפוצים מ-BMBY/Monday שלא תואמים מילה-במילה ל-enum הפנימי
