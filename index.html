@@ -632,9 +632,10 @@
   .lead-field textarea { resize: vertical; min-height: 60px; }
   .lead-field-readout { display: flex; align-items: center; min-height: 37px; }
 
-  /* BMBY-style - 5 אריחים נפרדים ואלגנטיים (City/Project/Rooms/Budget/
-     Scheduled Follow-up) - לא עוד שדה-בתוך-טופס-צפוף; כל אריח עומד בפני
-     עצמו עם אייקון+תווית+ערך, בדיוק כמו .stat-tile הקיים בעמוד הסקירה. */
+  /* BMBY-style - 4 אריחים נפרדים ואלגנטיים (City/Project/Rooms/Budget) - לא
+     עוד שדה-בתוך-טופס-צפוף; כל אריח עומד בפני עצמו עם אייקון+תווית+ערך,
+     בדיוק כמו .stat-tile הקיים בעמוד הסקירה. "מועד פגישה" עבר ל-
+     lead-top-widget (למטה) - לא עוד אריח כאן, ראו ההערה ב-HTML. */
   .bmby-tile-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;
   }
@@ -651,13 +652,66 @@
     color: var(--text-primary); width: 100%; box-sizing: border-box;
   }
   .bmby-tile-input:focus { outline: none; border-bottom: 1px solid var(--accent); }
-  .bmby-tile-followup { background: var(--accent-soft); border-color: var(--accent); }
-  .bmby-tile-readout { font-size: 14px; font-weight: 700; color: var(--accent); }
+
+  /* וידג'ט "בלתי-ניתן-לפספוס" - ראשון בעמודה המרכזית, לא אריח קטן בין
+     אחרים. .lead-top-widget-followup מודגש ב-border+bg accent קבועים
+     (לא רק כש-יש פולו-אפ) כדי שהעין תלך לשם תמיד; הטקסט *בתוכו* (ראו
+     .empty למטה) הוא מה שמשתנה בין "יש"/"אין" - גדול+accent כש-יש,
+     קטן+מעומעם כש-אין (לא נעלם/מוסתר - "No hidden or lost reminders"). */
+  .lead-top-widget { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  .lead-top-widget-status, .lead-top-widget-followup {
+    flex: 1; min-width: 240px; border-radius: 16px; padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .lead-top-widget-status { background: var(--surface-1); border: 1px solid var(--border); }
+  .lead-top-widget-followup { background: var(--accent-soft); border: 2px solid var(--accent); }
+  .lead-top-widget-label {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.5px; color: var(--text-muted); text-transform: uppercase;
+  }
+  .lead-top-widget-followup-value { font-size: 22px; font-weight: 800; color: var(--accent); line-height: 1.2; }
+  .lead-top-widget-followup-value.empty { font-size: 14px; font-weight: 600; color: var(--text-muted); }
+  .lead-top-widget-followup-btn {
+    align-self: flex-start; font-size: 12.5px; padding: 6px 12px; margin-top: 2px;
+    border: 1px solid var(--accent); background: transparent; color: var(--accent); border-radius: 8px;
+  }
+  .lead-top-widget-followup-btn:hover { background: var(--accent); color: #fff; }
 
   #panel .panel-activity-notewrap { margin-bottom: 16px; }
   #panel .panel-activity-notewrap .note-form { flex-direction: column; margin-top: 0; }
   #panel .panel-activity-notewrap input { width: 100%; box-sizing: border-box; font-size: 13.5px; padding: 11px 14px; }
-  #panel .panel-body { max-height: 480px; overflow-y: auto; border-radius: 12px; background: var(--surface-2); padding: 14px 16px; }
+
+  /* טבלת "יומן פעילות" Enterprise - מחליפה את בועות הצ'אט לציר הפעילות
+     המרכזי (לא למגירת הוואטסאפ - שם זו שיחה אמיתית, בועות נשארות). */
+  .activity-table-wrap {
+    max-height: 480px; overflow-y: auto; overflow-x: hidden; border-radius: 12px; border: 1px solid var(--border);
+  }
+  table.activity-table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+  table.activity-table thead th {
+    position: sticky; top: 0; background: var(--surface-2); text-align: start; padding: 10px 12px;
+    font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--border);
+  }
+  table.activity-table thead th:nth-child(1) { width: 110px; }
+  table.activity-table thead th:nth-child(2) { width: 130px; }
+  table.activity-table thead th:nth-child(4) { width: 110px; }
+  table.activity-table tbody td {
+    padding: 10px 12px; border-bottom: 1px solid var(--gridline); vertical-align: top;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  table.activity-table tbody tr:last-child td { border-bottom: none; }
+  table.activity-table tbody tr:hover td { background: rgba(205,164,94,0.06); }
+  .activity-cell-time { white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
+  .activity-cell-summary { line-height: 1.4; white-space: normal; word-break: break-word; }
+  .activity-cell-source { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+  .activity-type-badge {
+    display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  }
+  .activity-type-badge.activity-type-note { background: var(--surface-3); color: var(--text-secondary); }
+  .activity-type-badge.activity-type-voice { background: var(--accent-soft); color: var(--accent); }
+  .activity-type-badge.activity-type-status_change { background: var(--status-good-soft); color: var(--status-good); }
+  .activity-table .empty, .activity-table .loading, .activity-table .error { text-align: center; padding: 20px 12px; color: var(--text-muted); }
+  .activity-table .error { color: var(--status-critical); }
 
   /* מגירת צ'אט וואטסאפ - נגללת (collapsible), אח אמיתי ב-flex row של
      panel-content-area (לא position:absolute/overlay מעל panel-main) -
@@ -1645,8 +1699,6 @@
   </div>
 
   <div class="panel-toolbar">
-    <div id="panelStatusWrap" class="panel-status-wrap"></div>
-    <div id="panelAiToggleWrap" class="panel-status-wrap"></div>
     <button type="button" class="call-btn" id="panelCallBtn">📞 שיחה</button>
     <button type="button" class="call-btn" id="panelCallbackBtn">⏰ חזור בהמשך</button>
     <button type="button" class="call-btn" id="panelTasksBtn">📅 משימות</button>
@@ -1658,6 +1710,23 @@
   <div class="panel-content-area">
   <div class="panel-main">
     <div class="panel-main-inner">
+
+      <!-- וידג'ט בלתי-ניתן-לפספוס: סטטוס + פולו-אפ מתוזמן - ראשון בעמודה,
+           לא אריח קטן בין חמישה אחרים. loadNextFollowupTile ממלאת/מעצבת
+           את panelNextFollowupReadout (גדול+accent אם קיים פולו-אפ, קטן+
+           מעומעם אם אין) - ראו גם כפתור "קבע פולו-אפ" מהיר (openCallbackPanel). -->
+      <div class="lead-top-widget">
+        <div class="lead-top-widget-status">
+          <div class="lead-top-widget-label">סטטוס ליד</div>
+          <div id="panelStatusWrap" class="panel-status-wrap"></div>
+          <div id="panelAiToggleWrap" class="panel-status-wrap"></div>
+        </div>
+        <div class="lead-top-widget-followup">
+          <div class="lead-top-widget-label">⏰ פולו-אפ מתוזמן</div>
+          <div class="lead-top-widget-followup-value empty" id="panelNextFollowupReadout">טוען...</div>
+          <button type="button" class="lead-top-widget-followup-btn" id="panelTopFollowupBtn">קבע / שנה פולו-אפ</button>
+        </div>
+      </div>
 
       <div class="lead-detail-card">
         <h3>🪪 פרטי קשר</h3>
@@ -1698,15 +1767,12 @@
       </div>
 
       <div class="lead-detail-card">
-        <h3>🏠 נדל"ן ותזמון - BMBY</h3>
-        <!-- חמשת ה"אריחים" המבוקשים (City/Project/Rooms/Budget/Scheduled
-             Follow-up) - כרטיסים נפרדים ואלגנטיים, לא טופס-טבלה אחד צפוף.
-             כל אריח (חוץ מ"מועד פגישה") הוא input נגיש-לעריכה רגיל (אותו
-             mechanism כמו שאר lead-field-input) - רק עטוף בעיצוב-אריח, לא
-             מכניקה חדשה. "מועד פגישה" הוא תצוגה-בלבד (נטען מ-GET /api/tasks,
-             ראו loadNextFollowupTile) - נקבע/משתנה דרך "⏰ חזור בהמשך" או
-             אוטומטית מה-NLP על הערות (ראו note_entity_extraction.py), לא
-             דרך עריכה ישירה של האריח הזה עצמו. -->
+        <h3>🏠 נכס מבוקש - BMBY</h3>
+        <!-- ארבעת ה"אריחים" (City/Project/Rooms/Budget) - כרטיסים נפרדים
+             ואלגנטיים, לא טופס-טבלה אחד צפוף. "מועד פגישה" (Scheduled
+             Follow-up) עבר לוידג'ט הבלתי-ניתן-לפספוס בראש העמודה (ראו
+             lead-top-widget למעלה) - לא עוד אריח קטן כאן, בדיוק כמו
+             שהתבקש ("unmissable", לא קבור בין שדות אחרים). -->
         <div class="bmby-tile-grid">
           <div class="bmby-tile">
             <div class="bmby-tile-icon">🏙️</div>
@@ -1727,11 +1793,6 @@
             <div class="bmby-tile-icon">💰</div>
             <label class="bmby-tile-label" for="panelFieldBudget">תקציב</label>
             <input type="text" id="panelFieldBudget" class="lead-field-input bmby-tile-input" data-field="budget" placeholder="תקציב">
-          </div>
-          <div class="bmby-tile bmby-tile-followup">
-            <div class="bmby-tile-icon">📅</div>
-            <div class="bmby-tile-label">מועד פגישה</div>
-            <div class="bmby-tile-readout" id="panelNextFollowupReadout">—</div>
           </div>
         </div>
         <div class="lead-field-grid" style="margin-top: 16px;">
@@ -1755,14 +1816,25 @@
       </div>
 
       <div class="lead-detail-card">
-        <h3>🕒 ציר פעילות - שיחות, הערות ושינויי סטטוס</h3>
+        <h3>🕒 יומן פעילות - שיחות, הערות ושינויי סטטוס</h3>
         <div class="panel-activity-notewrap">
           <form id="noteForm" class="note-form">
             <input type="text" id="noteInput" placeholder="🗒️ הוסף הערה - לדוגמה: התקשרתי, מעוניין בדירת 4 חדרים...">
             <button type="submit" id="noteSend">הוסף הערה</button>
           </form>
         </div>
-        <div class="panel-body" id="panelBody"></div>
+        <!-- טבלת יומן Enterprise - לא בועות צ'אט (אלו נשארות רק במגירת
+             הוואטסאפ, ששם זו שיחה אמיתית) - שורה חדשה מתווספת ב*ראש* הטבלה
+             (newest-first), לא בתחתית עם גלילה כמו צ'אט - ראו renderActivityRow/
+             appendMessagesTo(..., {prepend:true}). -->
+        <div class="activity-table-wrap">
+          <table class="activity-table">
+            <thead>
+              <tr><th>זמן</th><th>סוג פעולה</th><th>תקציר</th><th>מקור</th></tr>
+            </thead>
+            <tbody id="panelBody"></tbody>
+          </table>
+        </div>
       </div>
 
     </div>
@@ -2681,10 +2753,32 @@ function renderBubble(m) {
   `;
 }
 
-// מוסיפה הודעות חדשות (polling) לתחתית אלמנט תצוגה נתון - no-op בשקט אם
-// messages ריק, כדי שאפשר לקרוא לה בלי בדיקת-אורך חוזרת בכל מקום קריאה
-// (ראו createChatController.pollForNew, שקוראת לה פעמיים באותו tick כש-
-// ids.chatBody מוגדר - אחת לציר הפעילות, אחת למגירת הצ'אט).
+// שורת טבלה ל"יומן פעילות" Enterprise (לא בועת צ'אט) - ראו #panel .activity-
+// table. בשימוש רק לציר הפעילות המרכזי (voice/note/status_change) - מגירת
+// הוואטסאפ ממשיכה להשתמש ב-renderBubble (שיחה אמיתית, בועות כן מתאימות שם).
+const ACTIVITY_TYPE_META = {
+  voice: { label: "שיחה", icon: "📞", source: "AI (תקציר שיחה)" },
+  note: { label: "הערה", icon: "🗒️", source: "נציג" },
+  status_change: { label: "שינוי סטטוס", icon: "🔄", source: "מערכת" },
+};
+function renderActivityRow(m) {
+  const time = new Date(m.timestamp).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
+  const meta = ACTIVITY_TYPE_META[m.channel] || { label: m.channel, icon: "•", source: "—" };
+  return `
+    <tr class="activity-row" data-msg-id="${escapeHtml(String(m.id))}">
+      <td class="activity-cell-time">${time}</td>
+      <td class="activity-cell-type"><span class="activity-type-badge activity-type-${escapeHtml(m.channel)}">${meta.icon} ${meta.label}</span></td>
+      <td class="activity-cell-summary">${escapeHtml(m.message)}</td>
+      <td class="activity-cell-source">${meta.source}</td>
+    </tr>
+  `;
+}
+
+// מוסיפה הודעות חדשות (polling) לאלמנט תצוגה נתון - no-op בשקט אם messages
+// ריק, כדי שאפשר לקרוא לה בלי בדיקת-אורך חוזרת בכל מקום קריאה (ראו
+// createChatController.pollForNew, שקוראת לה פעמיים באותו tick כש-ids.
+// chatBody מוגדר - אחת לציר הפעילות עם renderActivityRow+prepend, אחת
+// למגירת הצ'אט עם renderBubble+append הרגיל).
 // הגנה כפולה/שלישית מפני כפילות (ראו appendMessagesTo) - מסננת id-ים חזרתיים
 // *בתוך אותה תשובת שרת אחת*, לא רק מול מה שכבר ב-DOM. שומרת את ההופעה
 // הראשונה של כל id (לא האחרונה) כדי לא לשבש סדר כרונולוגי.
@@ -2698,12 +2792,13 @@ function dedupeMessagesById(messages) {
   });
 }
 
-function appendMessagesTo(el, messages) {
+function appendMessagesTo(el, messages, { renderFn = renderBubble, prepend = false } = {}) {
   if (!el || messages.length === 0) return;
   // הגנה מפני רינדור כפול (באג שדווח: אותה הערה/פעילות מופיעה כמה פעמים) -
   // מסננים כל הודעה שה-id שלה *כבר* קיים בפועל ב-DOM (data-msg-id, ראו
-  // renderBubble) לפני ה-append, לא בוטחים שה-since/timestamp מהשרת כבר
-  // מנע כפילות בעצמו - הגנה כפולה, לא רק תקווה שצד אחד מספיק.
+  // renderBubble/renderActivityRow) לפני ה-append, לא בוטחים שה-since/
+  // timestamp מהשרת כבר מנע כפילות בעצמו - הגנה כפולה, לא רק תקווה שצד
+  // אחד מספיק.
   const alreadyRendered = new Set(
     Array.from(el.querySelectorAll("[data-msg-id]")).map(node => node.dataset.msgId)
   );
@@ -2711,8 +2806,15 @@ function appendMessagesTo(el, messages) {
   if (newMessages.length === 0) return;
   const empty = el.querySelector(".empty, .inbox-chat-empty");
   if (empty) el.innerHTML = "";
+  if (prepend) {
+    // יומן Enterprise - חדש-ביותר-ראשון, לא גלילה-לתחתית כמו צ'אט (ראו
+    // renderActivityRow) - .reverse() כדי שתוך קבוצת הודעות חדשות, הכי
+    // חדשה תנחת למעלה-ביותר אחרי ה-prepend, לא הפוכה.
+    el.insertAdjacentHTML("afterbegin", newMessages.slice().reverse().map(renderFn).join(""));
+    return;
+  }
   const wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  el.insertAdjacentHTML("beforeend", newMessages.map(renderBubble).join(""));
+  el.insertAdjacentHTML("beforeend", newMessages.map(renderFn).join(""));
   if (wasNearBottom) el.scrollTop = el.scrollHeight;
 }
 
@@ -2820,7 +2922,7 @@ function createChatController(ids) {
           if (messages.length > 0) {
             const chatEl = ids.chatBody ? document.getElementById(ids.chatBody) : null;
             if (chatEl) {
-              appendMessagesTo(bodyEl(), messages.filter(m => ACTIVITY_ONLY_CHANNELS.has(m.channel)));
+              appendMessagesTo(bodyEl(), messages.filter(m => ACTIVITY_ONLY_CHANNELS.has(m.channel)), { renderFn: renderActivityRow, prepend: true });
               appendMessagesTo(chatEl, messages.filter(m => !ACTIVITY_ONLY_CHANNELS.has(m.channel)));
             } else {
               appendMessagesTo(bodyEl(), messages);
@@ -2850,7 +2952,13 @@ function createChatController(ids) {
 
     const el = bodyEl();
     const chatEl = ids.chatBody ? document.getElementById(ids.chatBody) : null;
-    el.innerHTML = '<div class="loading">טוען היסטוריה...</div>';
+    // ids.chatBody קיים רק עבור panelChat - panelBody שם הוא <tbody> (טבלת
+    // יומן), לא <div> - ה-placeholder-ים שלו חייבים להיות <tr><td colspan>
+    // תקין, לא <div> גולמי בתוך tbody (HTML לא-תקין, גם אם דפדפנים סולחים).
+    const activityColspan = 4;
+    el.innerHTML = chatEl
+      ? `<tr><td colspan="${activityColspan}" class="loading">טוען היסטוריה...</td></tr>`
+      : '<div class="loading">טוען היסטוריה...</div>';
     if (chatEl) chatEl.innerHTML = '<div class="loading">טוען שיחה...</div>';
 
     try {
@@ -2858,9 +2966,15 @@ function createChatController(ids) {
       if (!res.ok) throw new Error("HTTP " + res.status);
       const messages = dedupeMessagesById(await res.json());
       if (chatEl) {
+        // יומן Enterprise - חדש-ביותר-ראשון (ראו appendMessagesTo prepend) -
+        // .reverse() כאן על הטעינה הראשונית כדי שהרשימה הנגללת-ascending
+        // מהשרת תוצג descending, בלי לשבש lastMessageTimestamp (עדיין
+        // מחושב למטה מה-messages המקורי, לא מה-activityMsgs ההפוכים).
         const activityMsgs = messages.filter(m => ACTIVITY_ONLY_CHANNELS.has(m.channel));
         const chatMsgs = messages.filter(m => !ACTIVITY_ONLY_CHANNELS.has(m.channel));
-        el.innerHTML = activityMsgs.length ? activityMsgs.map(renderBubble).join("") : '<div class="empty">אין עדיין פעילות רשומה לליד זה</div>';
+        el.innerHTML = activityMsgs.length
+          ? activityMsgs.slice().reverse().map(renderActivityRow).join("")
+          : `<tr><td colspan="${activityColspan}" class="empty">אין עדיין פעילות רשומה לליד זה</td></tr>`;
         chatEl.innerHTML = chatMsgs.length ? chatMsgs.map(renderBubble).join("") : '<div class="empty">אין הודעות וואטסאפ רשומות לליד זה</div>';
         chatEl.scrollTop = chatEl.scrollHeight;
       } else if (messages.length === 0) {
@@ -2871,7 +2985,9 @@ function createChatController(ids) {
       }
       if (messages.length > 0) lastMessageTimestamp = messages[messages.length - 1].timestamp;
     } catch (err) {
-      el.innerHTML = '<div class="error">שגיאה בטעינת ההיסטוריה: ' + escapeHtml(err.message) + "</div>";
+      el.innerHTML = chatEl
+        ? `<tr><td colspan="${activityColspan}" class="error">שגיאה בטעינת ההיסטוריה: ${escapeHtml(err.message)}</td></tr>`
+        : '<div class="error">שגיאה בטעינת ההיסטוריה: ' + escapeHtml(err.message) + "</div>";
       if (chatEl) chatEl.innerHTML = "";
     }
 
@@ -3480,6 +3596,12 @@ function closeCallbackPanel() {
 }
 
 document.getElementById("panelCallbackBtn").addEventListener("click", () => {
+  const lead = panelChat.currentLead;
+  if (lead) openCallbackPanel(lead.phone, lead.tenantId, document.getElementById("panelName").textContent);
+});
+// כפתור מהיר זהה בתוך וידג'ט הפולו-אפ הבלתי-ניתן-לפספוס עצמו (ראו lead-top-widget) -
+// אותה פעולה בדיוק כמו panelCallbackBtn, רק גישה מהירה-יותר ממקום שהעין נופלת עליו ראשון.
+document.getElementById("panelTopFollowupBtn").addEventListener("click", () => {
   const lead = panelChat.currentLead;
   if (lead) openCallbackPanel(lead.phone, lead.tenantId, document.getElementById("panelName").textContent);
 });
@@ -4379,21 +4501,41 @@ function openHistory(phone, tenantId, name) {
 // (ראו find_related_task ב-scheduling_agent.py), כך שהראשונה ברשימה היא
 // הבאה בתור - בלי צורך במיון נוסף בצד הלקוח. תצוגה-בלבד (לא נגיש-לעריכה
 // ישירות כאן) - נקבע דרך "⏰ חזור בהמשך" או אוטומטית מ-NLP על הערות.
+// וידג'ט "בלתי-ניתן-לפספוס" (ראו lead-top-widget) - .empty קובעת סטייל קטן/
+// מעומעם כש*אין* פולו-אפ מתוזמן, מוסרת כש*יש* (טקסט גדול+accent, ראו CSS) -
+// ה-UI עצמו "קופץ" חזותית בין שני המצבים, לא רק טקסט שמתחלף.
+// סטטוסים שנחשבים "פולו-אפ ממתין" לצורך הוידג'ט - *לא* רק "pending": כפתור
+// "⏰ חזור בהמשך" (openCallbackPanel) שומר status="callback_required", לא
+// "pending" - שליפה עם ?status=pending בלבד הייתה *תמיד* מפספסת בדיוק את
+// התרחיש הזה (באג אמיתי שנמצא ותוקן כאן). pending_confirmation (הצעת-AI
+// ממתינה לאישור נציג) *לא* נכנסת לכאן בכוונה - זה קונספט אחר (הצעת פגישה
+// מול הלקוח, לא תזכורת-לעצמנו) שמוצג במקום אחר.
+const FOLLOWUP_TASK_STATUSES = new Set(["pending", "callback_required"]);
+
 async function loadNextFollowupTile(phone, tenantId) {
   const el = document.getElementById("panelNextFollowupReadout");
+  el.classList.add("empty");
   el.textContent = "טוען...";
   try {
-    const res = await fetch(`/api/tasks?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}&status=pending`);
+    // בלי ?status= בבקשה - שולפים הכל (db.get_tasks לא תומכת ברשימת סטטוסים,
+    // רק בהתאמה מדויקת אחת) ומסננים בצד הלקוח ל-FOLLOWUP_TASK_STATUSES.
+    // db.get_tasks כבר ממיינת לפי due_date/due_time עולה - הראשונה שעוברת
+    // את הסינון היא הפולו-אפ הקרוב ביותר.
+    const res = await fetch(`/api/tasks?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`);
     if (!res.ok) throw new Error("HTTP " + res.status);
-    const tasks = await res.json();
+    const allTasks = await res.json();
+    const tasks = allTasks.filter(t => FOLLOWUP_TASK_STATUSES.has(t.status));
     if (tasks.length === 0) {
+      el.classList.add("empty");
       el.textContent = "אין פולו-אפ מתוזמן";
       return;
     }
     const next = tasks[0];
     const dateLabel = new Date(next.due_date + "T00:00:00").toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", year: "numeric" });
+    el.classList.remove("empty");
     el.textContent = next.due_time ? `${dateLabel} · ${next.due_time}` : dateLabel;
   } catch (err) {
+    el.classList.add("empty");
     el.textContent = "שגיאה בטעינה";
   }
 }
