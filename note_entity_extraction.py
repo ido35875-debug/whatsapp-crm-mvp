@@ -20,6 +20,7 @@ sales_agent.py). "שדות מבניים שמתעדכנים אוטומטית על
 """
 
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -103,7 +104,14 @@ def extract_note_entities(note_text: str) -> dict:
         )
         raw_text = next(block.text for block in response.content if block.type == "text").strip()
         parsed = ai_json.parse_json_response(raw_text)
-    except Exception:
+    except Exception as exc:
+        # ⚠️ בלי הלוג הזה, כשל API (לדוגמה: יתרת קרדיט אנתרופיק אפסה, רשת, וכו')
+        # ו"ההערה פשוט לא הכילה כלום לחלץ" נראים *זהים* לקורא (שניהם מחזירים
+        # empty_result) - אין שום עקבה בלוג. logger.warning כאן (לא רק ב-
+        # server._process_note_entities_background, שבכלל לא מגיע לזה כי
+        # הפונקציה הזו כבר לא מעלה חריגה) הוא ההבדל בין "שקט מוחלט" לבין
+        # יכולת לאבחן בפועל למה NLP על הערות "לא עושה כלום" בדיווחי שטח.
+        logging.getLogger("whatsapp_crm").warning("חילוץ ישויות מהערה נכשל: %s: %s", type(exc).__name__, exc)
         return empty_result
 
     if not isinstance(parsed, dict):
