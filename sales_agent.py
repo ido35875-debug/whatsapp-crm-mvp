@@ -28,6 +28,7 @@ from pathlib import Path
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+import ai_json
 import prompts
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
@@ -198,7 +199,7 @@ def detect_hot_lead_signal(message: str, history_text: str = "") -> dict:
     )
     raw_text = next(block.text for block in response.content if block.type == "text").strip()
     try:
-        parsed = json.loads(raw_text)
+        parsed = ai_json.parse_json_response(raw_text)
     except json.JSONDecodeError:
         return {"is_hot": False}
     if not isinstance(parsed, dict) or not parsed.get("is_hot"):
@@ -255,7 +256,7 @@ def detect_real_estate_relevance(message: str) -> dict:
     )
     raw_text = next(block.text for block in response.content if block.type == "text").strip()
     try:
-        parsed = json.loads(raw_text)
+        parsed = ai_json.parse_json_response(raw_text)
     except json.JSONDecodeError:
         return {"is_relevant": True, "reason": "כשל פענוח - ברירת מחדל: לא חוסמים"}
     if not isinstance(parsed, dict) or "is_relevant" not in parsed:
@@ -270,7 +271,7 @@ def _parse_replies(raw_text: str) -> list[str]:
     בפועל תוך כדי הבדיקה; (2) טקסט חופשי בלי JSON תקין בכלל. בשני המקרים עדיף
     לחלץ הצעות אמיתיות/להציג טקסט גולמי-אחד מאשר להחזיר בלוק-ג'אנק אחד או 500."""
     try:
-        parsed = json.loads(raw_text)
+        parsed = ai_json.parse_json_response(raw_text)
         if isinstance(parsed, list):
             replies = [str(item).strip() for item in parsed if str(item).strip()]
             if replies:

@@ -27,6 +27,7 @@ from pathlib import Path
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+import ai_json
 import prompts
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
@@ -191,7 +192,7 @@ def parse_command(command_text: str, candidate_leads: list[dict]) -> dict:
             messages=[{"role": "user", "content": prompt}],
         )
         raw_text = next(block.text for block in response.content if block.type == "text").strip()
-        parsed = json.loads(raw_text)
+        parsed = ai_json.parse_json_response(raw_text)
     except Exception:
         return {"lead_match": "not_found", "phone": None, "tenant_id": None, "matched_candidates": [],
                 "actions": [], "clarification": "לא הצלחתי לנתח את ההוראה - ניסו לנסח אחרת"}

@@ -2932,12 +2932,18 @@ function createChatController(ids) {
   // אותו דפוס בדיוק כמו הקומפוזר: מציגים דרך pollForNew אחרי שמירה מוצלחת,
   // לא בועה "אופטימית" מקומית - מונע כפילות בין תצוגה מקומית למה שבאמת נשמר.
   if (ids.noteForm) {
+    let isSubmittingNote = false; // מגן מפני כפל-שליחה (דאבל-קליק/Enter חזרתי) - ראו גם disabled למטה
     document.getElementById(ids.noteForm).addEventListener("submit", async (e) => {
       e.preventDefault();
-      if (!currentLead) return;
+      if (!currentLead || isSubmittingNote) return;
       const inputEl = document.getElementById(ids.noteInput);
       const text = inputEl.value.trim();
       if (!text) return;
+      const formEl = document.getElementById(ids.noteForm);
+      const submitBtn = formEl.querySelector("button[type=submit]");
+      isSubmittingNote = true;
+      inputEl.disabled = true;
+      if (submitBtn) submitBtn.disabled = true;
       try {
         const res = await fetch("/api/messages/note", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -2953,6 +2959,10 @@ function createChatController(ids) {
         if (ids.onNoteAdded) setTimeout(() => ids.onNoteAdded(currentLead), 4000);
       } catch (err) {
         alert("הוספת הערה נכשלה: " + err.message);
+      } finally {
+        isSubmittingNote = false;
+        inputEl.disabled = false;
+        if (submitBtn) submitBtn.disabled = false;
       }
     });
   }

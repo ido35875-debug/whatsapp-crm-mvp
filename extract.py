@@ -19,6 +19,7 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
+import ai_json  # noqa: E402 - עוזר משותף לפענוח JSON מתגובת Claude (מגן מפני עטיפת ```json, ראו שם)
 from paths import DATA_DIR  # noqa: E402 - חייב אחרי load_dotenv (DATA_DIR עצמו נקרא מ-os.environ)
 from whatsapp_send import _to_e164  # noqa: E402 - לשימוש resolve_existing_phone
 import prompts  # noqa: E402 - הקבועים *_PROMPT למטה משמשים כברירת מחדל ל-prompts.get_prompt
@@ -51,16 +52,26 @@ budget (תקציב/טווח מחיר שהוזכר, כמחרוזת כפי שנא�
 
 
 def extract_customer_info(message_text: str) -> dict:
+    """{} אם הניתוח נכשל (JSON לא-תקין אחרי ניקוי code fence, שגיאת רשת/ספק
+    וכו') - במקום להעלות חריגה ולהפיל את עיבוד ההודעה הנכנסת (ראו process_
+    message למטה, שקוראת לפונקציה הזו בלי try/except משלה - עד כאן זה היה
+    פער אמיתי: תגובת AI עטופה ב-```json (נמדד בפועל: ~1/3-2/3 מהקריאות
+    לפרומפט דומה, ראו ai_json.py) הייתה גורמת ל-JSONDecodeError שמעולם לא
+    נתפס, מפילה את עיבוד ההודעה כולו ומונעת יצירת/עדכון כרטיס הלקוח)."""
     prompt_template = prompts.get_prompt("customer_extraction", EXTRACTION_PROMPT)
-    response = client.messages.create(
-        model="claude-opus-5",
-        max_tokens=500,
-        thinking={"type": "disabled"},
-        output_config={"effort": "low"},
-        messages=[{"role": "user", "content": prompt_template + message_text}],
-    )
-    raw_text = next(block.text for block in response.content if block.type == "text").strip()
-    return json.loads(raw_text)
+    try:
+        response = client.messages.create(
+            model="claude-opus-5",
+            max_tokens=500,
+            thinking={"type": "disabled"},
+            output_config={"effort": "low"},
+            messages=[{"role": "user", "content": prompt_template + message_text}],
+        )
+        raw_text = next(block.text for block in response.content if block.type == "text").strip()
+        return ai_json.parse_json_response(raw_text)
+    except Exception as exc:
+        logging.getLogger("whatsapp_crm").warning("חילוץ פרטי לקוח מהודעה נכשל: %s", exc)
+        return {}
 
 
 def _use_database() -> bool:

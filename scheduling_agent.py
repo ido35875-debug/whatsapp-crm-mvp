@@ -33,6 +33,7 @@ from pathlib import Path
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+import ai_json
 import db
 import prompts
 
@@ -101,7 +102,7 @@ def detect_scheduling_intent(message: str, history_text: str = "") -> dict:
     raw_text = next(block.text for block in response.content if block.type == "text").strip()
 
     try:
-        parsed = json.loads(raw_text)
+        parsed = ai_json.parse_json_response(raw_text)
     except json.JSONDecodeError:
         return {"has_intent": False}
 

@@ -27,6 +27,7 @@ from pathlib import Path
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+import ai_json
 import prompts
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
@@ -48,11 +49,13 @@ NOTE_EXTRACTION_PROMPT = """\
 ערך:
 - "rooms": מספר חדרים כמחרוזת מספר (למשל "4") - רק אם מוזכר במפורש כמות
   חדרים הרצויה ללקוח
-- "project": שם פרויקט/בניין נדל"ני *ספציפי* שהוזכר בשם - רק אם צוין שם
-  ספציפי (לא רק עיר/אזור כלליים - "פרויקט בהוד השרון" בלי שם ספציפי לא נחשב)
-- "city": העיר/האזור שבו הלקוח *מעוניין לרכוש/לשכור* - אם מוזכרות כמה ערים
-  (למשל עיר-התעניינות מול עיר-מגורים נוכחית של הלקוח) - קחו את עיר
-  ה*התעניינות* (איפה מחפש נכס), לא את עיר המגורים הנוכחית שלו
+- "project": האזור/הפרויקט הנדל"ני שהלקוח *מעוניין לרכוש/לשכור בו* - אם יש
+  שם פרויקט/בניין ספציפי, השתמשו בו; אם לא ניתן שם ספציפי אבל כן צוין
+  עיר/אזור ההתעניינות ("פרויקט בהוד השרון") - האזור/העיר הזו עצמה היא ערך
+  "project" (לא משאירים null רק בגלל שאין שם פרויקט פורמלי)
+- "city": העיר שבה הלקוח *גר*/מתגורר כיום (כתובת מגוריו הנוכחית) - *לא* עיר
+  ההתעניינות לרכישה (זו הולכת ל-"project" למעלה). אם מוזכרת רק עיר אחת
+  בהערה כולה (בלי אבחנה בין "גר ב" ל"מעוניין ב") - null, לא ניחוש
 - "has_followup": true אם יש בהערה בקשה/כוונה מפורשת לחזור/להתקשר/לקבוע
   (זמן עתידי קונקרטי) - אחרת false
 - "followup_date": YYYY-MM-DD אם has_followup - חשבו לפי התאריך של היום אם
@@ -99,7 +102,7 @@ def extract_note_entities(note_text: str) -> dict:
             messages=[{"role": "user", "content": prompt}],
         )
         raw_text = next(block.text for block in response.content if block.type == "text").strip()
-        parsed = json.loads(raw_text)
+        parsed = ai_json.parse_json_response(raw_text)
     except Exception:
         return empty_result
 
