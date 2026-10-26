@@ -2114,17 +2114,17 @@ def api_task_status(task_id):
 @app.route("/api/tasks/<int:task_id>/confirm", methods=["POST"])
 def api_task_confirm(task_id):
     """מאשרת הצעת פגישה שזוהתה אוטומטית ע"י scheduling_agent - כפתור "✅ אשר"
-    ביומן/בפאנל המשימות. זו הפעולה היחידה שמפעילה בפועל הצעה: הופכת אותה
-    לפגישה אמיתית (intent="new"), או מבצעת את הביטול/הזזת המועד המבוקשים על
-    הפגישה המקורית (intent="cancel"/"reschedule", ראו db.confirm_task_proposal) -
-    **תמיד** מקליק נציג מפורש כאן, אף פעם לא אוטומטית (חוק בטיחות #1).
+    ביומן/בפאנל המשימות. זו הפעולה שמפעילה בפועל הצעה: הופכת אותה לפגישה
+    אמיתית (intent="new"), או מבצעת את הביטול/הזזת המועד המבוקשים על הפגישה
+    המקורית (intent="cancel"/"reschedule", ראו db.confirm_task_proposal) - זה
+    הנתיב מקליק נציג מפורש ב-UI (חוק בטיחות #1). ⚠️ קיים גם נתיב אוטומטי
+    נוסף, חריג ומתועד במפורש, ל-intent "new"/"reschedule" בלבד עם date+time
+    ודאיים - ראו server._maybe_auto_confirm_scheduling_proposal.
 
     Automated Meeting Booking Confirmation: רק עבור intent="new" (פגישה חדשה
     שאושרה בפועל - לא cancel/reschedule) מופעלת שליחת הודעת אישור אוטומטית
     ללקוח ברקע (ראו _send_meeting_confirmation_after_delay) - **אחרי** אישור
-    הנציג כאן, לא במקום. זה בכוונה לא קורה ברגע שה-AI רק *מזהה* כוונת תזמון
-    (scheduling_agent.detect_scheduling_intent) - רק אחרי שאדם אישר בפועל,
-    בדיוק כמו מענה אוטומטי חוזר בתוך חלון שיחה שהלקוח פתח (חוק בטיחות #1)."""
+    הנציג כאן, לא במקום."""
     task = db.confirm_task_proposal(task_id)
     if not task:
         return jsonify({"error": "הצעה לא נמצאה, או שכבר טופלה"}), 404
@@ -2403,6 +2403,52 @@ def _send_meeting_confirmation_after_delay(provider, task: dict) -> None:
         db.mark_booking_confirmation_sent(task["id"])
 
 
+def _maybe_auto_confirm_scheduling_proposal(proposal_id: int, intent_result: dict, provider) -> None:
+    """⚠️ חריג מכוון, מפורש ומתועד לחוק בטיחות #1 (ראו scheduling_agent.py
+    docstring) - **לא** באג/פיקוח. עד כאן, הצעה אוטומטית (status=
+    "pending_confirmation") הפכה לפגישה אמיתית/נשלחה ללקוח **רק** דרך קליק
+    נציג מפורש ב-UI (POST /api/tasks/<id>/confirm, ראו api_task_confirm).
+    בקשת המשתמש המפורשת (ולא ברירת מחדל שבחרתי) הייתה שהודעה נכנסת מהלקוח
+    שקובעת/מעדכנת מועד פגישה (למשל "נקבעה פגישה ליום ראשון ב-20:00")
+    תעדכן את שדה הפגישה ב-DB ותשלח את הודעת האישור הרשמית **אוטומטית, בלי
+    קליק נציג** - וכשנשאל במפורש אם לשמור על אישור אנושי או לבצע אוטומציה
+    מלאה, בחר "Fully automate - send without approval" (AskUserQuestion).
+    זה בכוונה *לא* חל על כל שאר הסוכנים בפרויקט (note_entity_extraction,
+    sales_agent וכו') - רק על הזרימה הספציפית הזו שהתבקשה.
+
+    שני תנאי-ביטחון שעדיין נשמרים, כדי לא להרחיב את החריג מעבר למה שהתבקש:
+    - intent חייב להיות "new" או "reschedule" (קביעה/עדכון מועד מול הלקוח -
+      בדיוק הניסוח שהתבקש: "מעדכנת או קובעת מועד פגישה"). "cancel" **לא**
+      כלול בכוונה - ביטול פגישה אמיתית אוטומטית הוא הסלמה חדשה וחמורה יותר
+      שלא התבקשה כלל; הצעת ביטול ממשיכה להישאר pending_confirmation לבדיקת
+      נציג, כמו קודם.
+    - גם date וגם time חייבים להיות מחולצים בוודאות (לא None) מתוך
+      detect_scheduling_intent - בלי שני אלה אין "מועד מדויק" לקבוע/לאשר
+      בפועל; ההצעה נשארת pending_confirmation לבדיקת נציג, כפי שהייתה
+      ההתנהגות המקורית לפני החריג הזה.
+
+    כשהתנאים מתקיימים: db.confirm_task_proposal מעדכנת פיזית את due_date/
+    due_time (על הפגישה האמיתית - המקורית ל-reschedule, או שורת ההצעה עצמה
+    שהופכת לפגישה אמיתית ל-new), ואז מופעלת אותה שליחה-אחרי-השהייה (Human
+    Delay, לא "אישור אנושי") שקודם רצה רק אחרי קליק נציג - ראו
+    _send_meeting_confirmation_after_delay."""
+    if intent_result.get("intent") not in ("new", "reschedule"):
+        return
+    if not intent_result.get("date") or not intent_result.get("time"):
+        return
+    if provider is None:
+        return
+
+    task = db.confirm_task_proposal(proposal_id)
+    if not task or task.get("booking_confirmation_sent"):
+        return
+    threading.Thread(
+        target=_send_meeting_confirmation_after_delay,
+        args=(provider, task),
+        daemon=True, name=f"meeting-confirmation-delay-{proposal_id}",
+    ).start()
+
+
 def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id: str, source: str) -> None:
     """מעבד הודעה נכנסת אחת ברקע - חילוץ פרטים/מענה אוטומטי, זיהוי כוונת
     תזמון, ושליחת התשובה בפועל (לספקים בלי TwiML). רץ בתוך ה-worker thread
@@ -2499,10 +2545,13 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
             related_task = None
             if intent_result["intent"] in ("cancel", "reschedule"):
                 related_task = scheduling_agent.find_related_task(contact_id, tenant_id)
-            scheduling_agent.create_scheduling_proposal(
+            proposal_id = scheduling_agent.create_scheduling_proposal(
                 contact_id, tenant_id, intent_result,
                 related_task_id=related_task["id"] if related_task else None,
             )
+            # חריג מכוון לחוק בטיחות #1 - ראו docstring המלא ב-
+            # _maybe_auto_confirm_scheduling_proposal.
+            _maybe_auto_confirm_scheduling_proposal(proposal_id, intent_result, provider)
     except Exception as exc:
         logger.warning("זיהוי כוונת תזמון (scheduling_agent, רקע) נכשל: %s", exc)
 
@@ -2831,10 +2880,13 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
                     related_task = None
                     if intent_result["intent"] in ("cancel", "reschedule"):
                         related_task = scheduling_agent.find_related_task(contact_id, tenant_id)
-                    scheduling_agent.create_scheduling_proposal(
+                    proposal_id = scheduling_agent.create_scheduling_proposal(
                         contact_id, tenant_id, intent_result,
                         related_task_id=related_task["id"] if related_task else None,
                     )
+                    # חריג מכוון לחוק בטיחות #1 - ראו docstring המלא ב-
+                    # _maybe_auto_confirm_scheduling_proposal.
+                    _maybe_auto_confirm_scheduling_proposal(proposal_id, intent_result, provider)
             except Exception as exc:
                 logger.warning("זיהוי כוונת תזמון (scheduling_agent) נכשל: %s", exc)
 
