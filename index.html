@@ -659,17 +659,23 @@
      .empty למטה) הוא מה שמשתנה בין "יש"/"אין" - גדול+accent כש-יש,
      קטן+מעומעם כש-אין (לא נעלם/מוסתר - "No hidden or lost reminders"). */
   .lead-top-widget { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
-  .lead-top-widget-status, .lead-top-widget-followup {
+  .lead-top-widget-status, .lead-top-widget-followup, .lead-top-widget-meeting {
     flex: 1; min-width: 240px; border-radius: 16px; padding: 16px 20px;
     display: flex; flex-direction: column; gap: 8px;
   }
   .lead-top-widget-status { background: var(--surface-1); border: 1px solid var(--border); }
   .lead-top-widget-followup { background: var(--accent-soft); border: 2px solid var(--accent); }
+  /* "פגישה רשמית" - גוון נפרד מהפולו-אפ (status-good, ירוק) בכוונה, כדי
+     שההבחנה החזותית תהיה ברורה גם מרחוק, לא רק בטקסט - ראו ההערה המלאה
+     ב-db._init_schema ליד task_type. */
+  .lead-top-widget-meeting { background: var(--status-good-soft); border: 2px solid var(--status-good); }
   .lead-top-widget-label {
     font-size: 11px; font-weight: 700; letter-spacing: 0.5px; color: var(--text-muted); text-transform: uppercase;
   }
   .lead-top-widget-followup-value { font-size: 22px; font-weight: 800; color: var(--accent); line-height: 1.2; }
   .lead-top-widget-followup-value.empty { font-size: 14px; font-weight: 600; color: var(--text-muted); }
+  .lead-top-widget-meeting-value { font-size: 22px; font-weight: 800; color: var(--status-good); line-height: 1.2; }
+  .lead-top-widget-meeting-value.empty { font-size: 14px; font-weight: 600; color: var(--text-muted); }
   .lead-top-widget-followup-btn {
     align-self: flex-start; font-size: 12.5px; padding: 6px 12px; margin-top: 2px;
     border: 1px solid var(--accent); background: transparent; color: var(--accent); border-radius: 8px;
@@ -1063,6 +1069,17 @@
   .attendance-badge.attendance-confirmed { background: var(--status-good-soft); color: var(--status-good); }
   .attendance-badge.attendance-no-answer { background: rgba(167,139,250,0.18); color: #a78bfa; }
   .attendance-badge.attendance-declined { background: var(--status-critical-soft); color: var(--status-critical); }
+
+  /* הפרדה חזותית מלאה בין "פגישה רשמית" (task_type="meeting") ל"פולו-אפ"
+     (task_type="followup", ברירת המחדל) - ראו ההערה המלאה ב-db._init_schema
+     ליד task_type ו-renderTaskRow. ירוק (status-good) ל-meeting כדי להבדיל
+     בבירור מכל שאר ה-badge-ים הצבעוניים הקיימים (warning/critical/purple). */
+  .task-type-badge {
+    display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px;
+    border-radius: 999px; width: fit-content; margin-bottom: 4px;
+  }
+  .task-type-badge.meeting { background: var(--status-good-soft); color: var(--status-good); }
+  .task-type-badge.followup { background: var(--surface-2); color: var(--text-secondary); }
 
   /* היסטוריית שיחות פר-ליד (📋) - כרטיס גבוה (לא שורה אופקית כמו task-row, כי
      יש כאן טקסט ארוך - הערות+תקציר), עם מצב עריכה שמחליף את התצוגה הרגילה */
@@ -1725,6 +1742,14 @@
           <div class="lead-top-widget-label">⏰ פולו-אפ מתוזמן</div>
           <div class="lead-top-widget-followup-value empty" id="panelNextFollowupReadout">טוען...</div>
           <button type="button" class="lead-top-widget-followup-btn" id="panelTopFollowupBtn">קבע / שנה פולו-אפ</button>
+        </div>
+        <!-- פגישה רשמית מול הלקוח (task_type="meeting") - נפרדת לחלוטין מהפולו-אפ
+             למעלה (ראו ההערה המלאה ב-db._init_schema ליד task_type ו-
+             loadNextFollowupTile). תצוגה-בלבד - פגישה נקבעת/מתעדכנת רק דרך
+             זיהוי אוטומטי (הודעת וואטסאפ נכנסת/הערה) או טופס "📅 משימות". -->
+        <div class="lead-top-widget-meeting">
+          <div class="lead-top-widget-label">📅 פגישה רשמית מתוזמנת</div>
+          <div class="lead-top-widget-meeting-value empty" id="panelNextMeetingReadout">טוען...</div>
         </div>
       </div>
 
@@ -3796,10 +3821,17 @@ function renderTaskRow(t, { showLead = false } = {}) {
   }
 
   const attendanceMeta = t.attendance_status ? ATTENDANCE_STATUS_LABELS[t.attendance_status] : null;
+  // הפרדה חזותית מלאה בין פגישה רשמית מול הלקוח (task_type="meeting" - נקבע
+  // רק דרך db.confirm_task_proposal) לבין פולו-אפ רגיל - ראו ההערה המלאה
+  // ב-db._init_schema ליד task_type.
+  const typeBadge = t.task_type === "meeting"
+    ? '<span class="task-type-badge meeting">📅 פגישה רשמית</span>'
+    : '<span class="task-type-badge followup">📞 פולו-אפ</span>';
 
   return `
     <div class="task-row${t.status === "done" ? " done" : ""}${showLead ? " clickable" : ""}" data-task-id="${t.id}" data-phone="${escapeHtml(t.phone)}" data-tenant="${escapeHtml(t.tenant_id)}">
       <div class="task-row-main">
+        ${typeBadge}
         <div class="task-row-title">${escapeHtml(t.title)}</div>
         <div class="task-row-due">📅 ${escapeHtml(taskDueLabel(t))}</div>
         ${attendanceMeta ? `<span class="attendance-badge ${attendanceMeta.cls}">${attendanceMeta.label}</span>` : ""}
@@ -3831,6 +3863,10 @@ async function loadTasksPanel() {
     body.innerHTML = list + `
       <form class="mini-form" id="addTaskForm">
         <input type="text" id="taskTitleInput" placeholder="כותרת (למשל: לחזור עם הצעת מחיר)" required>
+        <select id="taskTypeInput">
+          <option value="followup">📞 פולו-אפ (תזכורת-לעצמנו)</option>
+          <option value="meeting">📅 פגישה רשמית (מול הלקוח)</option>
+        </select>
         <input type="date" id="taskDateInput" required>
         <input type="time" id="taskTimeInput">
         <textarea id="taskNotesInput" placeholder="הערות (אופציונלי)"></textarea>
@@ -3840,13 +3876,14 @@ async function loadTasksPanel() {
     document.getElementById("addTaskForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const title = document.getElementById("taskTitleInput").value.trim();
+      const taskType = document.getElementById("taskTypeInput").value;
       const dueDate = document.getElementById("taskDateInput").value;
       const dueTime = document.getElementById("taskTimeInput").value;
       const notes = document.getElementById("taskNotesInput").value.trim();
       if (!title || !dueDate) return;
       await fetch("/api/tasks", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, tenant_id: tenantId, title, due_date: dueDate, due_time: dueTime, notes }),
+        body: JSON.stringify({ phone, tenant_id: tenantId, title, task_type: taskType, due_date: dueDate, due_time: dueTime, notes }),
       });
       loadTasksPanel();
       loadControlCenter();
@@ -4178,6 +4215,12 @@ async function loadCalendarPanel() {
     const callbacks = await callbacksRes.json();
     const proposals = await proposalsRes.json();
     const tasks = await tasksRes.json();
+    // הפרדה מלאה בתצוגה בין פגישות רשמיות (task_type="meeting") לפולו-אפים
+    // כלליים (כל שאר ה-tasks, status="pending") - ראו ההערה המלאה ב-
+    // db._init_schema ליד task_type. באג אמיתי לפני התוספת הזו: שתי הקטגוריות
+    // הוצגו תחת כותרת אחת גנרית, בלי שום סימן שזו פגישה אמיתית מול הלקוח.
+    const meetings = tasks.filter(t => t.task_type === "meeting");
+    const followupTasks = tasks.filter(t => t.task_type !== "meeting");
 
     // תזכורות חזרה (Callback) ראשונות - ראו POST /api/tasks/callback - הבטחה
     // מדויקת ללקוח, לכן מוצגות לפני הצעות/משימות רגילות.
@@ -4189,9 +4232,16 @@ async function loadCalendarPanel() {
       <div class="calendar-section-title">🤖 הצעות ממתינות לאישור (${proposals.length})</div>
       ${proposals.map(t => renderTaskRow(t, { showLead: true })).join("")}
     ` : "";
-    const tasksSection = tasks.length
-      ? tasks.map(t => renderTaskRow(t, { showLead: true })).join("")
-      : (callbacks.length || proposals.length ? "" : '<div class="empty">אין משימות פתוחות ✅</div>');
+    const meetingsSection = meetings.length ? `
+      <div class="calendar-section-title">📅 פגישות רשמיות מתוזמנות (${meetings.length})</div>
+      ${meetings.map(t => renderTaskRow(t, { showLead: true })).join("")}
+    ` : "";
+    const followupsSection = followupTasks.length ? `
+      <div class="calendar-section-title">📞 משימות פולו-אפ (${followupTasks.length})</div>
+      ${followupTasks.map(t => renderTaskRow(t, { showLead: true })).join("")}
+    ` : "";
+    const tasksSection = (meetingsSection + followupsSection) ||
+      (callbacks.length || proposals.length ? "" : '<div class="empty">אין משימות פתוחות ✅</div>');
 
     body.innerHTML = callbacksSection + proposalsSection + tasksSection;
   } catch (err) {
@@ -4496,47 +4546,56 @@ function openHistory(phone, tenantId, name) {
   loadNextFollowupTile(phone, tenantId);
 }
 
-// אריח "מועד פגישה" (Scheduled Follow-up) - המשימה הפתוחה (status=pending)
-// הקרובה ביותר ללידה זו; db.get_tasks כבר ממיינת לפי due_date/due_time עולה
-// (ראו find_related_task ב-scheduling_agent.py), כך שהראשונה ברשימה היא
-// הבאה בתור - בלי צורך במיון נוסף בצד הלקוח. תצוגה-בלבד (לא נגיש-לעריכה
-// ישירות כאן) - נקבע דרך "⏰ חזור בהמשך" או אוטומטית מ-NLP על הערות.
-// וידג'ט "בלתי-ניתן-לפספוס" (ראו lead-top-widget) - .empty קובעת סטייל קטן/
-// מעומעם כש*אין* פולו-אפ מתוזמן, מוסרת כש*יש* (טקסט גדול+accent, ראו CSS) -
-// ה-UI עצמו "קופץ" חזותית בין שני המצבים, לא רק טקסט שמתחלף.
-// סטטוסים שנחשבים "פולו-אפ ממתין" לצורך הוידג'ט - *לא* רק "pending": כפתור
+// שני אריחים "בלתי-ניתנים-לפספוס" (ראו lead-top-widget): "⏰ פולו-אפ מתוזמן"
+// (task_type="followup" - תזכורת-לעצמנו) ו-"📅 פגישה רשמית" (task_type=
+// "meeting" - מול הלקוח בפועל, נקבע רק דרך db.confirm_task_proposal - ראו
+// ההערה המלאה ב-db._init_schema ליד task_type). עד התוספת הזו שני הקונספטים
+// האלה היו מתמזגים לאריח-פולו-אפ אחד (status="pending" כולל גם פגישות אמיתיות
+// וגם משימות כלליות) - באג-שימושיות אמיתי: אי אפשר היה להבחין בתצוגה בין
+// "נקבעה פגישה אמיתית" לבין "תזכורת כללית לחזור". שתי הפונקציות חולקות שליפה
+// אחת (db.get_tasks כבר ממיינת לפי due_date/due_time עולה) כדי לא לכפול
+// בקשת רשת. .empty קובעת סטייל קטן/מעומעם כש*אין* פריט מתוזמן, מוסרת כש*יש*
+// (טקסט גדול+accent, ראו CSS) - ה-UI עצמו "קופץ" חזותית בין שני המצבים.
+// סטטוסים שנחשבים "פולו-אפ ממתין" לצורך האריח - *לא* רק "pending": כפתור
 // "⏰ חזור בהמשך" (openCallbackPanel) שומר status="callback_required", לא
 // "pending" - שליפה עם ?status=pending בלבד הייתה *תמיד* מפספסת בדיוק את
-// התרחיש הזה (באג אמיתי שנמצא ותוקן כאן). pending_confirmation (הצעת-AI
-// ממתינה לאישור נציג) *לא* נכנסת לכאן בכוונה - זה קונספט אחר (הצעת פגישה
-// מול הלקוח, לא תזכורת-לעצמנו) שמוצג במקום אחר.
+// התרחיש הזה (באג אמיתי שנמצא ותוקן כאן).
 const FOLLOWUP_TASK_STATUSES = new Set(["pending", "callback_required"]);
 
+function _fillScheduledTile(el, next, emptyLabel) {
+  if (!next) {
+    el.classList.add("empty");
+    el.textContent = emptyLabel;
+    return;
+  }
+  const dateLabel = new Date(next.due_date + "T00:00:00").toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", year: "numeric" });
+  el.classList.remove("empty");
+  el.textContent = next.due_time ? `${dateLabel} · ${next.due_time}` : dateLabel;
+}
+
 async function loadNextFollowupTile(phone, tenantId) {
-  const el = document.getElementById("panelNextFollowupReadout");
-  el.classList.add("empty");
-  el.textContent = "טוען...";
+  const followupEl = document.getElementById("panelNextFollowupReadout");
+  const meetingEl = document.getElementById("panelNextMeetingReadout");
+  followupEl.classList.add("empty");
+  followupEl.textContent = "טוען...";
+  meetingEl.classList.add("empty");
+  meetingEl.textContent = "טוען...";
   try {
     // בלי ?status= בבקשה - שולפים הכל (db.get_tasks לא תומכת ברשימת סטטוסים,
-    // רק בהתאמה מדויקת אחת) ומסננים בצד הלקוח ל-FOLLOWUP_TASK_STATUSES.
-    // db.get_tasks כבר ממיינת לפי due_date/due_time עולה - הראשונה שעוברת
-    // את הסינון היא הפולו-אפ הקרוב ביותר.
+    // רק בהתאמה מדויקת אחת) ומסננים בצד הלקוח. db.get_tasks כבר ממיינת לפי
+    // due_date/due_time עולה - הראשונה שעוברת סינון היא הקרובה ביותר.
     const res = await fetch(`/api/tasks?phone=${encodeURIComponent(phone)}&tenant_id=${encodeURIComponent(tenantId)}`);
     if (!res.ok) throw new Error("HTTP " + res.status);
     const allTasks = await res.json();
-    const tasks = allTasks.filter(t => FOLLOWUP_TASK_STATUSES.has(t.status));
-    if (tasks.length === 0) {
-      el.classList.add("empty");
-      el.textContent = "אין פולו-אפ מתוזמן";
-      return;
-    }
-    const next = tasks[0];
-    const dateLabel = new Date(next.due_date + "T00:00:00").toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", year: "numeric" });
-    el.classList.remove("empty");
-    el.textContent = next.due_time ? `${dateLabel} · ${next.due_time}` : dateLabel;
+    const followups = allTasks.filter(t => t.task_type !== "meeting" && FOLLOWUP_TASK_STATUSES.has(t.status));
+    const meetings = allTasks.filter(t => t.task_type === "meeting" && t.status === "pending");
+    _fillScheduledTile(followupEl, followups[0], "אין פולו-אפ מתוזמן");
+    _fillScheduledTile(meetingEl, meetings[0], "אין פגישה מתוזמנת");
   } catch (err) {
-    el.classList.add("empty");
-    el.textContent = "שגיאה בטעינה";
+    followupEl.classList.add("empty");
+    followupEl.textContent = "שגיאה בטעינה";
+    meetingEl.classList.add("empty");
+    meetingEl.textContent = "שגיאה בטעינה";
   }
 }
 

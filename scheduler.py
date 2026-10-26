@@ -471,7 +471,10 @@ def check_pending_meeting_reminders() -> list[dict]:
     results = []
     provider = get_provider() if AUTO_MEETING_REMINDER else None
 
-    for task in db.get_tasks(status="pending"):
+    # task_type="meeting" (לא כל task עם status="pending") - בלי הסינון הזה,
+    # משימת פולו-אפ ידנית/NLP רגילה הייתה יכולה לקבל "תזכורת פגישה" שגויה
+    # בוואטסאפ ללקוח (ראו ההערה המלאה ב-db._init_schema ליד task_type).
+    for task in db.get_tasks(status="pending", task_type="meeting"):
         if task.get("reminder_sent"):
             continue
         reminder_at = compute_meeting_reminder_time(task.get("due_date"), task.get("due_time"))
@@ -533,7 +536,8 @@ def check_pending_meeting_invites() -> list[dict]:
     results = []
     provider = get_provider() if AUTO_MEETING_INVITE else None
 
-    for task in db.get_tasks(status="pending"):
+    # task_type="meeting" - ראו ההערה המקבילה ב-check_pending_meeting_reminders.
+    for task in db.get_tasks(status="pending", task_type="meeting"):
         if task.get("invite_sent") or not task.get("due_time"):
             continue
         try:
@@ -635,7 +639,8 @@ def check_pending_marketer_reminders() -> list[dict]:
     now = datetime.now(timezone.utc)
     results = []
 
-    for task in db.get_tasks(status="pending"):
+    # task_type="meeting" - ראו ההערה המקבילה ב-check_pending_meeting_reminders.
+    for task in db.get_tasks(status="pending", task_type="meeting"):
         if task.get("marketer_reminder_status") or not task.get("due_time"):
             continue
         call_at = compute_marketer_call_time(task.get("due_date"), task.get("due_time"))

@@ -1404,13 +1404,24 @@ def _process_note_entities_background(phone: str, tenant_id: str, text: str) -> 
     extract_note_entities, קריאת Claude אחת read-only) ומממש את התוצאה: שדות
     מבניים (rooms/project/city->location) נכתבים על הכרטיס (update_lead_fields -
     "" לא נשלח, רק ערכים שבאמת זוהו, כך שלא דורסים/מוחקים שדות קיימים בטעות),
-    ומשימת פולו-אפ (status="pending", source="note_nlp") נוצרת אם זוהתה כוונת
-    תזמון מפורשת - בדיוק כמו "⏰ חזור בהמשך" (openCallbackPanel), רק אוטומטי."""
+    ומשימת פולו-אפ (status="pending", source="note_nlp", task_type="followup" -
+    תזכורת-לעצמנו, לא פגישה מול הלקוח) נוצרת אם זוהתה כוונת תזמון כללית -
+    בדיוק כמו "⏰ חזור בהמשך" (openCallbackPanel), רק אוטומטי.
+
+    ⚠️ בנוסף: אם ההערה עצמה מתעדת בפועל קביעה/עדכון של **פגישה רשמית** מול
+    הלקוח (למשל נציג מקליד "נקבעה פגישה ליום ראשון ב-10:00" כהערה על שיחה
+    טלפונית/פגישה שהתקיימה) - מופעל אותו רצף זיהוי-ואישור-אוטומטי בדיוק כמו
+    בהודעת וואטסאפ נכנסת מהלקוח (ראו _detect_and_maybe_auto_confirm_
+    scheduling): מעדכן פיזית את due_date/due_time האמיתיים (task_type=
+    "meeting", ראו db.confirm_task_proposal) ומשגר את הודעת הזימון הרשמית
+    בוואטסאפ עם Human Delay - אותו חריג מכוון ומאושר לחוק בטיחות #1 שהוגדר
+    לזרימה הזו (ראו docstring מלא ב-_maybe_auto_confirm_scheduling_proposal),
+    רק שכאן מקור הטריגר הוא הקלדת הנציג, לא הודעה נכנסת מהלקוח."""
     try:
         entities = note_entity_extraction.extract_note_entities(text)
     except Exception as exc:
         logger.warning("ניתוח NLP על הערה נכשל (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc)
-        return
+        entities = {}
 
     if entities.get("rooms") or entities.get("project") or entities.get("city"):
         try:
@@ -1427,10 +1438,24 @@ def _process_note_entities_background(phone: str, tenant_id: str, text: str) -> 
             db.create_task(
                 phone, tenant_id=tenant_id, title="פולו-אפ (זוהה אוטומטית מהערה)",
                 due_date=entities["followup_date"], due_time=entities.get("followup_time"),
-                status="pending", source="note_nlp",
+                status="pending", source="note_nlp", task_type="followup",
             )
         except Exception as exc:
             logger.warning("יצירת משימת פולו-אפ מ-NLP נכשלה (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc)
+
+    try:
+        # [:-1] - ההערה עצמה כבר נרשמה כ-message (channel="note") לפני שה-
+        # thread הזה נוצר (ראו api_add_note) - מוציאים אותה מההיסטוריה, אותו
+        # טריק בדיוק כמו בנתיבי ה-webhook הנכנס.
+        prior_messages = db.get_messages(phone, tenant_id=tenant_id)[:-1][-6:]
+        history_text = "\n".join(
+            f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
+            for m in prior_messages
+        )
+        provider = get_provider()
+        _detect_and_maybe_auto_confirm_scheduling(text, phone, tenant_id, history_text, provider)
+    except Exception as exc:
+        logger.warning("זיהוי כוונת תזמון מהערה (scheduling_agent) נכשל (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc)
 
 
 @app.route("/api/sales/suggest-reply", methods=["POST"])
@@ -2003,14 +2028,24 @@ def api_calls():
 
 VALID_TASK_STATUSES = {"pending", "done", "cancelled", "callback_required"}
 VALID_ATTENDANCE_STATUSES = {"confirmed", "no_answer", "declined"}
+# הפרדה מלאה בין "פולו-אפ להתקשרות" (תזכורת-לעצמנו) ל"פגישה רשמית" (מול
+# הלקוח בפועל) - ראו ההערה המלאה ב-db._init_schema ליד task_type. POST
+# /api/tasks הכללי למטה מאפשר לנציג לסווג משימה ידנית שהוא יוצר כ-"meeting"
+# (למשל פגישה שנקבעה בשיחת טלפון והוקלדה ישירות, בלי לעבור דרך הודעת וואטסאפ/
+# הערה עם NLP) - אבל זה **רק** סיווג לצורכי סינון/תצוגה ותזכורות אוטומטיות
+# (scheduler.check_pending_meeting_reminders/invites), **לא** מפעיל שליחת
+# הודעת אישור כלשהי (זו מופעלת **רק** מתוך db.confirm_task_proposal, דרך
+# זרימת scheduling_agent - ראו _maybe_auto_confirm_scheduling_proposal).
+VALID_TASK_TYPES = {"meeting", "followup"}
 
 
 @app.route("/api/tasks", methods=["GET", "POST"])
 def api_tasks():
     """משימות מעקב/תזכורות (follow-up) - לא קשור להודעות. GET עם ?phone=&tenant_id=
     מחזיר את המשימות של ליד ספציפי (לפאנל "📅 משימות"); GET בלי phone מחזיר את כל
-    המשימות (אופציונלית מסונן ב-?tenant_id=&status=, לתצוגת "📅 יומן" הגלובלית).
-    POST יוצר משימה חדשה.
+    המשימות (אופציונלית מסונן ב-?tenant_id=&status=&task_type=, לתצוגת "📅 יומן"
+    הגלובלית). POST יוצר משימת פולו-אפ ידנית חדשה (task_type="followup" תמיד -
+    ראו ההערה ליד VALID_TASK_TYPES).
 
     בידוד (שלב 5 - Enterprise Production Readiness, ראו api_leads לאותו רעיון
     בדיוק): db.get_tasks עצמה לא יודעת כלום על RBAC - מסננים כאן, אחרי השליפה,
@@ -2022,7 +2057,8 @@ def api_tasks():
         phone = request.args.get("phone") or None
         tenant_id = request.args.get("tenant_id") or None
         status = request.args.get("status") or None
-        tasks = db.get_tasks(phone=phone, tenant_id=tenant_id, status=status)
+        task_type = request.args.get("task_type") or None
+        tasks = db.get_tasks(phone=phone, tenant_id=tenant_id, status=status, task_type=task_type)
         # meeting_time - שדה נגזר-בלבד (לא עמודה ב-DB) שמשרת כל ה-due_date+
         # due_time לתצוגה נוחה בדשבורד (Meeting Confirmation & No-Show
         # Prevention) - בכוונה **לא** עמודה נפרדת: due_date/due_time הם כבר
@@ -2051,12 +2087,86 @@ def api_tasks():
     due_date = (data.get("due_date") or "").strip()
     due_time = (data.get("due_time") or "").strip() or None
     notes = (data.get("notes") or "").strip() or None
+    # task_type - סיווג בלבד (האם זו פגישה רשמית מול הלקוח או תזכורת-לעצמנו),
+    # לא טריגר לשליחה אוטומטית - בניגוד לזרימת scheduling_agent, יצירת משימה
+    # ידנית כאן (גם עם task_type="meeting") **לא** מפעילה שליחת הודעת אישור;
+    # הרעיון כאן הוא רק שמשימה שנוצרה ידנית כ"פגישה" (למשל אחרי שיחת טלפון
+    # שבה נקבע מועד) תיכלל נכון בסינון/בתזכורות האוטומטיות (ראו scheduler.
+    # check_pending_meeting_reminders/invites), לא שתקבל שליחה כפולה/לא-מאושרת.
+    task_type = data.get("task_type") or "followup"
+    if task_type not in VALID_TASK_TYPES:
+        task_type = "followup"
 
     if not phone or not title or not due_date:
         return jsonify({"error": "חסר טלפון, כותרת או תאריך יעד"}), 400
 
-    task_id = db.create_task(phone, tenant_id=tenant_id, title=title, due_date=due_date, due_time=due_time, notes=notes)
+    task_id = db.create_task(
+        phone, tenant_id=tenant_id, title=title, due_date=due_date, due_time=due_time, notes=notes,
+        task_type=task_type,
+    )
     return jsonify({"ok": True, "task_id": task_id})
+
+
+@app.route("/api/calendar/agenda", methods=["GET"])
+def api_calendar_agenda():
+    """יומן פגישות ותזכורות מרכזי (Calendar/Agenda API) - תצוגה מרוכזת, לא עוד
+    endpoint-ים נפרדים לפי status כמו שלושת ה-fetch-ים הנוכחיים ב-loadCalendarPanel
+    (ראו index.html). מחזיר את כל הפגישות (task_type="meeting") והתזכורות
+    (task_type="followup") המתוזמנות - מופרדות במפורש בתשובה עצמה (הפרדה מלאה
+    גם ברמת ה-API, לא רק ב-DB/UI - ראו ההערה המלאה ב-db._init_schema ליד
+    task_type), עם סינון אופציונלי לפי טווח תאריכים (?from=&to=, YYYY-MM-DD,
+    משני הקצוות כולל) ו-?tenant_id=/?status=/?task_type= ספציפי.
+
+    ברירת מחדל ל-status (כשלא מצוין ?status= מפורש): "pending"/"callback_required"
+    בלבד - אלה ה"מתוזמנות בפועל" (לא done/cancelled היסטוריות, ולא
+    pending_confirmation - הצעת AI שעדיין מחכה להחלטת נציג, לא פריט יומן
+    מתוזמן בעצמו עד שיאושר).
+
+    בידוד RBAC - אותו דיוק בדיוק כמו GET /api/tasks למעלה (tenant_id/client_id
+    effective scoping), כדי שמסך יומן לא יחשוף פגישות/תזכורות של tenant/ליד
+    שהמשתמש לא מורשה לראות."""
+    tenant_id = request.args.get("tenant_id") or None
+    date_from = request.args.get("from") or None
+    date_to = request.args.get("to") or None
+    task_type = request.args.get("task_type") or None
+    status = request.args.get("status") or None
+
+    tasks = db.get_tasks(tenant_id=tenant_id, status=status, task_type=task_type)
+    if not status:
+        tasks = [t for t in tasks if t.get("status") in ("pending", "callback_required")]
+    if date_from:
+        tasks = [t for t in tasks if t.get("due_date", "") >= date_from]
+    if date_to:
+        tasks = [t for t in tasks if t.get("due_date", "") <= date_to]
+
+    allowed_tenant_ids = _effective_tenant_ids(tenant_id)
+    if allowed_tenant_ids is not None:
+        tasks = [t for t in tasks if t.get("tenant_id") in allowed_tenant_ids]
+    customers = load_customers()
+    required_client_id = _effective_client_id()
+    if required_client_id is not None:
+        tasks = [
+            t for t in tasks
+            if (customers.get(f"{t.get('tenant_id', DEFAULT_TENANT_ID)}::{t.get('phone')}") or {}).get("client_id")
+            == required_client_id
+        ]
+
+    agenda = []
+    for t in tasks:
+        card = customers.get(f"{t.get('tenant_id', DEFAULT_TENANT_ID)}::{t.get('phone')}") or {}
+        agenda.append({
+            **t,
+            "meeting_time": f"{t['due_date']}T{t['due_time']}" if t.get("due_time") else t.get("due_date"),
+            "customer_name": card.get("customer_name"),
+        })
+    agenda.sort(key=lambda t: (t.get("due_date") or "", t.get("due_time") or ""))
+
+    return jsonify({
+        "from": date_from, "to": date_to,
+        "meetings": [t for t in agenda if t.get("task_type") == "meeting"],
+        "followups": [t for t in agenda if t.get("task_type") != "meeting"],
+        "count": len(agenda),
+    })
 
 
 @app.route("/api/tasks/callback", methods=["POST"])
@@ -2066,7 +2176,7 @@ def api_task_create_callback():
     source="callback" + due_time **חובה** (לא אופציונלי) - זו הבטחה מדויקת
     ללקוח לשעה נתונה, לא משימה כללית בלי שעה. checkDueCallbacks ב-index.html
     (polling קיים, בלי timer נפרד) מקפיצה התראה בולטת כש-"עכשיו" מגיע/עובר
-    את due_date+due_time."""
+    את due_date+due_time. task_type="followup" - תזכורת-לעצמנו, לא פגישה."""
     data = request.get_json(silent=True) or {}
     phone = (data.get("phone") or "").strip()
     tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
@@ -2084,7 +2194,7 @@ def api_task_create_callback():
     task_id = db.create_task(
         phone, tenant_id=tenant_id, title=f"⏰ תזכורת חזרה ל{name}",
         due_date=due_date, due_time=due_time, notes=notes,
-        status="callback_required", source="callback",
+        status="callback_required", source="callback", task_type="followup",
     )
     return jsonify({"ok": True, "task_id": task_id})
 
@@ -2449,6 +2559,33 @@ def _maybe_auto_confirm_scheduling_proposal(proposal_id: int, intent_result: dic
     ).start()
 
 
+def _detect_and_maybe_auto_confirm_scheduling(
+    message_text: str, phone: str, tenant_id: str, history_text: str, provider,
+) -> None:
+    """מרכזת את רצף "זיהוי כוונת תזמון (scheduling_agent) → יצירת הצעה →
+    אישור אוטומטי אם בטוח" - קוד משותף לשלושה נקודות-כניסה: webhook וואטסאפ
+    נכנס (תור רקע + נתיב Twilio הסינכרוני), **וגם** הערה פנימית ידנית שנציג
+    מקליד בכרטיס (ראו _process_note_entities_background) - אותה דרישת מוצר
+    בדיוק ("הודעה שמעדכנת/קובעת מועד פגישה" חייבת לעדכן את ה-DB ולשלוח את
+    האישור הרשמי אוטומטית) חלה גם כשהנציג עצמו מקליד, למשל, "נקבעה פגישה
+    ליום ראשון ב-10:00" כהערה - לא רק כשהלקוח עצמו שולח את זה בוואטסאפ.
+    try/except צר משלה בכל קורא - כשל כאן לעולם לא אמור להשפיע על העיבוד
+    הראשי (שמירת ההודעה/ההערה, מענה אוטומטי וכו')."""
+    related_task = None
+    intent_result = scheduling_agent.detect_scheduling_intent(message_text, history_text=history_text)
+    if not intent_result["has_intent"]:
+        return
+    if intent_result["intent"] in ("cancel", "reschedule"):
+        related_task = scheduling_agent.find_related_task(phone, tenant_id)
+    proposal_id = scheduling_agent.create_scheduling_proposal(
+        phone, tenant_id, intent_result,
+        related_task_id=related_task["id"] if related_task else None,
+    )
+    # חריג מכוון לחוק בטיחות #1 - ראו docstring המלא ב-
+    # _maybe_auto_confirm_scheduling_proposal.
+    _maybe_auto_confirm_scheduling_proposal(proposal_id, intent_result, provider)
+
+
 def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id: str, source: str) -> None:
     """מעבד הודעה נכנסת אחת ברקע - חילוץ פרטים/מענה אוטומטי, זיהוי כוונת
     תזמון, ושליחת התשובה בפועל (לספקים בלי TwiML). רץ בתוך ה-worker thread
@@ -2540,18 +2677,7 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
     # **הצעה** ל-calendar_tasks (status="pending_confirmation") - אף פעם לא
     # משנה פגישה קיימת ישירות (ראו אזהרת הבטיחות ב-scheduling_agent.py).
     try:
-        intent_result = scheduling_agent.detect_scheduling_intent(message_text, history_text=history_text)
-        if intent_result["has_intent"]:
-            related_task = None
-            if intent_result["intent"] in ("cancel", "reschedule"):
-                related_task = scheduling_agent.find_related_task(contact_id, tenant_id)
-            proposal_id = scheduling_agent.create_scheduling_proposal(
-                contact_id, tenant_id, intent_result,
-                related_task_id=related_task["id"] if related_task else None,
-            )
-            # חריג מכוון לחוק בטיחות #1 - ראו docstring המלא ב-
-            # _maybe_auto_confirm_scheduling_proposal.
-            _maybe_auto_confirm_scheduling_proposal(proposal_id, intent_result, provider)
+        _detect_and_maybe_auto_confirm_scheduling(message_text, contact_id, tenant_id, history_text, provider)
     except Exception as exc:
         logger.warning("זיהוי כוונת תזמון (scheduling_agent, רקע) נכשל: %s", exc)
 
@@ -2875,18 +3001,7 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
                     f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
                     for m in prior_messages
                 )
-                intent_result = scheduling_agent.detect_scheduling_intent(message_text, history_text=history_text)
-                if intent_result["has_intent"]:
-                    related_task = None
-                    if intent_result["intent"] in ("cancel", "reschedule"):
-                        related_task = scheduling_agent.find_related_task(contact_id, tenant_id)
-                    proposal_id = scheduling_agent.create_scheduling_proposal(
-                        contact_id, tenant_id, intent_result,
-                        related_task_id=related_task["id"] if related_task else None,
-                    )
-                    # חריג מכוון לחוק בטיחות #1 - ראו docstring המלא ב-
-                    # _maybe_auto_confirm_scheduling_proposal.
-                    _maybe_auto_confirm_scheduling_proposal(proposal_id, intent_result, provider)
+                _detect_and_maybe_auto_confirm_scheduling(message_text, contact_id, tenant_id, history_text, provider)
             except Exception as exc:
                 logger.warning("זיהוי כוונת תזמון (scheduling_agent) נכשל: %s", exc)
 

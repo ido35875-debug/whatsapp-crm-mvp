@@ -265,9 +265,33 @@ def _init_schema(conn) -> None:
         # דגל חד-פעמי, בדיוק כמו invite_sent/reminder_sent - מונע שליחה כפולה אם
         # /confirm נקרא פעמיים (למשל קליק כפול בדשבורד).
         ("booking_confirmation_sent", "ALTER TABLE calendar_tasks ADD COLUMN booking_confirmation_sent INTEGER NOT NULL DEFAULT 0"),
+        # הפרדה מלאה בין "פולו-אפ להתקשרות" (תזכורת-לעצמנו, לא מול הלקוח) לבין
+        # "פגישה רשמית" (מול הלקוח בפועל) - עד כאן כל השורות ב-calendar_tasks
+        # היו שוות-מעמד (אותם due_date/due_time/status="pending"), מה שגרם
+        # לבאג אמיתי: scheduler.check_pending_meeting_reminders/invites סרקו
+        # *כל* משימה עם status="pending" (כולל פולו-אפ ידני/NLP רגיל) ויכלו
+        # לשלוח ללקוח "תזכורת פגישה"/"זימון" על משימה שמעולם לא הייתה פגישה
+        # אמיתית. task_type הוא ה-discriminator: 'meeting' נקבע **רק** על-ידי
+        # db.confirm_task_proposal (אישור בפועל של הצעת scheduling_agent, ראו
+        # שם) - לעולם לא ברירת המחדל של יצירה ידנית/NLP. בכוונה **לא** שתי
+        # עמודות due_date נפרדות (follow_up_date/meeting_date) - אותה סיבה
+        # בדיוק שכבר תועדה ב-api_tasks (meeting_time הנגזר): due_date/due_time
+        # נשארים מקור-האמת היחיד לכל סוג, ו-task_type רק מתאר למה הם מתייחסים;
+        # ה-API/ה-UI כבר מציגים אותם תחת שמות נפרדים (ראו api_calendar_agenda).
+        ("task_type", "ALTER TABLE calendar_tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'followup'"),
     ):
         if column not in existing_task_columns:
             conn.execute(ddl)
+            if column == "task_type":
+                # Backfill חד-פעמי לשורות היסטוריות: intent="new"/"reschedule"
+                # הוא הסימן הקיים היחיד ל"זו הייתה הצעת פגישה שאושרה" (ראו
+                # scheduling_agent.create_scheduling_proposal) - "cancel"
+                # במכוון לא נכלל (ההצעה עצמה, אחרי אישור, היא רשומת-בוטל, לא
+                # פגישה). כל שאר השורות (manual/callback/note_nlp) כבר קיבלו
+                # את ברירת המחדל 'followup' מה-ALTER עצמו.
+                conn.execute(
+                    "UPDATE calendar_tasks SET task_type = 'meeting' WHERE intent IN ('new', 'reschedule')"
+                )
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS system_feedback (
@@ -1046,23 +1070,44 @@ def create_task(
     source: str = "manual",
     intent: str | None = None,
     related_task_id: int | None = None,
+    task_type: str = "followup",
 ) -> int:
     """יוצר משימת מעקב/תזכורת (follow-up) לליד, או הצעת-פגישה אוטומטית (ראו
     scheduling_agent.create_scheduling_proposal - status="pending_confirmation",
     source="scheduling_agent"). מוחזר ה-id. ברירות המחדל (status="pending",
-    source="manual") שומרות על ההתנהגות המקורית המדויקת לכל קורא קיים
-    (POST /api/tasks) - לא נדרש שינוי בקוד שכבר קורא לפונקציה הזו."""
+    source="manual", task_type="followup") שומרות על ההתנהגות המקורית המדויקת
+    לכל קורא קיים (POST /api/tasks) - לא נדרש שינוי בקוד שכבר קורא לפונקציה
+    הזו. task_type="meeting" נקבע בפועל **רק** דרך confirm_task_proposal
+    (אישור בפועל) - לא כאן ביצירת ההצעה עצמה (שעדיין pending_confirmation,
+    לא פגישה אמיתית)."""
     conn = _get_connection()
     try:
         now = datetime.now(timezone.utc).isoformat()
         cur = conn.execute(
             "INSERT INTO calendar_tasks "
-            "(tenant_id, phone, title, due_date, due_time, notes, status, source, intent, related_task_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (tenant_id, phone, title, due_date, due_time, notes, status, source, intent, related_task_id, now, now),
+            "(tenant_id, phone, title, due_date, due_time, notes, status, source, intent, related_task_id, task_type, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (tenant_id, phone, title, due_date, due_time, notes, status, source, intent, related_task_id, task_type, now, now),
         )
         conn.commit()
         return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def set_task_type(task_id: int, task_type: str) -> None:
+    """מסמנת משימה כ-'meeting' (פגישה רשמית מול הלקוח) לעומת 'followup'
+    (ברירת המחדל - תזכורת פנימית לעצמנו). נקראת **רק** מתוך confirm_task_
+    proposal, ברגע שהצעת scheduling_agent הופכת בפועל לפגישה אמיתית/מעדכנת
+    פגישה קיימת - לעולם לא על יצירה ידנית/NLP (ראו ההערה המלאה ב-_init_schema
+    ליד task_type)."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "UPDATE calendar_tasks SET task_type = ?, updated_at = ? WHERE id = ?",
+            (task_type, datetime.now(timezone.utc).isoformat(), task_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -1131,9 +1176,14 @@ def confirm_task_proposal(task_id: int) -> dict | None:
         update_task_status(task_id, "done")
     elif intent == "reschedule" and related_id and get_task(related_id):
         update_task_datetime(related_id, proposal["due_date"], proposal["due_time"])
+        # task_type="meeting" גם אם הפגישה המקורית נוצרה ידנית לפני התוספת הזו
+        # (ללא task_type מפורש, default="followup") - ברגע שהיא מאושרת/מוזזת
+        # דרך זרימת scheduling_agent היא בהגדרה פגישה רשמית מול הלקוח.
+        set_task_type(related_id, "meeting")
         update_task_status(task_id, "done")
     else:
         update_task_status(task_id, "pending")
+        set_task_type(task_id, "meeting")
 
     return get_task(task_id)
 
@@ -1234,12 +1284,16 @@ def mark_booking_confirmation_sent(task_id: int) -> None:
         conn.close()
 
 
-def get_tasks(phone: str | None = None, tenant_id: str | None = None, status: str | None = None) -> list[dict]:
+def get_tasks(
+    phone: str | None = None, tenant_id: str | None = None, status: str | None = None,
+    task_type: str | None = None,
+) -> list[dict]:
     """משימות מעקב. עם phone - רק המשימות של הליד הזה (לפאנל "📅 משימות" - כל סטטוס).
     בלי phone - כל המשימות (לתצוגת "📅 יומן" הגלובלית), עם סינון אופציונלי לפי
-    tenant_id/status. ממוין לפי due_date/due_time עולה (הקרוב ביותר קודם) - בכוונה
-    שונה מכל שאר הטבלאות בקובץ הזה (שממוינות לפי זמן יצירה): כאן מה שחשוב הוא מתי
-    המשימה אמורה לקרות, לא מתי היא נוצרה."""
+    tenant_id/status/task_type ('meeting'/'followup' - ראו ההערה ב-_init_schema).
+    ממוין לפי due_date/due_time עולה (הקרוב ביותר קודם) - בכוונה שונה מכל שאר
+    הטבלאות בקובץ הזה (שממוינות לפי זמן יצירה): כאן מה שחשוב הוא מתי המשימה
+    אמורה לקרות, לא מתי היא נוצרה."""
     conn = _get_connection()
     try:
         conn.row_factory = sqlite3.Row
@@ -1253,6 +1307,9 @@ def get_tasks(phone: str | None = None, tenant_id: str | None = None, status: st
         if status:
             clauses.append("status = ?")
             params.append(status)
+        if task_type:
+            clauses.append("task_type = ?")
+            params.append(task_type)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = conn.execute(
             f"SELECT * FROM calendar_tasks {where} ORDER BY due_date ASC, due_time ASC",
