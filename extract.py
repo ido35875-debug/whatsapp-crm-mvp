@@ -605,19 +605,27 @@ def generate_meeting_invite_message(card: dict, task: dict) -> str:
     return strip_emojis(next(block.text for block in response.content if block.type == "text").strip())
 
 
+# תבנית קבועה ומילולית (לא פרומפט-הנחיה ל-AI) - ראו הנחיה מפורשת מהמשתמש:
+# "באמצעות התבנית הבאה בלבד, תוך התאמה דינמית של השם/היום/התאריך/השעה בלבד" -
+# כל שאר הטקסט (כתובת/הנחיות חניה/קישור Waze/חתימה, כולל האימוג'ים 📍🙏) חייב
+# להישאר מילה-במילה בכל הודעה, לא ניסוח-AI משתנה - טעות בכתובת/קישור כאן
+# פוגעת בעסק בפועל, לא רק "ניסוח פחות טוב". בכוונה *בלי* קריאת Claude בכלל -
+# זה גם אומר שהפיצ'ר הזה ממשיך לעבוד גם כש-יתרת הקרדיט של Anthropic אפסה
+# (ראו האבחון בשיחה) - אין שום תלות ב-AI להודעה הקבועה-מילולית הזו.
 MEETING_BOOKING_CONFIRMATION_PROMPT = """\
-אתה כותב הודעת וואטסאפ מסודרת ללקוח, מיד לאחר שנציג אישר בפועל פגישה שנקבעה
-איתו (Automated Meeting Booking Confirmation) - תאריך: {due_date}, שעה: {due_time}.
-מיקום/פרטי הגעה (אם צוין): {location}.
-מי מטעמנו ייפגש איתו (אם צוין): {host}.
-פרטים ידועים על הלקוח (אם יש): שם - {customer_name}, עסק - {business_name}.
+היי {customer_name}, בהמשך לשיחתנו נקבעה לך פגישה ליום {day} {date} בשעה {time} .
+כתובתנו : דרך מנחם בגין 7, רמת-גן - נקסוס נדל"ן  (מגדל בית גיבור , קומה 21).
+לפגישה יש להצטייד עם ת״ז לצורך כניסה למגדל ואמצעי תשלום למידת הצורך.
 
-כתוב הודעה קצרה (2-4 משפטים) בעברית - סיכום ואישור סופי וברור, לא "תזכורת" ולא
-שאלה אם המועד נוח (הוא כבר אושר בפועל). ציין בבירור שהפגישה נקבעה ואושרה,
-את התאריך והשעה, ואת המיקום/מי ייפגש איתו אם סופקו (אם לא סופקו - אל תמציא/
-תנחש, פשוט אל תזכיר אותם). סיים בנימה חמה שמחכים לו. אל תמציא פרטים שלא ניתנו.
-החזר רק את טקסט ההודעה, בלי מרכאות ובלי הסברים נוספים.
-"""
+חנייה שמורה עבורך בחניון המגדל - חניון בית גיבור . (יש להחנות בחניית האורחים)
+
+קישור למיקום החניון :📍
+
+https://waze.com/ul/hsv8wxchc3
+
+זמין עבורך לכל שאלה🙏"""
+
+_HEBREW_WEEKDAYS_MEETING = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
 
 
 def generate_meeting_booking_confirmation_message(card: dict, task: dict) -> str:
@@ -627,27 +635,28 @@ def generate_meeting_booking_confirmation_message(card: dict, task: dict) -> str
     שה-AI רק *מזהה* כוונת תזמון בהודעה (detect_scheduling_intent נשאר ניתוח-
     בלבד, ראו חוק הבטיחות ב-scheduling_agent.py) - אחרת היינו שולחים ללקוח
     "הפגישה אושרה" על בסיס ניחוש AI בלי שום אישור אנושי, בניגוד מוחלט לעיקרון
-    שה-agent הזה קיים כדי לאכוף. location/host נשלפים מ-task["notes"]/
-    card["agent"], בדיוק כמו generate_meeting_invite_message - אין שדות DB
-    נפרדים למיקום/מארח."""
+    שה-agent הזה קיים כדי לאכוף.
+
+    תבנית קבועה (ראו MEETING_BOOKING_CONFIRMATION_PROMPT) - לא קריאת AI: רק
+    customer_name/day/date/time מותאמים דינמית מ-card/task, שאר הטקסט (כתובת/
+    הנחיות/קישור) קבוע-לחלוטין בכל הודעה. ⚠️ אם task["due_date"] חסר/לא-תקין
+    (לא אמור לקרות בפועל - משימה מאושרת תמיד עם תאריך, אבל הגנה בכל זאת) -
+    day נופל ל-"" במקום לקרוס, כדי שההודעה עדיין תישלח (בלי שם היום) ולא
+    תיכשל שקט על כל זרימת האישור."""
     prompt_template = prompts.get_prompt("meeting_booking_confirmation_message", MEETING_BOOKING_CONFIRMATION_PROMPT)
-    prompt = prompt_template.format(
-        customer_name=card.get("customer_name") or "לא ידוע",
-        business_name=card.get("business_name") or "לא ידוע",
-        due_date=task.get("due_date") or "",
-        due_time=task.get("due_time") or "",
-        location=task.get("notes") or "לא צוין",
-        host=card.get("agent") or "לא צוין",
+    due_date = task.get("due_date") or ""
+    try:
+        day = _HEBREW_WEEKDAYS_MEETING[datetime.strptime(due_date, "%Y-%m-%d").weekday()]
+        date_label = datetime.strptime(due_date, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except ValueError:
+        day = ""
+        date_label = due_date
+    return prompt_template.format(
+        customer_name=card.get("customer_name") or "לקוח/ה יקר/ה",
+        day=day,
+        date=date_label,
+        time=task.get("due_time") or "",
     )
-    response = client.messages.create(
-        model="claude-opus-5",
-        max_tokens=200,
-        thinking={"type": "disabled"},
-        output_config={"effort": "low"},
-        messages=[{"role": "user", "content": prompt}],
-    )
-    from whatsapp_provider import strip_emojis
-    return strip_emojis(next(block.text for block in response.content if block.type == "text").strip())
 
 
 def update_activity_summary(phone: str, summary: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
