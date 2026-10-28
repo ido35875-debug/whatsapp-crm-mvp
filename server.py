@@ -2639,34 +2639,58 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
     עצמה זהה לגמרי למה שהיה סינכרוני בתוך webhook() לפני שלב 3 - הופרדה
     לפונקציה, לא שוכתבה.
 
-    סינון שיחת-חולין אישית (לא עסקית) - באג קריטי שתוקן: איש קשר אישי/חבר
-    ששולח הודעת חולין (למשל עדכון על שוק ההון) היה מקבל מענה אוטומטי כאילו
-    הוא ליד. נבדק **רק** לכרטיס בלי עדיין שום הקשר עסקי מתועד - import_source
-    (קיים כליד רשום ב-DB, למשל מטופס/ייבוא/הוספה ידנית - ראו import_lead)
-    או property_type/budget/lead_status מעבר ל-"new" (הראה הקשר נדל"ני
-    בעצמו בשיחה) - ברגע שאחד מהם מתקיים, לא נבדק שוב לעולם לאותו כרטיס, כדי
-    לא "לשתוק" באמצע שיחת מכירה אמיתית רק כי משפט אחד היה קז'ואלי (ראו
-    sales_agent.detect_real_estate_relevance). ⚠️ זה שכבת הגנה הסתברותית
-    שנייה בלבד - ההגנה הראשית והוודאית ל*אנשי קשר אישיים ידועים* (כמו חברים
-    שחוזרים ושולחים הודעות) היא BLOCKED_CONTACTS/db.is_contact_blocked למעלה,
-    שחוסמים בלי שום ניחוש AI."""
+    Speed-to-Lead: ה-AI הראשוני פועל **רק** על פניות חדשות-לגמרי מקמפיין, לא
+    על לקוחות/לידים שכבר קיימים במאגר ולא על שיחת-חולין אישית. שני מנגנונים
+    נפרדים, לא אחד:
+    - import_source מוגדר (ליד קיים - נכנס בעבר דרך import_lead, ראו ההערה
+      המלאה בגוף הפונקציה) → **חוסם קשיח**, בלי שום ניחוש AI - זה לא קשור
+      לתוכן ההודעה בכלל, רק לעובדה שהמספר הזה כבר מוכר לנו.
+    - בלי import_source, אבל כן property_type/budget/lead_status מעבר
+      ל-"new" (כבר הראה הקשר נדל"ני בעצמו בשיחה קודמת) → גם כן לא נבדק שוב
+      לעולם, כדי לא "לשתוק" באמצע שיחת מכירה אמיתית רק כי משפט אחד היה
+      קז'ואלי.
+    - אחרת (מספר חדש-לגמרי, בלי שום הקשר קודם) - נבדק תוכן ההודעה עצמה
+      (sales_agent.detect_real_estate_relevance) כדי להבדיל פנייה עסקית
+      אמיתית מהודעת חולין אישית (חבר/משפחה). ⚠️ זה שכבת הגנה הסתברותית
+      שנייה בלבד - ההגנה הראשית והוודאית ל*אנשי קשר אישיים ידועים* (כמו
+      חברים שחוזרים ושולחים הודעות) היא BLOCKED_CONTACTS/db.is_contact_blocked
+      למעלה, שחוסמים בלי שום ניחוש AI.
+
+    בכל שלושת המקרים - ברגע שתשובת AI *נשלחת* בפועל, ai_enabled משתתק
+    אוטומטית (ראו update_lead_ai_enabled בהמשך) - "ירייה אחת בלבד", לא שיחה
+    פתוחה מתמשכת."""
     provider = get_provider() if source == "whatsapp" else None
     reply_text = None
     skip_reason = None
     if source == "whatsapp":
         existing_card = load_customers().get(f"{tenant_id}::{contact_id}") or {}
-        has_business_context = bool(
-            existing_card.get("import_source")
-            or existing_card.get("property_type") or existing_card.get("budget")
-            or existing_card.get("lead_status") not in (None, "", "new")
-        )
-        if not has_business_context:
-            try:
-                relevance = sales_agent.detect_real_estate_relevance(message_text)
-                if not relevance["is_relevant"]:
-                    skip_reason = relevance.get("reason") or "תוכן לא עסקי"
-            except Exception as exc:
-                logger.warning("בדיקת רלוונטיות עסקית נכשלה - ממשיכים כברירת מחדל (לא חוסמים): %s", exc)
+        # חוסם קשיח, לא רק "מדלג על בדיקת רלוונטיות": import_source מוגדר
+        # **רק** דרך extract.import_lead (ייבוא CSV/הוספה ידנית/טופס-קמפיין -
+        # ראו server.api_create_lead/import_lead) - כלומר המספר הזה היה כבר
+        # ליד/לקוח *קיים* במאגר *לפני* ההודעה הזו, לא פנייה ישירה ראשונה
+        # ממספר חדש. ה-AI הראשוני (Speed-to-Lead) מיועד **רק** לפניות חדשות
+        # מקמפיין - ליד קיים לא אמור להפעיל אותו בכלל, גם אם זו ההודעה
+        # הראשונה שלו *בוואטסאפ* ספציפית. לידים שנכנסו דרך /api/leads (לא
+        # ייבוא מרוכז) כבר מושתקים מיידית בזמן היצירה (ראו
+        # _send_speed_to_lead_outreach_and_mute) - הבדיקה הזו היא רשת הביטחון
+        # ל*ייבוא מרוכז* (/api/leads/import), שבכוונה לא מפעיל outreach/
+        # השתקה מיידית בזמן היצירה עצמה (כדי לא "להפציץ" מאות לידים היסטוריים
+        # בבת-אחת) - בלעדיה, ליד קיים כזה שכותב לראשונה בוואטסאפ עדיין היה
+        # מקבל מענה AI כאילו הוא פנייה חדשה.
+        if existing_card.get("import_source"):
+            skip_reason = "ליד/לקוח קיים במאגר (import_source) - אינו פנייה חדשה מקמפיין"
+        else:
+            has_business_context = bool(
+                existing_card.get("property_type") or existing_card.get("budget")
+                or existing_card.get("lead_status") not in (None, "", "new")
+            )
+            if not has_business_context:
+                try:
+                    relevance = sales_agent.detect_real_estate_relevance(message_text)
+                    if not relevance["is_relevant"]:
+                        skip_reason = relevance.get("reason") or "תוכן לא עסקי"
+                except Exception as exc:
+                    logger.warning("בדיקת רלוונטיות עסקית נכשלה - ממשיכים כברירת מחדל (לא חוסמים): %s", exc)
     try:
         if (
             source == "whatsapp"
