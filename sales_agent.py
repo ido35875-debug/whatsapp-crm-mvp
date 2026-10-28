@@ -264,6 +264,111 @@ def detect_real_estate_relevance(message: str) -> dict:
     return {"is_relevant": bool(parsed["is_relevant"]), "reason": parsed.get("reason") or ""}
 
 
+# ---- בירור צרכים קצר (Short Qualification Flow) - ראו server._run_lead_
+# qualification_turn/extract.generate_qualification_handoff_message. מחליף
+# את התגובה האחת-בלבד הקודמת (Speed-to-Lead) בעד 2 תורות AI קצרות שמכוונות
+# לאסוף שלושה פרטים בלבד (מגורים/השקעה, סוג/גודל נכס, שם) לפני העברה למנהל
+# הפרויקט. ⚠️ run_qualification_turn היא ניתוח-בלבד (קריאת Claude אחת,
+# read-only) בדיוק כמו שאר הפונקציות במודול הזה (ראו docstring בראש הקובץ -
+# "אין כאן שום קריאת כתיבה בכלל") - היא **לא** שולחת שום דבר ולא כותבת
+# ל-DB; מחזירה {reply, is_complete, purpose, property_type, customer_name}
+# והקורא (server.py) אחראי לכל פעולה בפועל (שליחה/כתיבה/השתקה), בדיוק כמו
+# scheduling_agent.detect_scheduling_intent → server._detect_and_maybe_
+# auto_confirm_scheduling. "is_complete" הוא רק הערכת ה-AI - server.py אוכף
+# בנוסף מגבלת-2-תורות קשיחה בלי תלות בהערכה הזו (ראו שם). ----
+
+QUALIFICATION_PROMPT = """\
+אתה "מנהל הפרויקט" בפרויקט נדל"ן, עונה ללקוח פוטנציאלי בוואטסאפ בטון חם,
+אנושי ומקצועי - כמו אדם אמיתי שכותב מהטלפון, לא רובוט. ❗לעולם אל תשתמש
+במילים "נציג" או "איש מכירות" בשום הקשר, בשום ניסוח - גם לא כשאתה מתאר מי
+ימשיך את השיחה בטלפון בהמשך (הוא "מנהל הפרויקט", לא "נציג").
+
+זה שלב בירור צרכים קצר (לא שיחת מכירה מלאה) - המטרה היחידה שלך: לבדוק אם
+עדיין חסר אחד משלושת הפרטים הבאים, ואם כן - לשאול עליו **שאלה אחת בלבד,
+קצרה וטבעית** (לא יותר משאלה אחת באותה הודעה): (1) מגורים או השקעה,
+(2) סוג/גודל הנכס המבוקש, (3) השם של הלקוח.
+
+פרטים שכבר ידועים (אם יש, אל תשאל עליהם שוב): מגורים/השקעה - {purpose},
+סוג/גודל נכס - {property_type}, שם - {customer_name}.
+
+היסטוריית השיחה עד כה (מהישנה לחדשה, אם יש):
+{history_text}
+
+ההודעה החדשה מהלקוח:
+"{message}"
+
+חלץ מההודעה הזו (ומההיסטוריה, אם רלוונטי) כל פרט חדש מבין השלושה שהתגלה -
+אל תמציא, החזר null אם לא ברור.
+
+אם אחרי ההודעה הזו *עדיין* חסר אחד מהשלושה - נסח reply כשאלה אחת בלבד
+שמכוונת לפרט החסר, בלי לחזור על מה שהלקוח כבר אמר. אם כל השלושה כבר ידועים
+(כולל מה שחולץ עכשיו מההודעה הנוכחית) - אל תשאל שום שאלה ב-reply; רק ציין
+בקצרה וחמה שקיבלת את הפרטים (ההודעה הרשמית שמעבירה בפועל למנהל הפרויקט
+תישלח בנפרד ע"י המערכת - אל תכתוב אותה בעצמך).
+
+כלל קשיח: 1-2 משפטים קצרים בלבד, טון חם ואנושי, בלי אימוג'ים מוגזמים ובלי
+לשון רשמית/משרדית. אל תמציא פרטים, אל תבטיח מחיר/הנחה/תאריך מדויק.
+
+החזר אך ורק JSON תקין בפורמט הזה, בלי טקסט נוסף לפני/אחרי:
+{{"reply": "...", "is_complete": true/false, "purpose": "investment"/"residential"/null, "property_type": "..."/null, "customer_name": "..."/null}}
+"is_complete": true אם ורק אם אחרי ההודעה הזו (כולל מה שחולץ עכשיו) כל שלושת
+הפרטים ידועים - אחרת false.
+"""
+
+
+def run_qualification_turn(message_text: str, history_text: str, card: dict, turn_number: int) -> dict:
+    """תור אחד בבירור הצרכים הקצר - ראו ההערה המלאה מעל. turn_number (1-אינדקס,
+    מועבר ע"י הקורא) כאן רק לצורך קונטקסט בלוג/דיבוג - אינו משפיע על הפרומפט
+    עצמו (ה-AI מחליט is_complete לפי תוכן, לא לפי מספר הסיבוב; את המגבלה
+    הקשיחה של 2 תורות אוכף server.py בלי תלות בתשובה הזו).
+
+    נופלת בעדינות על כשל AI/JSON: reply ריק (""), is_complete=True - אם
+    משהו נכשל, מעדיפים לסגור את הבירור ולהעביר למנהל הפרויקט (עם מה שכבר
+    נאסף) מאשר להשתמש בלופ-תגובות אינסופי/שגוי."""
+    fallback = {"reply": "", "is_complete": True, "purpose": None, "property_type": None, "customer_name": None}
+    prompt_template = prompts.get_prompt("qualification_turn", QUALIFICATION_PROMPT)
+    prompt = prompt_template.format(
+        purpose=card.get("purpose") or "לא ידוע",
+        property_type=card.get("property_type") or "לא ידוע",
+        customer_name=card.get("customer_name") or "לא ידוע",
+        history_text=history_text or "(אין הקשר נוסף)",
+        message=message_text,
+    )
+    try:
+        response = client.messages.create(
+            model="claude-opus-5",
+            max_tokens=300,
+            thinking={"type": "disabled"},
+            output_config={"effort": "low"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw_text = next(block.text for block in response.content if block.type == "text").strip()
+        parsed = ai_json.parse_json_response(raw_text)
+    except Exception:
+        return fallback
+
+    if not isinstance(parsed, dict):
+        return fallback
+
+    def _clean(value) -> str | None:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value or None
+
+    purpose = _clean(parsed.get("purpose"))
+    if purpose not in ("investment", "residential"):
+        purpose = None
+
+    return {
+        "reply": _clean(parsed.get("reply")) or "",
+        "is_complete": bool(parsed.get("is_complete")),
+        "purpose": purpose,
+        "property_type": _clean(parsed.get("property_type")),
+        "customer_name": _clean(parsed.get("customer_name")),
+    }
+
+
 def _parse_replies(raw_text: str) -> list[str]:
     """מפרק את פלט המודל לרשימת מחרוזות - עמיד לשני סוגי סטייה מהפורמט המבוקש
     (מערך JSON אחד): (1) המודל (לעיתים נדירות) מחזיר כמה מערכי JSON נפרדים

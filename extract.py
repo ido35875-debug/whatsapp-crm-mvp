@@ -515,7 +515,21 @@ def process_message_with_reply(
     שנקבעו ע"י כוונה מפורשת (סוכן/נציג אנושי), לא ע"י עצם קבלת הודעה."""
     card = process_message(phone, message_text, tenant_id=tenant_id, source_channel=source_channel)
     reply_text = generate_reply(message_text, card, history_text=_format_history_for_reply(card))
+    card = record_automated_reply(phone, reply_text, tenant_id=tenant_id, source_channel=source_channel)
+    return card, reply_text
 
+
+def record_automated_reply(
+    phone: str, reply_text: str, tenant_id: str = DEFAULT_TENANT_ID, source_channel: str = "whatsapp",
+) -> dict:
+    """רושם תשובה אוטומטית *שכבר נוצרה* (ולא ע"י generate_reply - ראו הזרימה
+    המקורה ב-process_message_with_reply מעל) ב-history המוטבע בכרטיס (card,
+    נפרד מ-crm_data.db.messages) ומקדמת lead_status ל-"contacted" באותם
+    תנאים מדויקים - נחלץ מ-process_message_with_reply כדי ששתי זרימות-
+    תשובה-אוטומטית (ה"רגילה" כאן, ובירור הצרכים הקצר - ראו server._run_lead_
+    qualification_turn) יחלקו את אותה לוגיקת-תוצאה-אחרי-שליחה, בלי כפילות קוד
+    ובלי שבירור הצרכים "ישכח" לעדכן lead_status/history המוטבע כמו שהתשובה
+    הרגילה כבר עושה."""
     customers = load_customers()
     key = _customer_key(tenant_id, phone)
     card = customers[key]
@@ -525,8 +539,7 @@ def process_message_with_reply(
         card["status_changed_at"] = datetime.now(timezone.utc).isoformat()
     customers[key] = card
     save_customers(customers)
-
-    return card, reply_text
+    return card
 
 
 MEETING_REMINDER_PROMPT = """\
@@ -688,6 +701,49 @@ def generate_speed_to_lead_outreach_message(card: dict) -> str:
         customer_name=card.get("customer_name") or "לקוח/ה יקר/ה",
         project_line=project_line,
     )
+
+
+# בירור צרכים קצר (Short Qualification Flow, ראו sales_agent.run_qualification_
+# turn/server._run_lead_qualification_turn) - משפט הסיום **חייב** להישאר קבוע-
+# מילולית בדיוק כמו שהוגדר ("מעולה, העברתי את הפרטים...") - לא ניסוח-AI
+# משתנה, מאותה סיבה בדיוק כמו הודעת אישור הפגישה/הפתיחה היזומה: ברגע שהנציג
+# האנושי מקבל ליד "מועבר", הניסוח המדויק שהלקוח קיבל חשוב. שתי גרסאות - עם/
+# בלי בקשת שם - כדי לא "לסתור את עצמו" (לכתוב "העברתי את הפרטים" כשעדיין חסר
+# הפרט הכי בסיסי, השם).
+QUALIFICATION_HANDOFF_KNOWN_NAME_PROMPT = (
+    "מעולה, העברתי את הפרטים ישירות למנהל הפרויקט והוא יתקשר אליך כבר בדקות הקרובות."
+)
+QUALIFICATION_HANDOFF_NEED_NAME_PROMPT = (
+    "מעולה! רק לפני שאני מעביר את הפרטים למנהל הפרויקט - מה השם שלך? "
+    "הוא יתקשר אליך כבר בדקות הקרובות."
+)
+
+
+def generate_qualification_handoff_message(card: dict) -> str:
+    """הודעת הסיום של בירור הצרכים הקצר - נשלחת כש-run_qualification_turn
+    מסמנת is_complete=True, או כשהגענו למקסימום תגובות AI (ראו server._run_
+    lead_qualification_turn) - תבנית קבועה (לא AI free-form), בדיוק כמו
+    generate_meeting_booking_confirmation_message/generate_speed_to_lead_
+    outreach_message. אחריה ה-AI משתתק אוטומטית (ai_enabled=False) - זו
+    ההודעה האחרונה בשיחה היזומה."""
+    if (card.get("customer_name") or "").strip():
+        return prompts.get_prompt("qualification_handoff_known_name", QUALIFICATION_HANDOFF_KNOWN_NAME_PROMPT)
+    return prompts.get_prompt("qualification_handoff_need_name", QUALIFICATION_HANDOFF_NEED_NAME_PROMPT)
+
+
+def increment_qualification_turn(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> int:
+    """מגדילה ב-1 את מספר תורות בירור הצרכים שבוצעו לליד הזה (qualification_
+    turns, ברירת מחדל 0) ומחזירה את הערך המעודכן - קורא (server.py) משתמש בו
+    כדי לדעת אם זו התגובה האחרונה המותרת (מקסימום 2, ראו ההערה המלאה ב-
+    server._run_lead_qualification_turn). שדה מונה-בלבד, לא קשור ל-history."""
+    customers = load_customers()
+    key = _customer_key(tenant_id, phone)
+    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+    turns = int(card.get("qualification_turns") or 0) + 1
+    card["qualification_turns"] = turns
+    customers[key] = card
+    save_customers(customers)
+    return turns
 
 
 def update_activity_summary(phone: str, summary: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
@@ -944,6 +1000,7 @@ def update_lead_fields(
     requirements: str | None = None,
     rooms: str | None = None,
     project: str | None = None,
+    purpose: str | None = None,
 ) -> dict:
     """שמירה מלאה מפאנל עריכת ליד (#editLeadPanel) או מהגריד הנגיש-לעריכה
     בתצוגת פרטי הליד המלאה (Lead Details, BMBY-style - ראו index.html) -
@@ -962,7 +1019,11 @@ def update_lead_fields(
     (עמודת customers.data) ולא עמודות SQL נפרדות; שדה חסר בכרטיס ישן פשוט
     None/undefined בתגובת ה-API, בלי שום "ברירת מחדל" מטעה. property_type/
     budget היו קיימים כבר (ממולאים אוטומטית ע"י extract_voice_message_fields),
-    אבל עד כה לא היו ניתנים לעריכה ידנית בשום UI - כאן זו הדרך הראשונה."""
+    אבל עד כה לא היו ניתנים לעריכה ידנית בשום UI - כאן זו הדרך הראשונה.
+
+    purpose: "investment" (השקעה) / "residential" (מגורים) - נאסף ע"י בירור
+    הצרכים הקצר (sales_agent.run_qualification_turn, ראו server._run_lead_
+    qualification_turn) - אותה בדיוק שיטת "" מוחקת/None לא נוגע."""
     customers = load_customers()
     key = _customer_key(tenant_id, phone)
     card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
@@ -990,6 +1051,7 @@ def update_lead_fields(
     _set("requirements", requirements)
     _set("rooms", rooms)
     _set("project", project)
+    _set("purpose", purpose)
     if lead_status:
         card["lead_status"] = lead_status
 

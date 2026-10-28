@@ -90,14 +90,16 @@ try:
         generate_executive_summary,
         generate_meeting_booking_confirmation_message,
         generate_missing_fields_message,
+        generate_qualification_handoff_message,
         generate_speed_to_lead_outreach_message,
         get_missing_fields,
         import_lead,
+        increment_qualification_turn,
         load_customers,
         log_call_summary,
         log_manual_reply,
         process_message,
-        process_message_with_reply,
+        record_automated_reply,
         rekey_lead,
         resolve_existing_phone,
         update_activity_summary,
@@ -2526,6 +2528,59 @@ def _send_speed_to_lead_outreach_and_mute(card: dict, phone: str, tenant_id: str
         update_lead_ai_enabled(phone, False, tenant_id=tenant_id)
 
 
+# בירור צרכים קצר (Short Qualification Flow) - ראו sales_agent.run_qualification_
+# turn. עד MAX_QUALIFICATION_TURNS תגובות AI (לא יותר, לא תלוי בהערכת ה-AI
+# עצמו) - בתגובה האחרונה (או כש-run_qualification_turn מעריכה is_complete=True
+# מוקדם יותר) נשלחת הודעת-הסיום הקבועה (generate_qualification_handoff_
+# message) במקום הניסוח החופשי של ה-AI, ואז ai_enabled מושתק אוטומטית.
+MAX_QUALIFICATION_TURNS = 2
+
+
+def _run_lead_qualification_turn(card: dict, contact_id: str, message_text: str, tenant_id: str, history_text: str) -> str:
+    """תור אחד בבירור הצרכים הקצר - מחליטה אם לשאול עוד שאלה אחת (ראו
+    sales_agent.QUALIFICATION_PROMPT) או לסגור את הבירור ולהעביר "למנהל
+    הפרויקט" (הודעת-תבנית קבועה, לא AI free-form - ראו extract.
+    generate_qualification_handoff_message), כותבת את השדות שחולצו (purpose/
+    property_type/customer_name) ל-DB, ומשתיקה את ה-AI אוטומטית **רק** בתור
+    הסוגר. מחזירה את טקסט ההודעה שנשלחה בפועל, לשמירה/שליחה ע"י הקורא.
+
+    ⚠️ הקוד כאן, לא ה-AI, אוכף את מגבלת ה-MAX_QUALIFICATION_TURNS הקשיחה -
+    run_qualification_turn היא ניתוח-בלבד (ראו docstring שלה), וה-AI עלול
+    להעריך is_complete=False לנצח אם משהו בניסוח לא ברור; בלי אכיפה קשיחה
+    כאן, השיחה הייתה יכולה להימשך בלי סוף במקום "עד 2 תגובות" כמו שהוגדר."""
+    turn_number = increment_qualification_turn(contact_id, tenant_id=tenant_id)
+    result = sales_agent.run_qualification_turn(message_text, history_text, card, turn_number)
+
+    update_lead_fields(
+        contact_id, tenant_id=tenant_id,
+        purpose=result.get("purpose"), property_type=result.get("property_type"),
+        customer_name=result.get("customer_name"),
+    )
+    # הכרטיס המקומי (card, בפרמטר) עדיין משקף את המצב *לפני* העדכון למעלה -
+    # צריך אותו מעודכן (בעיקר customer_name) כדי ש-generate_qualification_
+    # handoff_message תדע אם השם כבר ידוע.
+    updated_card = load_customers().get(f"{tenant_id}::{contact_id}") or card
+
+    force_close = turn_number >= MAX_QUALIFICATION_TURNS or result.get("is_complete")
+    if force_close:
+        message = generate_qualification_handoff_message(updated_card)
+    else:
+        message = result.get("reply") or generate_qualification_handoff_message(updated_card)
+
+    # רושם ב-history המוטבע בכרטיס + מקדם lead_status ל-"contacted" - אותה
+    # לוגיקה בדיוק שתגובה-אוטומטית "רגילה" כבר עושה (ראו extract.
+    # record_automated_reply/process_message_with_reply) - card (בפרמטר)
+    # מנתב את הקריאה הזו ל-process_message בלבד, בלי הצעד הזה היה חסר.
+    record_automated_reply(contact_id, message, tenant_id=tenant_id, source_channel="whatsapp")
+
+    if force_close:
+        # משתיקים **רק** בתור הסוגר - לא בכל תור, בניגוד למודל "ירייה אחת
+        # בלבד" הקודם (_send_speed_to_lead_outreach_and_mute) שהוחלף כאן
+        # בבירור צרכים של עד MAX_QUALIFICATION_TURNS תורות.
+        update_lead_ai_enabled(contact_id, False, tenant_id=tenant_id)
+    return message
+
+
 def _send_meeting_confirmation_after_delay(provider, task: dict) -> None:
     """Automated Meeting Booking Confirmation - שולחת הודעת אישור קביעת פגישה
     אחרי השהיה רנדומלית, אותה מדיניות בטיחות בדיוק כמו _send_auto_reply_after_
@@ -2656,12 +2711,26 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
       חברים שחוזרים ושולחים הודעות) היא BLOCKED_CONTACTS/db.is_contact_blocked
       למעלה, שחוסמים בלי שום ניחוש AI.
 
-    בכל שלושת המקרים - ברגע שתשובת AI *נשלחת* בפועל, ai_enabled משתתק
-    אוטומטית (ראו update_lead_ai_enabled בהמשך) - "ירייה אחת בלבד", לא שיחה
-    פתוחה מתמשכת."""
+    בכל שלושת המקרים - ה-AI שעונה בפועל הוא בירור צרכים קצר, לא שיחה פתוחה
+    (ראו _run_lead_qualification_turn/sales_agent.run_qualification_turn):
+    עד MAX_QUALIFICATION_TURNS תגובות AI שמכוונות לאסוף מגורים/השקעה + סוג/
+    גודל נכס + שם, ואז הודעת-סיום קבועה ("מועבר למנהל הפרויקט") ו-ai_enabled
+    משתתק אוטומטית - לא ממשיכה לנצח."""
     provider = get_provider() if source == "whatsapp" else None
     reply_text = None
     skip_reason = None
+    # היסטוריה מרוכזת - נשלפת פעם אחת כאן (לא בכל try/except בנפרד בהמשך),
+    # לשימוש גם בבירור הצרכים (_run_lead_qualification_turn) וגם בשלושת
+    # הסוכנים שרצים בהמשך הפונקציה (יומן/חם/תקציר) - לא לכפול שאילתת DB.
+    try:
+        prior_messages = db.get_messages(contact_id, tenant_id=tenant_id)[:-1][-6:]
+        history_text = "\n".join(
+            f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
+            for m in prior_messages
+        )
+    except Exception as exc:
+        logger.warning("שליפת היסטוריה נכשלה: %s", exc)
+        history_text = ""
     if source == "whatsapp":
         existing_card = load_customers().get(f"{tenant_id}::{contact_id}") or {}
         # חוסם קשיח, לא רק "מדלג על בדיקת רלוונטיות": import_source מוגדר
@@ -2699,17 +2768,13 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
             and not skip_reason
         ):
             # תגובה בתוך חלון השיחה שהלקוח פתח - לא הודעה יזומה - ולכן אינה
-            # דורשת הודעת-תבנית מאושרת מול מטא.
-            card, reply_text = process_message_with_reply(
-                contact_id, message_text, tenant_id=tenant_id, source_channel=source
-            )
+            # דורשת הודעת-תבנית מאושרת מול מטא. card נחלץ קודם (process_message,
+            # לא process_message_with_reply) - התגובה בפועל מגיעה מבירור
+            # הצרכים הקצר (_run_lead_qualification_turn), לא מ-extract.
+            # generate_reply - ראו ההערה המלאה שם.
+            card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
+            reply_text = _run_lead_qualification_turn(card, contact_id, message_text, tenant_id, history_text)
             db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
-            # Speed-to-Lead: "ירייה אחת בלבד" - ברגע שה-AI ענה בפועל, הוא
-            # משתתק אוטומטית לליד הזה (לא ממשיך "לנהל שיחה" פתוחה) - ראו
-            # ההערה המלאה ב-_send_speed_to_lead_outreach_and_mute. לא פוגע
-            # בטריגר זימון הפגישה (_detect_and_maybe_auto_confirm_scheduling
-            # למטה) - זה רץ בלי שום תלות ב-ai_enabled.
-            update_lead_ai_enabled(contact_id, False, tenant_id=tenant_id)
         else:
             # ai_enabled=False (שלב 5), או skip_reason (שיחת חולין לא-עסקית
             # מזוהה מליד/איש-קשר חדש) - עדיין מחלצים פרטים/מעדכנים כרטיס, אבל
@@ -2733,18 +2798,6 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
         logger.info("[תור רקע][tenant=%s] [%s] עודכן כרטיס לקוח: %s", tenant_id, source, card)
     except Exception as exc:
         logger.error("שגיאה בעיבוד הודעה ברקע מ-%s (tenant=%s): %s", source, tenant_id, exc, exc_info=True)
-
-    # היסטוריה מרוכזת לשימוש שלושת הסוכנים הבאים (יומן/חם/תקציר) - נשלפת פעם
-    # אחת, לא בכל try/except בנפרד, כדי לא לכפול שאילתת DB שלוש פעמים לאותה הודעה.
-    try:
-        prior_messages = db.get_messages(contact_id, tenant_id=tenant_id)[:-1][-6:]
-        history_text = "\n".join(
-            f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
-            for m in prior_messages
-        )
-    except Exception as exc:
-        logger.warning("שליפת היסטוריה לסוכני-רקע נכשלה: %s", exc)
-        history_text = ""
 
     # סוכן יומן (scheduling_agent.py) - מנתח את ההודעה ומזהה בקשת תיאום/ביטול/
     # הזזת פגישה. try/except צר משלו, נפרד מהבלוק למעלה - כשל כאן לעולם לא
@@ -3051,14 +3104,21 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
         if source == "whatsapp" and provider.requires_twiml_reply():
             reply_text = None
             try:
+                prior_messages = db.get_messages(contact_id, tenant_id=tenant_id)[:-1][-6:]
+                history_text = "\n".join(
+                    f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
+                    for m in prior_messages
+                )
+            except Exception as exc:
+                logger.warning("שליפת היסטוריה נכשלה: %s", exc)
+                history_text = ""
+            try:
                 if _ai_enabled_for(contact_id, tenant_id) and not DRY_RUN and db.is_feature_enabled(tenant_id, "whatsapp_ai"):
-                    card, reply_text = process_message_with_reply(
-                        contact_id, message_text, tenant_id=tenant_id, source_channel=source
-                    )
+                    # בירור צרכים קצר - ראו ההערה המלאה בנתיב האסינכרוני
+                    # (_process_incoming_message_job) לעיל.
+                    card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
+                    reply_text = _run_lead_qualification_turn(card, contact_id, message_text, tenant_id, history_text)
                     db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
-                    # Speed-to-Lead "ירייה אחת בלבד" - ראו ההערה המלאה בנתיב
-                    # האסינכרוני (_process_incoming_message_job) לעיל.
-                    update_lead_ai_enabled(contact_id, False, tenant_id=tenant_id)
                 else:
                     # ai_enabled=False (שלב 5) או DRY_RUN=true (שלב 6) - בלי מענה
                     # אוטומטי; ה-TwiML למטה יחזור ריק (בלי <Message>), בדיוק כמו
@@ -3074,11 +3134,6 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
                 logger.error("שגיאה בעיבוד הודעה מ-%s (tenant=%s): %s", source, tenant_id, exc, exc_info=True)
 
             try:
-                prior_messages = db.get_messages(contact_id, tenant_id=tenant_id)[:-1][-6:]
-                history_text = "\n".join(
-                    f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
-                    for m in prior_messages
-                )
                 _detect_and_maybe_auto_confirm_scheduling(message_text, contact_id, tenant_id, history_text, provider)
             except Exception as exc:
                 logger.warning("זיהוי כוונת תזמון (scheduling_agent) נכשל: %s", exc)
