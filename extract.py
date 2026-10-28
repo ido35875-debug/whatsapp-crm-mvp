@@ -746,6 +746,25 @@ def increment_qualification_turn(phone: str, tenant_id: str = DEFAULT_TENANT_ID)
     return turns
 
 
+def mark_speed_to_lead_outreach_sent(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
+    """מסמנת שהפתיחה היזומה (Speed-to-Lead, ראו server._send_speed_to_lead_
+    outreach) נשלחה לליד הזה - **לא** משתיקה את ה-AI (בניגוד למה שקרה קודם
+    כאן, ראו ההיסטוריה ב-server.py): המטרה המדויקת של הדגל הזה היא לפתוח
+    חלון-זמן שבו בירור הצרכים הקצר (ראו server._process_incoming_message_job/
+    _run_lead_qualification_turn) **כן** יופעל על התשובה הראשונה של הליד,
+    למרות ש-import_source מוגדר על הכרטיס (ליד שנכנס דרך POST /api/leads -
+    ראו api_create_lead - הוא בהגדרה "ליד חדש מקמפיין", לא "ליד קיים
+    במאגר" שההגנה הקשיחה ב-import_source נועדה לחסום). בלי הדגל הזה, תגובת
+    הליד להודעת הפתיחה הייתה נחסמת בטעות כאילו הוא לקוח קיים."""
+    customers = load_customers()
+    key = _customer_key(tenant_id, phone)
+    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+    card["speed_to_lead_outreach_sent"] = True
+    customers[key] = card
+    save_customers(customers)
+    return card
+
+
 def update_activity_summary(phone: str, summary: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
     """מעדכן תקציר פעילות קצר (activity_summary) שמתעדכן אוטומטית אחרי כל הודעה
     נכנסת (ראו server.py._process_incoming_message_job, מבוסס extract.

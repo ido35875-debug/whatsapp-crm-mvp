@@ -98,6 +98,7 @@ try:
         load_customers,
         log_call_summary,
         log_manual_reply,
+        mark_speed_to_lead_outreach_sent,
         process_message,
         record_automated_reply,
         rekey_lead,
@@ -921,12 +922,12 @@ def api_create_lead():
     # טופס/אינטגרציה חיצונית שמזינה את ה-DB (Zapier/Meta Lead Ads/דף נחיתה -
     # זה בפועל ה-webhook target הטבעי להם) ובין אם נציג הוסיף ליד ידנית
     # מהדשבורד - נחשב "ליד חדש מקמפיין" (ראו ההערה המלאה ב-
-    # _send_speed_to_lead_outreach_and_mute). **לא** חל על ייבוא קובץ מרוכז
+    # _send_speed_to_lead_outreach). **לא** חל על ייבוא קובץ מרוכז
     # (/api/leads/import, extract.import_lead ישירות) - שם אין את הקריאה
     # הזו בכלל, כדי לא "להפציץ" בוואטסאפ עשרות/מאות לידים היסטוריים בבת-אחת.
     if is_new:
         threading.Thread(
-            target=_send_speed_to_lead_outreach_and_mute,
+            target=_send_speed_to_lead_outreach,
             args=(card, resolved_phone, tenant_id),
             daemon=True, name=f"speed-to-lead-outreach-{resolved_phone}",
         ).start()
@@ -2499,20 +2500,21 @@ def _send_auto_reply_after_delay(provider, contact_id: str, reply_text: str, ten
         )
 
 
-def _send_speed_to_lead_outreach_and_mute(card: dict, phone: str, tenant_id: str) -> None:
+def _send_speed_to_lead_outreach(card: dict, phone: str, tenant_id: str) -> None:
     """Speed-to-Lead - פתיחה יזומה אוטומטית לליד חדש-לגמרי (is_new=True מ-
     import_lead, ראו api_create_lead) - **לפני** שהליד בכלל כתב הודעה, לא
-    תגובה לשום דבר. מטרת ה-AI כאן היחידה: להיראות כנציג אנושי שעונה תוך
-    שניות ("Speed to Lead"), לחמם, ולהודיע שמשווק יחזור. **בלי** השהייה
-    אנושית מכוונת (בניגוד ל-_send_meeting_confirmation_after_delay) - כאן
-    המהירות היא בדיוק הדרישה העסקית, לא דבר שצריך להסוות.
+    תגובה לשום דבר. מטרת ההודעה הקבועה הזו: להיראות כנציג אנושי שעונה תוך
+    שניות ("Speed to Lead") ולחמם. **בלי** השהייה אנושית מכוונת (בניגוד
+    ל-_send_meeting_confirmation_after_delay) - כאן המהירות היא בדיוק
+    הדרישה העסקית, לא דבר שצריך להסוות.
 
-    ⚠️ אחרי ההודעה הזו - תמיד, גם אם השליחה עצמה נכשלה - ה-AI משתתק אוטומטית
-    ולחלוטין לליד הזה (update_lead_ai_enabled(..., False)) ולא ימשיך "לנהל
-    שיחה" בעצמו: מעבר לנקודה הזו, רק משווק אנושי (או הטריגר הצר של אישור
-    פגישה - ראו _detect_and_maybe_auto_confirm_scheduling, שרץ בלי שום תלות
-    ב-ai_enabled) ממשיכים את השיחה. זה ההבדל המרכזי מהמודל הקודם (AI יכול
-    לנהל שיחה פתוחה רב-תורות) - כאן זו ירייה אחת בלבד, במתכוון."""
+    ⚠️ **לא** משתיקה את ה-AI (שינוי מהגרסה הקודמת של הפונקציה הזו - ראו
+    היסטוריית server.py): מסמנת רק speed_to_lead_outreach_sent, כדי שתגובת
+    הליד הראשונה להודעה הזו **תפעיל את בירור הצרכים הקצר** (ראו
+    _run_lead_qualification_turn/_process_incoming_message_job) בדיוק כמו
+    ליד שכתב ראשון בעצמו - לא תיחסם כ"ליד קיים" רק בגלל ש-import_source
+    מוגדר על הכרטיס. ההשתקה בפועל קורית **רק** בסוף בירור הצרכים (מקסימום
+    MAX_QUALIFICATION_TURNS תגובות AI, או סגירה מוקדמת), לא כאן."""
     try:
         message = generate_speed_to_lead_outreach_message(card)
         get_provider().send_message(phone, message)
@@ -2523,9 +2525,9 @@ def _send_speed_to_lead_outreach_and_mute(card: dict, phone: str, tenant_id: str
             "שליחת הודעת Speed-to-Lead פתיחה נכשלה (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc,
         )
     finally:
-        # משתיקים את ה-AI תמיד, גם אם השליחה נכשלה - אותה מדיניות "חד-פעמי,
-        # בלי retry אוטומטי" כמו booking_confirmation_sent/reminder_sent וכו'.
-        update_lead_ai_enabled(phone, False, tenant_id=tenant_id)
+        # מסמנים תמיד, גם אם השליחה נכשלה - אותה מדיניות "חד-פעמי, בלי
+        # retry אוטומטי" כמו booking_confirmation_sent/reminder_sent וכו'.
+        mark_speed_to_lead_outreach_sent(phone, tenant_id=tenant_id)
 
 
 # בירור צרכים קצר (Short Qualification Flow) - ראו sales_agent.run_qualification_
@@ -2575,8 +2577,8 @@ def _run_lead_qualification_turn(card: dict, contact_id: str, message_text: str,
 
     if force_close:
         # משתיקים **רק** בתור הסוגר - לא בכל תור, בניגוד למודל "ירייה אחת
-        # בלבד" הקודם (_send_speed_to_lead_outreach_and_mute) שהוחלף כאן
-        # בבירור צרכים של עד MAX_QUALIFICATION_TURNS תורות.
+        # בלבד" הקודם (_send_speed_to_lead_outreach) שהוחלף כאן בבירור
+        # צרכים של עד MAX_QUALIFICATION_TURNS תורות.
         update_lead_ai_enabled(contact_id, False, tenant_id=tenant_id)
     return message
 
@@ -2737,16 +2739,21 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
         # **רק** דרך extract.import_lead (ייבוא CSV/הוספה ידנית/טופס-קמפיין -
         # ראו server.api_create_lead/import_lead) - כלומר המספר הזה היה כבר
         # ליד/לקוח *קיים* במאגר *לפני* ההודעה הזו, לא פנייה ישירה ראשונה
-        # ממספר חדש. ה-AI הראשוני (Speed-to-Lead) מיועד **רק** לפניות חדשות
-        # מקמפיין - ליד קיים לא אמור להפעיל אותו בכלל, גם אם זו ההודעה
-        # הראשונה שלו *בוואטסאפ* ספציפית. לידים שנכנסו דרך /api/leads (לא
-        # ייבוא מרוכז) כבר מושתקים מיידית בזמן היצירה (ראו
-        # _send_speed_to_lead_outreach_and_mute) - הבדיקה הזו היא רשת הביטחון
-        # ל*ייבוא מרוכז* (/api/leads/import), שבכוונה לא מפעיל outreach/
-        # השתקה מיידית בזמן היצירה עצמה (כדי לא "להפציץ" מאות לידים היסטוריים
+        # ממספר חדש. ה-AI הראשוני (Speed-to-Lead/בירור צרכים) מיועד **רק**
+        # לפניות חדשות מקמפיין - ליד קיים לא אמור להפעיל אותו בכלל, גם אם זו
+        # ההודעה הראשונה שלו *בוואטסאפ* ספציפית. הבדיקה הזו היא רשת הביטחון
+        # ל*ייבוא מרוכז* (/api/leads/import) - שם בכוונה אין outreach/סימון
+        # כלשהו בזמן היצירה עצמה (כדי לא "להפציץ" מאות לידים היסטוריים
         # בבת-אחת) - בלעדיה, ליד קיים כזה שכותב לראשונה בוואטסאפ עדיין היה
         # מקבל מענה AI כאילו הוא פנייה חדשה.
-        if existing_card.get("import_source"):
+        #
+        # ⚠️ speed_to_lead_outreach_sent הוא חריג מפורש לחוסם הזה: ליד שנכנס
+        # דרך POST /api/leads (לא ייבוא מרוכז - ראו _send_speed_to_lead_
+        # outreach) *כן* מקבל import_source="manual", אבל הוא **בהגדרה**
+        # "פנייה חדשה מקמפיין", לא "ליד קיים במאגר" - בלי החריג הזה, תגובת
+        # הליד להודעת הפתיחה היזומה הייתה נחסמת בטעות ובירור הצרכים הקצר
+        # (_run_lead_qualification_turn) לא היה מופעל עליה בכלל.
+        if existing_card.get("import_source") and not existing_card.get("speed_to_lead_outreach_sent"):
             skip_reason = "ליד/לקוח קיים במאגר (import_source) - אינו פנייה חדשה מקמפיין"
         else:
             has_business_context = bool(
