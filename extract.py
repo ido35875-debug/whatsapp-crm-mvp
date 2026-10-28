@@ -659,6 +659,37 @@ def generate_meeting_booking_confirmation_message(card: dict, task: dict) -> str
     )
 
 
+# Speed-to-Lead - הודעת פתיחה יזומה לליד חדש מקמפיין (ראו server.api_create_lead/
+# _send_speed_to_lead_outreach_and_mute) - נשלחת **אוטומטית ומיידית** ברגע שנוצר
+# כרטיס חדש (is_new=True מ-import_lead), **לפני** שהליד בכלל כתב הודעה - לא תגובה
+# לשום דבר, פתיחה יזומה. בכוונה תבנית קבועה-מילולית (⚠️ DRAFT - טקסט ראשוני
+# לעריכה חופשית דרך פאנל ה"🧠 פרומפטים" בדשבורד, או ישירות כאן, בהתאם למה
+# שהעסק בפועל ירצה לנסח) - **לא** AI free-form, מאותה סיבה בדיוק כמו הודעת
+# אישור הפגישה: המטרה המוצהרת היא "להיראות כנציג אנושי לחלוטין" - ניסוח קבוע
+# ועקבי משרת את זה טוב יותר מניסוח AI שמשתנה בכל פעם, ולא תלוי ביתרת קרדיט
+# Anthropic. {project_line} הוא שורה שלמה-אופציונלית (לא רק מילה) - ריקה
+# לגמרי אם project לא ידוע, כדי לא "למחוק" משפט באמצע הטקסט בצורה מגושמת.
+SPEED_TO_LEAD_OUTREACH_PROMPT = """\
+היי {customer_name}, תודה שהשארת פרטים אצלנו{project_line}!
+אני כאן בשביל לעזור - משווק מטעמנו יחזור אליך בהקדם האפשרי, אבל רציתי להיות בקשר כבר עכשיו.
+מה הכי חשוב לך בחיפוש? אשמח לכמה פרטים ראשוניים כדי שנוכל להתאים לך את הדירה/הפרויקט המתאים ביותר."""
+
+
+def generate_speed_to_lead_outreach_message(card: dict) -> str:
+    """הודעת הפתיחה היזומה הראשונה לליד חדש מקמפיין (Speed-to-Lead) - ראו
+    ההערה המלאה ב-SPEED_TO_LEAD_OUTREACH_PROMPT. תבנית קבועה (לא AI) -
+    customer_name/project_line מותאמים דינמית, שאר הטקסט קבוע. נשלחת **פעם
+    אחת בלבד** לכל ליד (server.py דואג שזה יקרה רק כש-is_new=True, ומשתיק
+    את ה-AI אוטומטית ברגע שהיא נשלחת - ראו _send_speed_to_lead_outreach_and_mute)."""
+    prompt_template = prompts.get_prompt("speed_to_lead_outreach", SPEED_TO_LEAD_OUTREACH_PROMPT)
+    project = (card.get("project") or "").strip()
+    project_line = f" בנוגע ל{project}" if project else ""
+    return prompt_template.format(
+        customer_name=card.get("customer_name") or "לקוח/ה יקר/ה",
+        project_line=project_line,
+    )
+
+
 def update_activity_summary(phone: str, summary: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
     """מעדכן תקציר פעילות קצר (activity_summary) שמתעדכן אוטומטית אחרי כל הודעה
     נכנסת (ראו server.py._process_incoming_message_job, מבוסס extract.

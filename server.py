@@ -90,6 +90,7 @@ try:
         generate_executive_summary,
         generate_meeting_booking_confirmation_message,
         generate_missing_fields_message,
+        generate_speed_to_lead_outreach_message,
         get_missing_fields,
         import_lead,
         load_customers,
@@ -900,8 +901,9 @@ def api_create_lead():
     if status not in VALID_LEAD_STATUSES:
         status = None
 
+    resolved_phone = resolve_existing_phone(phone, tenant_id=tenant_id)
     card, is_new = import_lead(
-        resolve_existing_phone(phone, tenant_id=tenant_id),
+        resolved_phone,
         tenant_id=tenant_id,
         customer_name=(data.get("customer_name") or "").strip() or None,
         business_name=(data.get("business_name") or "").strip() or None,
@@ -911,7 +913,21 @@ def api_create_lead():
         category=(data.get("category") or "").strip() or None,
         agent=(data.get("agent") or "").strip() or None,
         client_id=_requested_client_id(data) or None,
+        project=(data.get("project") or "").strip() or None,
     )
+    # Speed-to-Lead: ליד חדש-לגמרי (is_new=True) שנכנס דרך הנתיב הזה - בין אם
+    # טופס/אינטגרציה חיצונית שמזינה את ה-DB (Zapier/Meta Lead Ads/דף נחיתה -
+    # זה בפועל ה-webhook target הטבעי להם) ובין אם נציג הוסיף ליד ידנית
+    # מהדשבורד - נחשב "ליד חדש מקמפיין" (ראו ההערה המלאה ב-
+    # _send_speed_to_lead_outreach_and_mute). **לא** חל על ייבוא קובץ מרוכז
+    # (/api/leads/import, extract.import_lead ישירות) - שם אין את הקריאה
+    # הזו בכלל, כדי לא "להפציץ" בוואטסאפ עשרות/מאות לידים היסטוריים בבת-אחת.
+    if is_new:
+        threading.Thread(
+            target=_send_speed_to_lead_outreach_and_mute,
+            args=(card, resolved_phone, tenant_id),
+            daemon=True, name=f"speed-to-lead-outreach-{resolved_phone}",
+        ).start()
     return jsonify({"ok": True, "card": card, "is_new": is_new})
 
 
@@ -2481,6 +2497,35 @@ def _send_auto_reply_after_delay(provider, contact_id: str, reply_text: str, ten
         )
 
 
+def _send_speed_to_lead_outreach_and_mute(card: dict, phone: str, tenant_id: str) -> None:
+    """Speed-to-Lead - פתיחה יזומה אוטומטית לליד חדש-לגמרי (is_new=True מ-
+    import_lead, ראו api_create_lead) - **לפני** שהליד בכלל כתב הודעה, לא
+    תגובה לשום דבר. מטרת ה-AI כאן היחידה: להיראות כנציג אנושי שעונה תוך
+    שניות ("Speed to Lead"), לחמם, ולהודיע שמשווק יחזור. **בלי** השהייה
+    אנושית מכוונת (בניגוד ל-_send_meeting_confirmation_after_delay) - כאן
+    המהירות היא בדיוק הדרישה העסקית, לא דבר שצריך להסוות.
+
+    ⚠️ אחרי ההודעה הזו - תמיד, גם אם השליחה עצמה נכשלה - ה-AI משתתק אוטומטית
+    ולחלוטין לליד הזה (update_lead_ai_enabled(..., False)) ולא ימשיך "לנהל
+    שיחה" בעצמו: מעבר לנקודה הזו, רק משווק אנושי (או הטריגר הצר של אישור
+    פגישה - ראו _detect_and_maybe_auto_confirm_scheduling, שרץ בלי שום תלות
+    ב-ai_enabled) ממשיכים את השיחה. זה ההבדל המרכזי מהמודל הקודם (AI יכול
+    לנהל שיחה פתוחה רב-תורות) - כאן זו ירייה אחת בלבד, במתכוון."""
+    try:
+        message = generate_speed_to_lead_outreach_message(card)
+        get_provider().send_message(phone, message)
+        log_manual_reply(phone, message, tenant_id=tenant_id, source_channel="speed_to_lead_outreach")
+        db.log_message(phone, message, direction="out", tenant_id=tenant_id, channel="speed_to_lead_outreach")
+    except Exception as exc:
+        logger.warning(
+            "שליחת הודעת Speed-to-Lead פתיחה נכשלה (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc,
+        )
+    finally:
+        # משתיקים את ה-AI תמיד, גם אם השליחה נכשלה - אותה מדיניות "חד-פעמי,
+        # בלי retry אוטומטי" כמו booking_confirmation_sent/reminder_sent וכו'.
+        update_lead_ai_enabled(phone, False, tenant_id=tenant_id)
+
+
 def _send_meeting_confirmation_after_delay(provider, task: dict) -> None:
     """Automated Meeting Booking Confirmation - שולחת הודעת אישור קביעת פגישה
     אחרי השהיה רנדומלית, אותה מדיניות בטיחות בדיוק כמו _send_auto_reply_after_
@@ -2635,6 +2680,12 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
                 contact_id, message_text, tenant_id=tenant_id, source_channel=source
             )
             db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
+            # Speed-to-Lead: "ירייה אחת בלבד" - ברגע שה-AI ענה בפועל, הוא
+            # משתתק אוטומטית לליד הזה (לא ממשיך "לנהל שיחה" פתוחה) - ראו
+            # ההערה המלאה ב-_send_speed_to_lead_outreach_and_mute. לא פוגע
+            # בטריגר זימון הפגישה (_detect_and_maybe_auto_confirm_scheduling
+            # למטה) - זה רץ בלי שום תלות ב-ai_enabled.
+            update_lead_ai_enabled(contact_id, False, tenant_id=tenant_id)
         else:
             # ai_enabled=False (שלב 5), או skip_reason (שיחת חולין לא-עסקית
             # מזוהה מליד/איש-קשר חדש) - עדיין מחלצים פרטים/מעדכנים כרטיס, אבל
@@ -2981,6 +3032,9 @@ def webhook(tenant_id: str = DEFAULT_TENANT_ID):
                         contact_id, message_text, tenant_id=tenant_id, source_channel=source
                     )
                     db.log_message(contact_id, reply_text, direction="out", tenant_id=tenant_id, channel=source)
+                    # Speed-to-Lead "ירייה אחת בלבד" - ראו ההערה המלאה בנתיב
+                    # האסינכרוני (_process_incoming_message_job) לעיל.
+                    update_lead_ai_enabled(contact_id, False, tenant_id=tenant_id)
                 else:
                     # ai_enabled=False (שלב 5) או DRY_RUN=true (שלב 6) - בלי מענה
                     # אוטומטי; ה-TwiML למטה יחזור ריק (בלי <Message>), בדיוק כמו
