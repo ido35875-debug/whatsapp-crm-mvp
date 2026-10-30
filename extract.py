@@ -731,19 +731,59 @@ def generate_qualification_handoff_message(card: dict) -> str:
     return prompts.get_prompt("qualification_handoff_need_name", QUALIFICATION_HANDOFF_NEED_NAME_PROMPT)
 
 
-def increment_qualification_turn(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> int:
-    """מגדילה ב-1 את מספר תורות בירור הצרכים שבוצעו לליד הזה (qualification_
-    turns, ברירת מחדל 0) ומחזירה את הערך המעודכן - קורא (server.py) משתמש בו
-    כדי לדעת אם זו התגובה האחרונה המותרת (מקסימום 2, ראו ההערה המלאה ב-
-    server._run_lead_qualification_turn). שדה מונה-בלבד, לא קשור ל-history."""
+def apply_qualification_turn_result(
+    phone: str,
+    reply_text: str,
+    tenant_id: str = DEFAULT_TENANT_ID,
+    source_channel: str = "whatsapp",
+    purpose: str | None = None,
+    property_type: str | None = None,
+    customer_name: str | None = None,
+    mute: bool = False,
+) -> dict:
+    """מיישמת את **כל** תוצאת תור בירור הצרכים הקצר (ראו server._run_lead_
+    qualification_turn/sales_agent.run_qualification_turn) במחזור load_
+    customers→save_customers **אחד בלבד** - לא ארבע קריאות נפרדות (מונה
+    התורות, update_lead_fields, רישום ההודעה היוצאת, ואולי update_lead_
+    ai_enabled), שכל אחת מהן קודם עשתה load+save משלה.
+
+    ⚠️ זה קריטי לעמידות בפני קריסה/אתחול שרת (Postgres, DATABASE_URL מוגדר):
+    save_customers→db.replace_customers_rows כותבת שורה שהשתנתה בטרנזקציה
+    אחת (INSERT...ON CONFLICT DO UPDATE + commit יחיד) - ולכן מספר התורות,
+    השדות שנאספו (purpose/property_type/customer_name), ההודעה שנרשמה
+    ו-ai_enabled **כולם מתעדכנים יחד, אטומית, או לא מתעדכנים כלל** אם השרת
+    קרס/התאפס בדיוק באמצע התור הזה. ארבע קריאות נפרדות (המודל הקודם) היו
+    חושפות חלון-קריסה אמיתי: למשל qualification_turns עולה ל-2 (ומגבלת
+    ה-2-תורות הקשיחה "נעולה"), אבל ai_enabled נשאר True וההודעה שסוכמה
+    בפועל אף פעם לא נרשמה - מצב-ביניים לא-עקבי שהמערכת לא הייתה "זוכרת"
+    נכון בהמשך.
+
+    מחזירה את הכרטיס המעודכן."""
     customers = load_customers()
     key = _customer_key(tenant_id, phone)
     card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    turns = int(card.get("qualification_turns") or 0) + 1
-    card["qualification_turns"] = turns
+
+    card["qualification_turns"] = int(card.get("qualification_turns") or 0) + 1
+
+    def _set(field: str, value: str | None) -> None:
+        if value:
+            card[field] = value.strip()
+
+    _set("purpose", purpose)
+    _set("property_type", property_type)
+    _set("customer_name", customer_name)
+
+    _append_history(card, source_channel, reply_text, direction="out")
+    if card.get("lead_status") in (None, "", "new", "follow_up", "no_answer"):
+        card["lead_status"] = "contacted"
+        card["status_changed_at"] = datetime.now(timezone.utc).isoformat()
+
+    if mute:
+        card["ai_enabled"] = False
+
     customers[key] = card
     save_customers(customers)
-    return turns
+    return card
 
 
 def mark_speed_to_lead_outreach_sent(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:

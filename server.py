@@ -85,6 +85,7 @@ try:
     from extract import (
         DEFAULT_TENANT_ID,
         VALID_LEAD_STATUSES,
+        apply_qualification_turn_result,
         delete_lead,
         generate_call_summary,
         generate_executive_summary,
@@ -94,13 +95,11 @@ try:
         generate_speed_to_lead_outreach_message,
         get_missing_fields,
         import_lead,
-        increment_qualification_turn,
         load_customers,
         log_call_summary,
         log_manual_reply,
         mark_speed_to_lead_outreach_sent,
         process_message,
-        record_automated_reply,
         rekey_lead,
         resolve_existing_phone,
         update_activity_summary,
@@ -2542,44 +2541,40 @@ def _run_lead_qualification_turn(card: dict, contact_id: str, message_text: str,
     """תור אחד בבירור הצרכים הקצר - מחליטה אם לשאול עוד שאלה אחת (ראו
     sales_agent.QUALIFICATION_PROMPT) או לסגור את הבירור ולהעביר "למנהל
     הפרויקט" (הודעת-תבנית קבועה, לא AI free-form - ראו extract.
-    generate_qualification_handoff_message), כותבת את השדות שחולצו (purpose/
-    property_type/customer_name) ל-DB, ומשתיקה את ה-AI אוטומטית **רק** בתור
-    הסוגר. מחזירה את טקסט ההודעה שנשלחה בפועל, לשמירה/שליחה ע"י הקורא.
+    generate_qualification_handoff_message), ומיישמת את כל תוצאת התור -
+    מונה התורות, השדות שחולצו (purpose/property_type/customer_name), רישום
+    ההודעה היוצאת, וה-mute אם זה התור הסוגר - **בכתיבה אטומית אחת** (ראו
+    extract.apply_qualification_turn_result: קריטי לעמידות בפני קריסה/
+    אתחול שרת - אחרת היה אפשר "להיתקע" ב-state חצי-מעודכן). מחזירה את טקסט
+    ההודעה שנשלחה בפועל, לשמירה/שליחה ע"י הקורא.
 
     ⚠️ הקוד כאן, לא ה-AI, אוכף את מגבלת ה-MAX_QUALIFICATION_TURNS הקשיחה -
     run_qualification_turn היא ניתוח-בלבד (ראו docstring שלה), וה-AI עלול
     להעריך is_complete=False לנצח אם משהו בניסוח לא ברור; בלי אכיפה קשיחה
-    כאן, השיחה הייתה יכולה להימשך בלי סוף במקום "עד 2 תגובות" כמו שהוגדר."""
-    turn_number = increment_qualification_turn(contact_id, tenant_id=tenant_id)
+    כאן, השיחה הייתה יכולה להימשך בלי סוף במקום "עד 2 תגובות" כמו שהוגדר.
+
+    turn_number נגזר מ-card (שנטען טרי קודם ב-process_message, ראו הקורא) -
+    לא מתוך כתיבה קודמת ל-DB, בדיוק כדי שלא יהיה צורך בשתי כתיבות נפרדות
+    (אחת למונה, אחת לכל השאר)."""
+    turn_number = int(card.get("qualification_turns") or 0) + 1
     result = sales_agent.run_qualification_turn(message_text, history_text, card, turn_number)
 
-    update_lead_fields(
-        contact_id, tenant_id=tenant_id,
-        purpose=result.get("purpose"), property_type=result.get("property_type"),
-        customer_name=result.get("customer_name"),
-    )
-    # הכרטיס המקומי (card, בפרמטר) עדיין משקף את המצב *לפני* העדכון למעלה -
-    # צריך אותו מעודכן (בעיקר customer_name) כדי ש-generate_qualification_
-    # handoff_message תדע אם השם כבר ידוע.
-    updated_card = load_customers().get(f"{tenant_id}::{contact_id}") or card
-
     force_close = turn_number >= MAX_QUALIFICATION_TURNS or result.get("is_complete")
+    # effective_name - השם שכבר ידוע על הכרטיס *או* זה שחולץ הרגע מההודעה
+    # הנוכחית (עדיין לא נכתב ל-DB בשלב הזה) - כדי ש-generate_qualification_
+    # handoff_message תבחר נכון בין שתי הגרסאות (עם/בלי בקשת שם) גם בתור
+    # שבו השם מתגלה לראשונה.
+    effective_name = result.get("customer_name") or card.get("customer_name")
     if force_close:
-        message = generate_qualification_handoff_message(updated_card)
+        message = generate_qualification_handoff_message({"customer_name": effective_name})
     else:
-        message = result.get("reply") or generate_qualification_handoff_message(updated_card)
+        message = result.get("reply") or generate_qualification_handoff_message({"customer_name": effective_name})
 
-    # רושם ב-history המוטבע בכרטיס + מקדם lead_status ל-"contacted" - אותה
-    # לוגיקה בדיוק שתגובה-אוטומטית "רגילה" כבר עושה (ראו extract.
-    # record_automated_reply/process_message_with_reply) - card (בפרמטר)
-    # מנתב את הקריאה הזו ל-process_message בלבד, בלי הצעד הזה היה חסר.
-    record_automated_reply(contact_id, message, tenant_id=tenant_id, source_channel="whatsapp")
-
-    if force_close:
-        # משתיקים **רק** בתור הסוגר - לא בכל תור, בניגוד למודל "ירייה אחת
-        # בלבד" הקודם (_send_speed_to_lead_outreach) שהוחלף כאן בבירור
-        # צרכים של עד MAX_QUALIFICATION_TURNS תורות.
-        update_lead_ai_enabled(contact_id, False, tenant_id=tenant_id)
+    apply_qualification_turn_result(
+        contact_id, message, tenant_id=tenant_id, source_channel="whatsapp",
+        purpose=result.get("purpose"), property_type=result.get("property_type"),
+        customer_name=result.get("customer_name"), mute=force_close,
+    )
     return message
 
 
