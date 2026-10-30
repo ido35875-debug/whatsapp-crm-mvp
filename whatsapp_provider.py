@@ -229,8 +229,20 @@ class GreenAPIProvider(WhatsAppProvider):
 
     def send_message(self, to: str, text: str) -> str:
         text = strip_emojis(text)
-        digits = to.replace("whatsapp:", "").replace("+", "").strip()
+        # ⚠️ באג שתוקן: בלי נרמול, הודעה שמגיעה עם מספר לא-E.164 מלא (למשל
+        # פורמט מקומי ישראלי "0501234567" - קורה בפועל ללידים ישנים/מיובאים
+        # מ-CSV לפני שהנרמול הזה היה קיים בכלל, ראו resolve_existing_phone)
+        # בונה chatId שגוי ("0501234567@c.us") - Green API מקבל את הבקשה
+        # (200 + idMessage, בלי לזרוק חריגה) אבל ההודעה לא מגיעה בפועל לשום
+        # מכשיר אמיתי. זו בדיוק אותה מחלקת-תקלה שכבר תועדה ותוקנה ב-
+        # UltraMsgProvider.send_message (ראו שם) - פשוט לא הוחל כאן אז.
+        # משתמשים ב-_to_e164 המשותף (whatsapp_send.py, אותה לוגיקה בדיוק
+        # ש-Twilio/UltraMsg כבר משתמשים בה - לא כפילות).
+        from whatsapp_send import _to_e164
+        raw = to.replace("whatsapp:", "").strip()
+        digits = _to_e164(raw).lstrip("+")
         chat_id = f"{digits}@c.us"
+        logger.info("[GreenAPIProvider] שליחה אל chatId=%r (מקור: %r)", chat_id, to)
         resp = requests.post(self._url("sendMessage"), json={"chatId": chat_id, "message": text}, timeout=15)
         resp.raise_for_status()
         data = resp.json()
