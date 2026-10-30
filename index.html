@@ -1708,7 +1708,12 @@
         <span id="panelName">היסטוריית הודעות</span>
         <span class="live-badge" title="חלון חי - מתעדכן אוטומטית">🟢 חי</span>
       </h2>
-      <p id="panelSub"></p>
+      <!-- dir="ltr" מפורש - בלי זה, מספר טלפון עם "+" בתוך עמוד RTL (ראו
+           <html dir="rtl">) יכול להיראות עם ה-"+" "קופץ" לסוף המספר ויזואלית
+           (באג bidi מוכר) - נציג שמעתיק טקסט "כמו שהוא" מקבל בפועל "+" בסוף
+           המחרוזת, לא בהתחלה. ראו התיקון התואם ב-whatsapp_send._to_e164 -
+           זה כאן מונע את הבעיה *במקור* (לא רק מתקן אותה אחרי שקרתה). -->
+      <p id="panelSub" dir="ltr"></p>
     </div>
     <button type="button" class="panel-chatdrawer-toggle" id="panelChatDrawerToggle">
       <i data-lucide="message-circle" class="h-4 w-4"></i><span>צ'אט וואטסאפ</span>
@@ -1762,7 +1767,9 @@
           </div>
           <div class="lead-field">
             <label for="panelFieldPhone">טלפון</label>
-            <input type="text" id="panelFieldPhone" disabled>
+            <!-- dir="ltr" - ראו ההערה המלאה ליד panelSub לעיל (RTL bidi
+                 "+" במספר טלפון) -->
+            <input type="text" id="panelFieldPhone" dir="ltr" disabled>
           </div>
           <div class="lead-field">
             <label for="panelFieldEmail">אימייל</label>
@@ -1895,7 +1902,8 @@
   <div class="panel-header">
     <div>
       <h2 id="callPanelName">שיחה</h2>
-      <p id="callPanelSub"></p>
+      <!-- dir="ltr" - ראו ההערה המלאה ליד panelSub -->
+      <p id="callPanelSub" dir="ltr"></p>
     </div>
     <button class="panel-close" id="callPanelClose" aria-label="סגור">✕</button>
   </div>
@@ -1906,7 +1914,8 @@
   <div class="panel-header">
     <div>
       <h2 id="tasksPanelName">משימות</h2>
-      <p id="tasksPanelSub"></p>
+      <!-- dir="ltr" - ראו ההערה המלאה ליד panelSub -->
+      <p id="tasksPanelSub" dir="ltr"></p>
     </div>
     <button class="panel-close" id="tasksPanelClose" aria-label="סגור">✕</button>
   </div>
