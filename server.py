@@ -98,6 +98,7 @@ try:
         load_customers,
         log_call_summary,
         log_manual_reply,
+        mark_meeting_booked,
         mark_speed_to_lead_outreach_sent,
         process_message,
         rekey_lead,
@@ -851,6 +852,8 @@ def api_leads():
             "requirements": card.get("requirements"),
             "rooms": card.get("rooms"),
             "project": card.get("project"),
+            "purpose": card.get("purpose"),
+            "meeting_booked": card.get("meeting_booked", False),
             "email": card.get("email"),
             "address": card.get("address"),
             "activity_summary": card.get("activity_summary"),
@@ -2257,6 +2260,9 @@ def api_task_confirm(task_id):
     if not task:
         return jsonify({"error": "הצעה לא נמצאה, או שכבר טופלה"}), 404
 
+    if task.get("intent") in ("new", "reschedule"):
+        mark_meeting_booked(task["phone"], tenant_id=task["tenant_id"])
+
     if task.get("intent") == "new" and not task.get("booking_confirmation_sent"):
         provider = get_provider()
         threading.Thread(
@@ -2647,7 +2653,10 @@ def _maybe_auto_confirm_scheduling_proposal(proposal_id: int, intent_result: dic
         return
 
     task = db.confirm_task_proposal(proposal_id)
-    if not task or task.get("booking_confirmation_sent"):
+    if not task:
+        return
+    mark_meeting_booked(task["phone"], tenant_id=task["tenant_id"])
+    if task.get("booking_confirmation_sent"):
         return
     threading.Thread(
         target=_send_meeting_confirmation_after_delay,

@@ -805,6 +805,26 @@ def mark_speed_to_lead_outreach_sent(phone: str, tenant_id: str = DEFAULT_TENANT
     return card
 
 
+def mark_meeting_booked(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
+    """מסמנת meeting_booked=True על כרטיס הליד - שדה גלוי-ישירות על הכרטיס
+    (לא רק נגזר מ-calendar_tasks.task_type="meeting", ראו db._init_schema)
+    לתצוגה/סינון מהירים ברשימת לידים בלי join לטבלת המשימות. נקראת **רק**
+    מתוך db.confirm_task_proposal שהצליחה בפועל ל-intent "new"/"reschedule"
+    (ראו server.api_task_confirm/_maybe_auto_confirm_scheduling_proposal) -
+    כלומר יש כבר פגישה אמיתית מאושרת, לא רק הצעה שמחכה לאישור. דגל חד-כיווני
+    בכוונה (לא מתאפס אוטומטית בביטול פגישה) - "נקבעה פגישה בשלב מסוים בתהליך
+    מול הליד הזה" הוא עובדה היסטורית, גם אם המועד הספציפי השתנה/בוטל מאוחר
+    יותר; מי שרוצה את המועד/הסטטוס העדכני המדויק ימשיך להשתמש ב-calendar_
+    tasks (ראו GET /api/calendar/agenda)."""
+    customers = load_customers()
+    key = _customer_key(tenant_id, phone)
+    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+    card["meeting_booked"] = True
+    customers[key] = card
+    save_customers(customers)
+    return card
+
+
 def update_activity_summary(phone: str, summary: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
     """מעדכן תקציר פעילות קצר (activity_summary) שמתעדכן אוטומטית אחרי כל הודעה
     נכנסת (ראו server.py._process_incoming_message_job, מבוסס extract.
