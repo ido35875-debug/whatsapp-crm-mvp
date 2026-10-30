@@ -1888,7 +1888,13 @@ def api_call_notes(call_id):
     משוקף להיסטוריה/messages (extract.log_call_summary + db.log_message, channel=
     "voice") - כך שהוא מופיע אוטומטית בצ'אט הקיים (פאנל/Inbox) דרך אותו polling
     שכבר קיים, בלי קוד רינדור נוסף. עובד גם על call_id שנוצר במצב simulated - ולכן
-    ניתן לבדיקה מלאה גם בלי שיחת Twilio אמיתית."""
+    ניתן לבדיקה מלאה גם בלי שיחת Twilio אמיתית.
+
+    גם מפעיל זיהוי כוונת תזמון (_detect_and_maybe_auto_confirm_scheduling) על
+    ה-notes הגולמיים - אם הנציג כתב שנקבעה/עודכנה פגישה בשיחה הטלפונית, אותו
+    חריג מכוון לחוק בטיחות #1 שחל על הערה פנימית/webhook וואטסאפ (ראו
+    _process_note_entities_background) חל גם כאן: עדכון פיזי של הפגישה +
+    שליחת הודעת האישור הרשמית אוטומטית, בלי קליק נציג נוסף."""
     data = request.get_json(silent=True) or {}
     notes = (data.get("notes") or "").strip()
     if not notes:
@@ -1905,6 +1911,28 @@ def api_call_notes(call_id):
     updated_call = db.save_call_notes_and_summary(call_id, notes, summary)
     log_call_summary(phone, summary, tenant_id=tenant_id, simulated=simulated)
     db.log_message(phone, summary, direction="out", tenant_id=tenant_id, channel="voice", simulated=simulated)
+
+    # ⚠️ באג שתוקן: עד כאן, סיכום שיחה טלפונית שבו הנציג כתב שנקבעה/עודכנה
+    # פגישה (למשל "נקבעה פגישה ליום ראשון ב-11 בבוקר") לא הפעיל בכלל את
+    # זיהוי-התזמון/אישור-אוטומטי (ראו _detect_and_maybe_auto_confirm_
+    # scheduling) - לא כשל שקט/תנאי שחסם, פשוט הצינור הזה לא היה מחובר
+    # לנתיב הזה בכלל (רק ל-webhook וואטסאפ נכנס ול-הערה פנימית ב-CRM, ראו
+    # _process_note_entities_background). מריצים על notes (הטקסט הגולמי
+    # שהנציג הקליד/תימלל - ראו api_call_transcribe, שמזין את אותה תיבה) -
+    # לא על summary, מאותה סיבה שהערה פנימית ב-CRM מריצה על הטקסט הגולמי
+    # ולא על תקציר-AI: פחות אובדן פרטים מדויקים (תאריך/שעה).
+    try:
+        prior_messages = db.get_messages(phone, tenant_id=tenant_id)[:-1][-6:]
+        history_text = "\n".join(
+            f"[{'לקוח' if m['direction'] == 'in' else 'אנחנו'} · {m['channel']}] {m['message']}"
+            for m in prior_messages
+        )
+        _detect_and_maybe_auto_confirm_scheduling(notes, phone, tenant_id, history_text, get_provider())
+    except Exception as exc:
+        logger.warning(
+            "זיהוי כוונת תזמון מסיכום שיחה (scheduling_agent) נכשל (tenant=%s, טלפון=%s): %s",
+            tenant_id, phone, exc,
+        )
 
     return jsonify({"ok": True, "call": updated_call, "summary": summary})
 
