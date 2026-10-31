@@ -2619,6 +2619,13 @@ def _send_meeting_confirmation_after_delay(provider, task: dict) -> None:
     לא חוסמת את תגובת ה-HTTP ל-POST /api/tasks/<id>/confirm). נקראת **רק**
     אחרי ש-api_task_confirm כבר אישרה בפועל הצעת פגישה חדשה (intent="new") -
     האישור האנושי כבר קרה לפני שה-thread הזה נוצר בכלל."""
+    # ⚠️ phone/tenant_id נחלצים *אך ורק* מ-task (השורה שאושרה בפועל ב-
+    # db.confirm_task_proposal, ראו _maybe_auto_confirm_scheduling_proposal/
+    # api_task_confirm שקוראות לכאן) - אין כאן, ולא במקום אחר בצינור הזה,
+    # שום מספר-ברירת-מחדל/קבוע-סטטי. task["phone"] מגיע בתורו מ-create_
+    # scheduling_proposal, שקיבלה אותו כפרמטר phone מהקורא המקורי (contact_id
+    # מה-webhook הנכנס, או phone מכרטיס השיחה ב-api_call_notes) - שרשרת אחת
+    # ישירה, בלי אף נקודת-החלפה באמצע.
     phone, tenant_id = task["phone"], task["tenant_id"]
     try:
         card = load_customers().get(f"{tenant_id}::{phone}") or {"phone": phone, "tenant_id": tenant_id}
@@ -2627,9 +2634,15 @@ def _send_meeting_confirmation_after_delay(provider, task: dict) -> None:
         logger.warning("ייצור הודעת אישור פגישה נכשל (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc)
         return
 
+    lead_label = card.get("customer_name") or phone
+    logger.info(
+        "📨 שולח זימון לליד %s למספר %s (tenant=%s, task_id=%s) - ממתין %d-%d שניות (Human Delay) ואז שולח בפועל.",
+        lead_label, phone, tenant_id, task["id"], AUTO_REPLY_MIN_DELAY_SECONDS, AUTO_REPLY_MAX_DELAY_SECONDS,
+    )
     time.sleep(random.randint(AUTO_REPLY_MIN_DELAY_SECONDS, AUTO_REPLY_MAX_DELAY_SECONDS))
     try:
         provider.send_message(phone, message)
+        logger.info("✅ זימון נשלח בהצלחה לליד %s למספר %s (task_id=%s).", lead_label, phone, task["id"])
         log_manual_reply(phone, message, tenant_id=tenant_id, source_channel="meeting_confirmation")
         db.log_message(phone, message, direction="out", tenant_id=tenant_id, channel="meeting_confirmation")
     except Exception as exc:
