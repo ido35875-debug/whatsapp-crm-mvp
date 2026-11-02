@@ -862,15 +862,28 @@ def api_leads():
             "ai_enabled": card.get("ai_enabled", True),
             "missing_fields": get_missing_fields(card),
         }
-        if include_last_message:
-            last = db.get_last_message(phone, tenant_id=resolved_tenant_id)
+        leads.append(lead)
+
+    # ⚠️ תיקון ביצועים קריטי (Performance Sprint): עד כאן, include_last_message/
+    # include_score כל אחד קרא ל-db.get_last_message/compute_lead_score
+    # *בלולאה למעלה, ליד-ליד* - N+1 queries אמיתי. עם עשרות לידים וזמן-תגובה
+    # אמיתי מרשת ל-Postgres production (~0.7-1.5 שניות *לכל שאילתה בודדת*),
+    # זה הפך טעינה אחת של טבלת הלידים (שקוראת ל-endpoint הזה עם שני הדגלים
+    # יחד - ראו loadLeads ב-index.html) לעשרות שניות/כמה דקות - נראה בדיוק
+    # כמו "תקוע בלופ" בפרונט. עכשיו: 2 שאילתות סה"כ (אחת לכל דגל), לא 2×N.
+    pairs = [(lead["phone"], lead["tenant_id"]) for lead in leads]
+    if include_last_message:
+        last_messages = db.get_last_messages_bulk(pairs)
+        for lead in leads:
+            last = last_messages.get((lead["phone"], lead["tenant_id"]))
             lead["last_message"] = last["message"] if last else None
             lead["last_message_at"] = last["timestamp"] if last else None
             lead["last_message_direction"] = last["direction"] if last else None
             lead["last_message_simulated"] = bool(last["simulated"]) if last else False
-        if include_score:
-            lead["score"] = db.compute_lead_score(phone, tenant_id=resolved_tenant_id)
-        leads.append(lead)
+    if include_score:
+        scores = db.compute_lead_scores_bulk(pairs)
+        for lead in leads:
+            lead["score"] = scores.get((lead["phone"], lead["tenant_id"]), 1)
     return jsonify(leads)
 
 
@@ -1362,13 +1375,19 @@ def api_export_leads():
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(EXPORT_COLUMNS)
+    # אותו תיקון N+1 כמו ב-api_leads (ראו ההערה המלאה שם) - שאילתת ציונים
+    # אחת לכל הלידים המיוצאים, לא אחת לכל ליד בלולאה.
+    rows_to_export = []
     for key, card in load_customers().items():
         tenant_id, _, key_phone = key.partition("::")
         phone = card.get("phone", key_phone)
         resolved_tenant_id = card.get("tenant_id", tenant_id)
         if allowed_tenant_ids is not None and resolved_tenant_id not in allowed_tenant_ids:
             continue
-        score = db.compute_lead_score(phone, tenant_id=resolved_tenant_id)
+        rows_to_export.append((phone, resolved_tenant_id, card))
+    scores = db.compute_lead_scores_bulk([(phone, tid) for phone, tid, _ in rows_to_export])
+    for phone, resolved_tenant_id, card in rows_to_export:
+        score = scores.get((phone, resolved_tenant_id), 1)
         writer.writerow([
             card.get("customer_name") or "", phone, card.get("business_name") or "",
             card.get("location") or "", card.get("agent") or "", card.get("category") or "",

@@ -562,6 +562,37 @@ def get_last_message(phone: str, tenant_id: str = "default") -> dict | None:
         conn.close()
 
 
+def get_last_messages_bulk(phone_tenant_pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+    """כמו get_last_message, לכל הלידים *בבת-אחת* (שאילתת window function
+    אחת, לא N שאילתות נפרדות) - אותה בעיית N+1 בדיוק כמו compute_lead_
+    scores_bulk (ראו ההערה המלאה שם), GET /api/leads?include_last_message=1
+    קרא ל-get_last_message בלולאה, ליד-ליד."""
+    if not phone_tenant_pairs:
+        return {}
+    conn = _get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        conditions = " OR ".join("(phone = ? AND tenant_id = ?)" for _ in phone_tenant_pairs)
+        params = [v for pair in phone_tenant_pairs for v in pair]
+        rows = conn.execute(
+            f"SELECT phone, tenant_id, channel, direction, message, timestamp, simulated FROM ("
+            f"SELECT phone, tenant_id, channel, direction, message, timestamp, simulated, "
+            f"ROW_NUMBER() OVER (PARTITION BY phone, tenant_id ORDER BY timestamp DESC) AS rn "
+            f"FROM messages WHERE ({conditions})"
+            f") AS ranked WHERE rn = 1",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        (r["phone"], r["tenant_id"]): {
+            "channel": r["channel"], "direction": r["direction"], "message": r["message"],
+            "timestamp": r["timestamp"], "simulated": bool(r["simulated"]),
+        }
+        for r in rows
+    }
+
+
 def log_scheduler_run(
     leads_scanned: int, leads_due: int, auto_send: bool, summary: str, tenant_id: str = "default"
 ) -> None:
@@ -1383,74 +1414,88 @@ _SCORE_TASK_POINTS, _SCORE_TASK_CAP = 5, 15
 _SCORE_RECENCY_BANDS = [(1, 25), (3, 18), (7, 10), (30, 4)]  # (גיל מקסימלי בימים, נקודות)
 
 
-def compute_lead_score(phone: str, tenant_id: str = "default") -> int:
-    """מחשב "ציון חום" (1-100) לליד על בסיס פעילות בפועל בטבלאות messages/calls/
-    calendar_tasks - ראו פירוט המשקלים מעל. משמש את GET /api/leads?include_score=1.
+def compute_lead_scores_bulk(phone_tenant_pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
+    """מחשב "ציון חום" (1-100) לכל הלידים הנתונים *בבת-אחת* - 4 שאילתות
+    סה"כ, לא 4×N. ⚠️ תיקון ביצועים קריטי (Performance Sprint): לפני זה היה
+    כאן compute_lead_score שחושב ציון ל*ליד בודד* וקראה ל-4 שאילתות משל
+    עצמה - GET /api/leads?include_score=1 (ראו server.py) קרא לה בלולאה,
+    ליד-ליד. עם עשרות לידים ולזמן-תגובה אמיתי מרשת ל-Postgres production
+    (~0.7-1.5 שניות *לכל שאילתה בודדת*, נמדד בפועל - ראו ההיסטוריה), 4
+    שאילתות × N לידים הפכו את טעינת טבלת הלידים לכמה *עשרות שניות ועד כמה
+    דקות* - נראה בדיוק כמו "תקוע בלופ" בפרונט, אבל זה N+1 queries אמיתי
+    בבקאנד, לא באג בלוגיקת ה-polling. compute_lead_score הוסרה כליל - אין
+    עוד קורא יחיד-ליד, רק זו.
 
-    הודעות פולו-אפ אוטומטיות (channel IN ('followup','followup_final') - ראו
-    scheduler.check_pending_followups) מוחרגות בכוונה גם ממניין ההודעות וגם
-    מ"עדכניות" (recency): אלו פניות **שלנו** יזמנו כלפי ליד ששקט, לא פעילות/
-    מעורבות אמיתית שלו - לספור אותן היה מנפח את הציון באופן מטעה בדיוק בשלב
-    שבו הליד בפועל מתקרר (זה ה"עדכון ציון" שקורה בפועל אחרי פולו-אפ 72 שעות
-    ללא מענה - הציון נשאר נמוך/יורד, לא מזנק כלאפי "פעילות חדשה")."""
+    משקלים: הודעות פולו-אפ אוטומטיות (channel IN ('followup','followup_final') -
+    ראו scheduler.check_pending_followups) מוחרגות בכוונה גם ממניין ההודעות
+    וגם מ"עדכניות" (recency): אלו פניות **שלנו** יזמנו כלפי ליד ששקט, לא
+    פעילות/מעורבות אמיתית שלו.
+
+    בונה תנאי OR לכל זוג (phone, tenant_id) - לא IN-על-זוגות (לא נתמך
+    בפשטות בשני הבאקאנדים כאחד), אבל עדיין 4 round-trips בלבד בלי קשר
+    לכמות הלידים. סביר-בבירור לגודל CRM אמיתי (עשרות-מאות לידים), לא
+    מיועד לאלפים."""
+    if not phone_tenant_pairs:
+        return {}
     conn = _get_connection()
     try:
-        # row_factory מפורש + גישה לפי שם עמודה (לא [0] עמדתי) - חובה כדי לעבוד
-        # נכון בשני הבאקאנדים: _PGConnection.execute משתמשת תמיד ב-RealDictCursor
-        # (שורה כ-dict לפי שם עמודה - [0] מעלה KeyError: 0 בפועל, לא IndexError!
-        # נתפס רק עכשיו, בריצה ראשונה אמיתית מול Postgres - ב-sqlite3 הסתמכות על
-        # tuple positional access "עבדה" בטעות, בלי row_factory מוגדר כלל).
-        # AS cnt/AS last_ts - בלי alias מפורש השם המשתמע (count/max) תלוי בגרסת/
-        # בהתנהגות ה-DB, לא ערובה חזקה כמו alias מוצהר.
         conn.row_factory = sqlite3.Row
-        message_count = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM messages WHERE phone = ? AND tenant_id = ? "
-            "AND channel NOT IN ('followup', 'followup_final')",
-            (phone, tenant_id),
-        ).fetchone()["cnt"]
-        call_count = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM calls WHERE phone = ? AND tenant_id = ?", (phone, tenant_id)
-        ).fetchone()["cnt"]
-        done_task_count = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM calendar_tasks WHERE phone = ? AND tenant_id = ? AND status = 'done'",
-            (phone, tenant_id),
-        ).fetchone()["cnt"]
-        last_activity = conn.execute(
-            "SELECT MAX(ts) AS last_ts FROM ("
-            "SELECT MAX(timestamp) AS ts FROM messages WHERE phone = ? AND tenant_id = ? "
-            "AND channel NOT IN ('followup', 'followup_final') "
-            "UNION ALL "
-            "SELECT MAX(created_at) AS ts FROM calls WHERE phone = ? AND tenant_id = ? "
-            "UNION ALL "
-            "SELECT MAX(updated_at) AS ts FROM calendar_tasks WHERE phone = ? AND tenant_id = ?"
-            ")",
-            (phone, tenant_id, phone, tenant_id, phone, tenant_id),
-        ).fetchone()["last_ts"]
+        conditions = " OR ".join("(phone = ? AND tenant_id = ?)" for _ in phone_tenant_pairs)
+        params = [v for pair in phone_tenant_pairs for v in pair]
+
+        message_rows = conn.execute(
+            f"SELECT phone, tenant_id, COUNT(*) AS cnt FROM messages "
+            f"WHERE ({conditions}) AND channel NOT IN ('followup', 'followup_final') "
+            f"GROUP BY phone, tenant_id",
+            params,
+        ).fetchall()
+        call_rows = conn.execute(
+            f"SELECT phone, tenant_id, COUNT(*) AS cnt FROM calls WHERE ({conditions}) GROUP BY phone, tenant_id",
+            params,
+        ).fetchall()
+        task_rows = conn.execute(
+            f"SELECT phone, tenant_id, COUNT(*) AS cnt FROM calendar_tasks "
+            f"WHERE ({conditions}) AND status = 'done' GROUP BY phone, tenant_id",
+            params,
+        ).fetchall()
+        last_activity_rows = conn.execute(
+            f"SELECT phone, tenant_id, MAX(ts) AS last_ts FROM ("
+            f"SELECT phone, tenant_id, timestamp AS ts FROM messages "
+            f"WHERE ({conditions}) AND channel NOT IN ('followup', 'followup_final') "
+            f"UNION ALL "
+            f"SELECT phone, tenant_id, created_at AS ts FROM calls WHERE ({conditions}) "
+            f"UNION ALL "
+            f"SELECT phone, tenant_id, updated_at AS ts FROM calendar_tasks WHERE ({conditions})"
+            f") AS combined GROUP BY phone, tenant_id",
+            params * 3,
+        ).fetchall()
     finally:
         conn.close()
 
-    score = (
-        min(message_count * _SCORE_MESSAGE_POINTS, _SCORE_MESSAGE_CAP)
-        + min(call_count * _SCORE_CALL_POINTS, _SCORE_CALL_CAP)
-        + min(done_task_count * _SCORE_TASK_POINTS, _SCORE_TASK_CAP)
-    )
+    message_counts = {(r["phone"], r["tenant_id"]): r["cnt"] for r in message_rows}
+    call_counts = {(r["phone"], r["tenant_id"]): r["cnt"] for r in call_rows}
+    task_counts = {(r["phone"], r["tenant_id"]): r["cnt"] for r in task_rows}
+    last_activities = {(r["phone"], r["tenant_id"]): r["last_ts"] for r in last_activity_rows}
 
-    if last_activity:
-        # last_activity מגיע כ-str מ-sqlite (עמודת TIMESTAMP שם היא בפועל TEXT) אבל
-        # כ-datetime כבר מפוענח מ-psycopg2 ב-postgres (type adaptation אוטומטי לעמודת
-        # TIMESTAMP) - fromisoformat על datetime קיים היה מעלה TypeError. גם naive
-        # (בלי tzinfo, כי העמודה TIMESTAMP רגילה לא TIMESTAMPTZ) - מניחים UTC, כמו
-        # שכל שאר הקוד כבר כותב (datetime.now(timezone.utc).isoformat()).
-        last_activity_dt = last_activity if isinstance(last_activity, datetime) else datetime.fromisoformat(last_activity)
-        if last_activity_dt.tzinfo is None:
-            last_activity_dt = last_activity_dt.replace(tzinfo=timezone.utc)
-        age_days = (datetime.now(timezone.utc) - last_activity_dt).days
-        for max_age, points in _SCORE_RECENCY_BANDS:
-            if age_days <= max_age:
-                score += points
-                break
-
-    return max(1, min(100, score))
+    scores: dict[tuple[str, str], int] = {}
+    for pair in phone_tenant_pairs:
+        score = (
+            min(message_counts.get(pair, 0) * _SCORE_MESSAGE_POINTS, _SCORE_MESSAGE_CAP)
+            + min(call_counts.get(pair, 0) * _SCORE_CALL_POINTS, _SCORE_CALL_CAP)
+            + min(task_counts.get(pair, 0) * _SCORE_TASK_POINTS, _SCORE_TASK_CAP)
+        )
+        last_activity = last_activities.get(pair)
+        if last_activity:
+            last_activity_dt = last_activity if isinstance(last_activity, datetime) else datetime.fromisoformat(last_activity)
+            if last_activity_dt.tzinfo is None:
+                last_activity_dt = last_activity_dt.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - last_activity_dt).days
+            for max_age, points in _SCORE_RECENCY_BANDS:
+                if age_days <= max_age:
+                    score += points
+                    break
+        scores[pair] = max(1, min(100, score))
+    return scores
 
 
 def search_activity(query: str) -> list[tuple[str, str]]:

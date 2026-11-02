@@ -61,6 +61,11 @@
     --status-critical: #f87171;
     --status-critical-soft: rgba(248,113,113,0.16);
     --shadow: 0 14px 34px rgba(0,0,0,0.55);
+    /* צל עדין לכרטיסי-תוכן קטנים (lead-detail-card/bmby-tile/lead-top-widget) -
+       לא --glass-shadow (מיועד לפאנלים צפים, בלורי חזק מדי לכרטיס צפוף) -
+       Performance & UX Sprint (עיצוב פרימיום): עומק קל שמבדיל כרטיס מהרקע
+       בלי "להרעיש" ברשת צפופה של כרטיסים צמודים. */
+    --card-shadow: 0 1px 2px rgba(0,0,0,0.3), 0 4px 10px rgba(0,0,0,0.25);
     /* Glassmorphism - זהה מבנית לקודם (--glass-bg שקוף-חלקית מעל --page-bg-image,
        --glass-border-grad כטבעת 1px דרך מסכת ::before ב-.glass) - רק גוון indigo/
        slate במקום זהב. */
@@ -94,6 +99,7 @@
     --status-critical: #dc2626;
     --status-critical-soft: #fef2f2;
     --shadow: 0 8px 24px rgba(15,23,42,0.08);
+    --card-shadow: 0 1px 2px rgba(15,23,42,0.06), 0 4px 10px rgba(15,23,42,0.06);
     --glass-bg: linear-gradient(155deg, rgba(255,255,255,0.80), rgba(248,250,252,0.65));
     --glass-bg-solid: linear-gradient(155deg, rgba(255,255,255,0.97), rgba(248,250,252,0.96));
     --glass-border-grad: linear-gradient(135deg, rgba(79,70,229,0.35), rgba(255,255,255,0.6) 35%, rgba(79,70,229,0.12) 65%, rgba(255,255,255,0.8));
@@ -605,17 +611,21 @@
      flex:1 + min-width:0 - כש-panel-chatdrawer נפתח (ראו שם) העמודה הזו
      *מתכווצת בפועל* כדי לפנות לה מקום אמיתי, לא נחצית ע"י overlay מעליה. */
   #panel .panel-main { flex: 1; min-width: 0; overflow-y: auto; }
-  #panel .panel-main-inner { max-width: 980px; margin: 0 auto; padding: 24px 28px 60px; }
+  #panel .panel-main-inner { max-width: 980px; margin: 0 auto; padding: 18px 22px 44px; }
 
+  /* Performance & UX Sprint (עיצוב פרימיום): padding/margin הודקו (היו
+     20px 22px / 20px) + border-radius ירד מ-16px ל-12px (פחות "תפוח",
+     יותר enterprise) + box-shadow עדין חדש (--card-shadow) - קודם הכרטיסים
+     היו שטוחים לחלוטין (border בלבד), בלי שום תחושת עומק. */
   .lead-detail-card {
-    border-radius: 16px; padding: 20px 22px; margin-bottom: 20px;
-    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 18px; margin-bottom: 14px;
+    background: var(--surface-1); border: 1px solid var(--border); box-shadow: var(--card-shadow);
   }
   .lead-detail-card h3 {
-    margin: 0 0 16px; font-size: 14px; display: flex; align-items: center; gap: 8px;
+    margin: 0 0 12px; font-size: 13.5px; display: flex; align-items: center; gap: 8px;
   }
   .lead-field-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px 18px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px;
   }
   .lead-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
   .lead-field.lead-field-wide { grid-column: 1 / -1; }
@@ -624,7 +634,7 @@
   }
   .lead-field input, .lead-field textarea {
     width: 100%; box-sizing: border-box; font-family: inherit; font-size: 13.5px;
-    padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border);
+    padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
     background: var(--surface-2); color: var(--text-primary);
   }
   .lead-field input:focus, .lead-field textarea:focus { outline: none; border-color: var(--accent); }
@@ -637,11 +647,12 @@
      בדיוק כמו .stat-tile הקיים בעמוד הסקירה. "מועד פגישה" עבר ל-
      lead-top-widget (למטה) - לא עוד אריח כאן, ראו ההערה ב-HTML. */
   .bmby-tile-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;
   }
   .bmby-tile {
-    border-radius: 14px; padding: 14px 16px; background: var(--surface-2);
-    border: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px;
+    border-radius: 10px; padding: 11px 13px; background: var(--surface-2);
+    border: 1px solid var(--border); display: flex; flex-direction: column; gap: 5px;
+    box-shadow: var(--card-shadow);
   }
   .bmby-tile-icon { font-size: 20px; line-height: 1; }
   .bmby-tile-label {
@@ -658,10 +669,10 @@
      (לא רק כש-יש פולו-אפ) כדי שהעין תלך לשם תמיד; הטקסט *בתוכו* (ראו
      .empty למטה) הוא מה שמשתנה בין "יש"/"אין" - גדול+accent כש-יש,
      קטן+מעומעם כש-אין (לא נעלם/מוסתר - "No hidden or lost reminders"). */
-  .lead-top-widget { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  .lead-top-widget { display: flex; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
   .lead-top-widget-status, .lead-top-widget-followup, .lead-top-widget-meeting {
-    flex: 1; min-width: 240px; border-radius: 16px; padding: 16px 20px;
-    display: flex; flex-direction: column; gap: 8px;
+    flex: 1; min-width: 240px; border-radius: 12px; padding: 13px 16px;
+    display: flex; flex-direction: column; gap: 6px; box-shadow: var(--card-shadow);
   }
   .lead-top-widget-status { background: var(--surface-1); border: 1px solid var(--border); }
   .lead-top-widget-followup { background: var(--accent-soft); border: 2px solid var(--accent); }
@@ -1028,8 +1039,9 @@
   /* משימות מעקב (יומן) ומשוב מערכת */
   .mini-row-list { margin-bottom: 16px; }
   .task-row, .feedback-row {
-    border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 7px;
     display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px;
+    box-shadow: var(--card-shadow);
   }
   .task-row.clickable { cursor: pointer; }
   .task-row-main, .feedback-row-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -1553,8 +1565,8 @@
             <button type="submit" class="primary" id="inboxComposerSend">שלח</button>
           </form>
           <form id="inboxNoteForm" class="note-form">
-            <input type="text" id="inboxNoteInput" placeholder="🗒️ הוסף הערה פנימית (לא נשלח ללקוח)...">
-            <button type="submit" id="inboxNoteSend">הוסף הערה</button>
+            <input type="text" id="inboxNoteInput" placeholder="🗒️ סיכום שיחה פנימי (לא נשלח ללקוח)...">
+            <button type="submit" id="inboxNoteSend">הוסף סיכום שיחה</button>
           </form>
         </div>
       </section>
@@ -1878,8 +1890,8 @@
         <h3>🕒 יומן פעילות - שיחות, הערות ושינויי סטטוס</h3>
         <div class="panel-activity-notewrap">
           <form id="noteForm" class="note-form">
-            <input type="text" id="noteInput" placeholder="🗒️ הוסף הערה - לדוגמה: התקשרתי, מעוניין בדירת 4 חדרים...">
-            <button type="submit" id="noteSend">הוסף הערה</button>
+            <input type="text" id="noteInput" placeholder="🗒️ סיכום שיחה - לדוגמה: התקשרתי, מעוניין בדירת 4 חדרים...">
+            <button type="submit" id="noteSend">הוסף סיכום שיחה</button>
           </form>
         </div>
         <!-- טבלת יומן Enterprise - לא בועות צ'אט (אלו נשארות רק במגירת
@@ -2836,7 +2848,7 @@ function renderBubble(m) {
 // הוואטסאפ ממשיכה להשתמש ב-renderBubble (שיחה אמיתית, בועות כן מתאימות שם).
 const ACTIVITY_TYPE_META = {
   voice: { label: "שיחה", icon: "📞", source: "AI (סיכום שיחה)" },
-  note: { label: "הערה", icon: "🗒️", source: "נציג" },
+  note: { label: "סיכום שיחה", icon: "🗒️", source: "נציג" },
   status_change: { label: "שינוי סטטוס", icon: "🔄", source: "מערכת" },
 };
 function renderActivityRow(m) {
