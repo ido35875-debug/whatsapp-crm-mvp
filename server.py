@@ -1890,11 +1890,13 @@ def api_call_notes(call_id):
     שכבר קיים, בלי קוד רינדור נוסף. עובד גם על call_id שנוצר במצב simulated - ולכן
     ניתן לבדיקה מלאה גם בלי שיחת Twilio אמיתית.
 
-    גם מפעיל זיהוי כוונת תזמון (_detect_and_maybe_auto_confirm_scheduling) על
-    ה-notes הגולמיים - אם הנציג כתב שנקבעה/עודכנה פגישה בשיחה הטלפונית, אותו
-    חריג מכוון לחוק בטיחות #1 שחל על הערה פנימית/webhook וואטסאפ (ראו
+    גם מפעיל זיהוי כוונת תזמון (_detect_and_maybe_auto_confirm_scheduling,
+    ברקע - ראו _detect_scheduling_from_call_notes_background) על ה-notes
+    הגולמיים - אם הנציג כתב שנקבעה/עודכנה פגישה בשיחה הטלפונית, אותו חריג
+    מכוון לחוק בטיחות #1 שחל על הערה פנימית/webhook וואטסאפ (ראו
     _process_note_entities_background) חל גם כאן: עדכון פיזי של הפגישה +
-    שליחת הודעת האישור הרשמית אוטומטית, בלי קליק נציג נוסף."""
+    שליחת הודעת האישור הרשמית אוטומטית, בלי קליק נציג נוסף - ו**בלי** שהנציג
+    מחכה לזה (thread נפרד, לא חלק מתגובת ה-HTTP הזו)."""
     data = request.get_json(silent=True) or {}
     notes = (data.get("notes") or "").strip()
     if not notes:
@@ -1912,15 +1914,36 @@ def api_call_notes(call_id):
     log_call_summary(phone, summary, tenant_id=tenant_id, simulated=simulated)
     db.log_message(phone, summary, direction="out", tenant_id=tenant_id, channel="voice", simulated=simulated)
 
-    # ⚠️ באג שתוקן: עד כאן, סיכום שיחה טלפונית שבו הנציג כתב שנקבעה/עודכנה
-    # פגישה (למשל "נקבעה פגישה ליום ראשון ב-11 בבוקר") לא הפעיל בכלל את
-    # זיהוי-התזמון/אישור-אוטומטי (ראו _detect_and_maybe_auto_confirm_
-    # scheduling) - לא כשל שקט/תנאי שחסם, פשוט הצינור הזה לא היה מחובר
+    # ⚠️ באג שתוקן (זיהוי התזמון): עד כאן, סיכום שיחה טלפונית שבו הנציג כתב
+    # שנקבעה/עודכנה פגישה (למשל "נקבעה פגישה ליום ראשון ב-11 בבוקר") לא
+    # הפעיל בכלל את זיהוי-התזמון/אישור-אוטומטי - הצינור הזה לא היה מחובר
     # לנתיב הזה בכלל (רק ל-webhook וואטסאפ נכנס ול-הערה פנימית ב-CRM, ראו
     # _process_note_entities_background). מריצים על notes (הטקסט הגולמי
-    # שהנציג הקליד/תימלל - ראו api_call_transcribe, שמזין את אותה תיבה) -
-    # לא על summary, מאותה סיבה שהערה פנימית ב-CRM מריצה על הטקסט הגולמי
-    # ולא על תקציר-AI: פחות אובדן פרטים מדויקים (תאריך/שעה).
+    # שהנציג הקליד/תימלל) - לא על summary, אותה סיבה שהערה פנימית ב-CRM
+    # מריצה על הטקסט הגולמי: פחות אובדן פרטים מדויקים (תאריך/שעה).
+    #
+    # ⚠️ תיקון ביצועים (Performance Sprint): זה רץ ברקע (thread נפרד), לא
+    # סינכרונית בתוך ה-request - בדיוק כמו _process_note_entities_background.
+    # מדידה בפועל מול Postgres production: קריאת AI שנייה (detect_scheduling_
+    # intent, ~2 שניות) + עד כמה סיבובי DB נוספים (create_scheduling_proposal/
+    # confirm_task_proposal/mark_meeting_booked) היו מתווספים לפני כן *בתוך*
+    # תגובת ה-HTTP - הנציג היה ממתין לכל זה (בנוסף ל-generate_call_summary
+    # עצמה) לפני שהמסך בכלל מגיב. התוצאה (הצעת-פגישה/אישור-אוטומטי) לא
+    # מוצגת בתגובת ה-API הזו בכלל (reply_text/task לא חלק מה-response) -
+    # אין שום סיבה שהנציג יחכה לה.
+    threading.Thread(
+        target=_detect_scheduling_from_call_notes_background,
+        args=(notes, phone, tenant_id),
+        daemon=True, name=f"call-notes-scheduling-{call_id}",
+    ).start()
+
+    return jsonify({"ok": True, "call": updated_call, "summary": summary})
+
+
+def _detect_scheduling_from_call_notes_background(notes: str, phone: str, tenant_id: str) -> None:
+    """רץ ב-thread רקע מ-api_call_notes - ראו ההערה המלאה שם (תיקון ביצועים:
+    שתי קריאות AI + כמה סיבובי DB לא אמורים לחסום את תגובת ה-HTTP לנציג,
+    בדיוק כמו _process_note_entities_background להערה פנימית)."""
     try:
         prior_messages = db.get_messages(phone, tenant_id=tenant_id)[:-1][-6:]
         history_text = "\n".join(
@@ -1930,11 +1953,9 @@ def api_call_notes(call_id):
         _detect_and_maybe_auto_confirm_scheduling(notes, phone, tenant_id, history_text, get_provider())
     except Exception as exc:
         logger.warning(
-            "זיהוי כוונת תזמון מסיכום שיחה (scheduling_agent) נכשל (tenant=%s, טלפון=%s): %s",
+            "זיהוי כוונת תזמון מסיכום שיחה (scheduling_agent, רקע) נכשל (tenant=%s, טלפון=%s): %s",
             tenant_id, phone, exc,
         )
-
-    return jsonify({"ok": True, "call": updated_call, "summary": summary})
 
 
 @app.route("/api/calls/<int:call_id>/update", methods=["POST"])

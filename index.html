@@ -1047,6 +1047,10 @@
     font-size: 12px; font-weight: 700; color: var(--status-warning); text-transform: uppercase;
     letter-spacing: 0.6px; margin: 4px 0 10px;
   }
+  /* כותרות המקטעים "פגישות"/"פולו-אפים" ביומן המרוכז - אותו צבע כמו השורות
+     עצמן (task-row-type-*), כדי שההפרדה תהיה עקבית מהכותרת ועד השורה. */
+  .calendar-section-title-meeting { color: var(--status-good); }
+  .calendar-section-title-followup { color: var(--status-warning); }
   .task-row.proposal { border-color: var(--status-warning); background: var(--status-warning-soft); }
   .task-proposal-badge {
     display: inline-block; font-size: 11px; font-weight: 700; color: var(--status-warning);
@@ -1080,6 +1084,14 @@
   }
   .task-type-badge.meeting { background: var(--status-good-soft); color: var(--status-good); }
   .task-type-badge.followup { background: var(--surface-2); color: var(--text-secondary); }
+
+  /* Performance & UX Sprint (יומן צבעוני) - צבע על *כל השורה* (border+bg),
+     לא רק ה-badge הקטן למעלה - כדי שההבחנה פגישה/פולו-אפ תהיה ברורה במבט
+     חטוף בתצוגת היומן המרוכזת (loadCalendarPanel), בלי לקרוא טקסט בכלל.
+     אותם טוקנים בדיוק כמו task-type-badge/lead-top-widget-meeting - ירוק
+     לפגישה, כתום לפולו-אפ - לא צבעים חדשים, רק עקביים בכל מקום בולט. */
+  .task-row-type-meeting { border-color: var(--status-good); background: var(--status-good-soft); }
+  .task-row-type-followup { border-color: var(--status-warning); background: var(--status-warning-soft); }
 
   /* היסטוריית שיחות פר-ליד (📋) - כרטיס גבוה (לא שורה אופקית כמו task-row, כי
      יש כאן טקסט ארוך - הערות+תקציר), עם מצב עריכה שמחליף את התצוגה הרגילה */
@@ -1225,6 +1237,21 @@
   }
   .app-section { animation: section-fade-in .25s ease; }
   @keyframes section-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  /* Performance & UX Sprint: אינדיקטור "פועל" חזותי ל-.loading, שהיה עד כה
+     טקסט סטטי בלבד בכל מקום באפליקציה (עשרות קריאות ל-<div class="loading">) -
+     בלי שום סימן תנועה, פעולה שלוקחת כמה שניות (למשל שמירת סיכום שיחה) יכולה
+     להיראות "תקועה" גם כשהיא פשוט מעבדת. תוספת ויזואלית-בלבד, לא משנה טקסט/
+     מבנה בשום קריאה קיימת. */
+  .loading {
+    display: flex; align-items: center; gap: 9px; color: var(--text-secondary); font-size: 13px;
+  }
+  .loading::before {
+    content: ""; width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .quick-actions-menu[hidden] { display: none !important; }
   .quick-actions-menu button, .quick-actions-menu a.btn-link {
     width: 100%; text-align: start; justify-content: flex-start;
@@ -2719,16 +2746,33 @@ function wireKanbanDragAndDrop() {
       if (!data.phone) return;
 
       const newStatus = col.dataset.status;
+
+      // Optimistic UI (Performance & UX Sprint): מעבירים את הכרטיס לעמודה
+      // החדשה *מיידית* ב-DOM (allLeads מעודכן + renderKanban מסונכרן) - לפני
+      // שהבקשה לשרת אפילו נשלחה. גרירה-ושחרור היא פעולה שהמשתמש מצפה לראות
+      // תוצאה מיידית שלה (קונבנציה סטנדרטית) - לפני התיקון, הכרטיס "נשאר
+      // תקוע" בעמודה הישנה כמה שניות (POST + loadLeads המלא) לפני שהתזוזה
+      // נראית בכלל. שומרים את הסטטוס הקודם לשיקום אם הבקשה תיכשל.
+      const lead = allLeads.find(l => l.phone === data.phone && l.tenant_id === data.tenant);
+      const previousStatus = lead ? lead.lead_status : null;
+      if (lead) {
+        lead.lead_status = newStatus;
+        renderKanban();
+      }
+
       try {
         const res = await fetch("/api/leads/status", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ phone: data.phone, tenant_id: data.tenant, status: newStatus }),
         });
         if (!res.ok) throw new Error((await res.json()).error || ("HTTP " + res.status));
-        await loadLeads(); // מרענן allLeads + renderKanban (דרך ה-hook ב-loadLeads) עם המצב האמיתי מהשרת
+        // מרענן ברקע (לא await) - allLeads/הסטטיסטיקות יתעדכנו מהשרת, אבל
+        // המשתמש כבר ראה את התוצאה מיידית למעלה, אין צורך לחכות לזה.
+        loadLeads();
       } catch (err) {
         alert("עדכון סטטוס נכשל: " + err.message);
-        renderKanban(); // משחזר את הכרטיס לעמודה המקורית - allLeads לא השתנה כי הבקשה נכשלה
+        if (lead) lead.lead_status = previousStatus; // משחזר את המצב הקודם - הבקשה נכשלה
+        renderKanban();
       }
     });
   });
@@ -2776,7 +2820,7 @@ function renderBubble(m) {
   }
   const statusLabel = m.simulated
     ? "⚠️ סימולציה - לא נשלח בפועל"
-    : isVoice ? "📞 תקציר שיחה" : (dir === "out" ? "נשלח" : "התקבל");
+    : isVoice ? "📞 סיכום שיחה" : (dir === "out" ? "נשלח" : "התקבל");
   return `
     <div class="msg-row ${dir}" data-msg-id="${escapeHtml(String(m.id))}">
       <div class="bubble-wrap">
@@ -2791,7 +2835,7 @@ function renderBubble(m) {
 // table. בשימוש רק לציר הפעילות המרכזי (voice/note/status_change) - מגירת
 // הוואטסאפ ממשיכה להשתמש ב-renderBubble (שיחה אמיתית, בועות כן מתאימות שם).
 const ACTIVITY_TYPE_META = {
-  voice: { label: "שיחה", icon: "📞", source: "AI (תקציר שיחה)" },
+  voice: { label: "שיחה", icon: "📞", source: "AI (סיכום שיחה)" },
   note: { label: "הערה", icon: "🗒️", source: "נציג" },
   status_change: { label: "שינוי סטטוס", icon: "🔄", source: "מערכת" },
 };
@@ -3444,7 +3488,7 @@ function renderCallNotesForm() {
         <input type="file" id="callNotesAudioInput" accept="audio/*">
       </div>
       <div class="composer-error" id="callNotesError"></div>
-      <button type="submit" class="primary" id="callNotesSubmit">ייצר תקציר</button>
+      <button type="submit" class="primary" id="callNotesSubmit">ייצר סיכום שיחה</button>
     </form>
   `);
   document.getElementById("callNotesAudioInput").addEventListener("change", async (e) => {
@@ -3479,7 +3523,9 @@ function renderCallNotesForm() {
 }
 
 function renderCallSummarizing() {
-  renderCallBody('<div class="call-status-line">✍️ Claude מייצר תקציר...</div>');
+  // class="loading" בנוסף ל-call-status-line - מוסיף אינדיקטור-ספינר חזותי
+  // (ראו CSS) כדי שהמתנה של כמה שניות (AI מייצר תקציר) לא תיראה "תקועה".
+  renderCallBody('<div class="call-status-line loading">✍️ Claude מייצר סיכום שיחה...</div>');
 }
 
 function renderCallDone(summary) {
@@ -3487,7 +3533,7 @@ function renderCallDone(summary) {
     ? '<button type="button" class="primary" id="queueNextBtn">✅ סיום שיחה - לליד הבא בתור</button>'
     : "";
   renderCallBody(`
-    <div class="call-status-line">✅ התקציר נשמר בכרטיס הלקוח</div>
+    <div class="call-status-line">✅ סיכום השיחה נשמר בכרטיס הלקוח</div>
     <div class="call-summary-box">${escapeHtml(summary)}</div>
     ${nextBtn}
   `);
@@ -3543,7 +3589,7 @@ async function submitCallNotes(notesText) {
     // אוטומטית אם פאנל הצ'אט עדיין פתוח, בדיוק כמו כל הודעה יוצאת אחרת.
   } catch (err) {
     if (!activeCall) return;
-    renderCallBody('<div class="error">שגיאה בייצור התקציר: ' + escapeHtml(err.message) + "</div>");
+    renderCallBody('<div class="error">שגיאה בייצור סיכום השיחה: ' + escapeHtml(err.message) + "</div>");
   }
 }
 
@@ -3832,13 +3878,17 @@ function renderTaskRow(t, { showLead = false } = {}) {
   const attendanceMeta = t.attendance_status ? ATTENDANCE_STATUS_LABELS[t.attendance_status] : null;
   // הפרדה חזותית מלאה בין פגישה רשמית מול הלקוח (task_type="meeting" - נקבע
   // רק דרך db.confirm_task_proposal) לבין פולו-אפ רגיל - ראו ההערה המלאה
-  // ב-db._init_schema ליד task_type.
+  // ב-db._init_schema ליד task_type. Performance & UX Sprint: לא רק badge
+  // קטן יותר - כל השורה (border+background) צבועה כדי שההבחנה תהיה ברורה
+  // "במבט חטוף", בלי לקרוא טקסט - ירוק לפגישה, כתום לפולו-אפ (ראו CSS
+  // .task-row-type-meeting/.task-row-type-followup).
   const typeBadge = t.task_type === "meeting"
     ? '<span class="task-type-badge meeting">📅 פגישה רשמית</span>'
     : '<span class="task-type-badge followup">📞 פולו-אפ</span>';
+  const typeRowClass = t.task_type === "meeting" ? "task-row-type-meeting" : "task-row-type-followup";
 
   return `
-    <div class="task-row${t.status === "done" ? " done" : ""}${showLead ? " clickable" : ""}" data-task-id="${t.id}" data-phone="${escapeHtml(t.phone)}" data-tenant="${escapeHtml(t.tenant_id)}">
+    <div class="task-row ${typeRowClass}${t.status === "done" ? " done" : ""}${showLead ? " clickable" : ""}" data-task-id="${t.id}" data-phone="${escapeHtml(t.phone)}" data-tenant="${escapeHtml(t.tenant_id)}">
       <div class="task-row-main">
         ${typeBadge}
         <div class="task-row-title">${escapeHtml(t.title)}</div>
@@ -4242,11 +4292,11 @@ async function loadCalendarPanel() {
       ${proposals.map(t => renderTaskRow(t, { showLead: true })).join("")}
     ` : "";
     const meetingsSection = meetings.length ? `
-      <div class="calendar-section-title">📅 פגישות רשמיות מתוזמנות (${meetings.length})</div>
+      <div class="calendar-section-title calendar-section-title-meeting">📅 פגישות רשמיות מתוזמנות (${meetings.length})</div>
       ${meetings.map(t => renderTaskRow(t, { showLead: true })).join("")}
     ` : "";
     const followupsSection = followupTasks.length ? `
-      <div class="calendar-section-title">📞 משימות פולו-אפ (${followupTasks.length})</div>
+      <div class="calendar-section-title calendar-section-title-followup">📞 משימות פולו-אפ (${followupTasks.length})</div>
       ${followupTasks.map(t => renderTaskRow(t, { showLead: true })).join("")}
     ` : "";
     const tasksSection = (meetingsSection + followupsSection) ||
@@ -5173,6 +5223,12 @@ async function loadAiAgentsSection() {
     const callbacks = callbacksRes.ok ? await callbacksRes.json() : [];
     const proposals = proposalsRes.ok ? await proposalsRes.json() : [];
     const tasks = tasksRes.ok ? await tasksRes.json() : [];
+    // הפרדה מלאה בין פגישות רשמיות (task_type="meeting") לפולו-אפים - ראו
+    // ההערה המלאה ב-loadCalendarPanel/db._init_schema ליד task_type. היה
+    // חסר כאן (ביומן המרכזי בדשבורד הראשי) - כל ה-tasks נפלו לגוש אחד בלי
+    // שום הבחנה חזותית, בניגוד ליומן בפאנל פרטי הליד שכבר קיבל את התיקון.
+    const meetings = tasks.filter(t => t.task_type === "meeting");
+    const followupTasks = tasks.filter(t => t.task_type !== "meeting");
 
     const callbacksSection = callbacks.length ? `
       <div class="calendar-section-title">⏰ תזכורות חזרה ממתינות (${callbacks.length})</div>
@@ -5182,9 +5238,16 @@ async function loadAiAgentsSection() {
       <div class="calendar-section-title">🤖 הצעות ממתינות לאישור (${proposals.length})</div>
       ${proposals.map(t => renderTaskRow(t, { showLead: true })).join("")}
     ` : "";
-    body.innerHTML = callbacksSection + proposalsSection + (tasks.length
-      ? tasks.map(t => renderTaskRow(t, { showLead: true })).join("")
-      : (callbacks.length || proposals.length ? "" : '<div class="empty">אין משימות פתוחות ✅</div>'));
+    const meetingsSection = meetings.length ? `
+      <div class="calendar-section-title calendar-section-title-meeting">📅 פגישות רשמיות מתוזמנות (${meetings.length})</div>
+      ${meetings.map(t => renderTaskRow(t, { showLead: true })).join("")}
+    ` : "";
+    const followupsSection = followupTasks.length ? `
+      <div class="calendar-section-title calendar-section-title-followup">📞 משימות פולו-אפ (${followupTasks.length})</div>
+      ${followupTasks.map(t => renderTaskRow(t, { showLead: true })).join("")}
+    ` : "";
+    body.innerHTML = callbacksSection + proposalsSection + ((meetingsSection + followupsSection) ||
+      (callbacks.length || proposals.length ? "" : '<div class="empty">אין משימות פתוחות ✅</div>'));
     body.querySelectorAll(".task-confirm-btn, .task-reject-btn, .task-done-btn, .task-cancel-btn, .task-attendance-btn").forEach(btn => {
       btn.addEventListener("click", async (e) => {
         const row = e.target.closest(".task-row");
@@ -5415,10 +5478,16 @@ document.addEventListener("change", async (e) => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
-    await loadLeads(); // מרענן את הטבלה + הסטטיסטיקות לפי הנתונים המעודכנים
-    panelChat.syncStatus(); // אם הפאנל פתוח לאותו ליד, מעדכן גם שם
-    inboxChat.syncStatus(); // ואותו דבר עבור ה-Unified Inbox אם פתוח
-    if (document.getElementById("inboxView").style.display !== "none") await loadInboxList();
+    // Performance & UX Sprint: משחררים את ה-select בחזרה *מיידית* אחרי
+    // שהשרת אישר - לא מחכים גם ל-loadLeads/syncStatus/loadInboxList (אלו
+    // רק מרעננים טבלה/סטטיסטיקות ברקע, לא משהו שהמשתמש חייב לראות לפני
+    // שיוכל להמשיך לעבוד). לפני התיקון, ה-select נשאר אפור ולא-לחיץ
+    // עד שכל ארבע הפעולות הסתיימו - עד כפול זמן ההמתנה בפועל.
+    select.disabled = false;
+    loadLeads();
+    panelChat.syncStatus();
+    inboxChat.syncStatus();
+    if (document.getElementById("inboxView").style.display !== "none") loadInboxList();
   } catch (err) {
     alert("עדכון סטטוס נכשל: " + err.message);
     await loadLeads(); // משחזר את הבחירה הקודמת מהשרת
@@ -5540,23 +5609,39 @@ document.addEventListener("change", async (e) => {
 
 // ---- פעולות בצע-בצוותא (בחירת שורות מרובה) ----
 document.getElementById("bulkApplyBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("bulkApplyBtn");
   const status = document.getElementById("bulkStatusSelect").value;
   const keys = [...selectedLeads];
-  for (const key of keys) {
-    const sep = key.indexOf("::");
-    const tenantId = key.slice(0, sep);
-    const phone = key.slice(sep + 2);
-    try {
-      await fetch("/api/leads/status", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, tenant_id: tenantId, status }),
-      });
-    } catch (err) {
-      console.error("עדכון בצע-בצוותא נכשל עבור", key, err);
-    }
+
+  // תיקון ביצועים (Performance & UX Sprint): היה for-loop עם await בפנים -
+  // N בקשות *בזה-אחר-זה*, כל אחת ~1.5-2 שניות מדודות בפועל מול Postgres
+  // production (לא תלוי בקוד הזה - זמן תגובת רשת ל-DB) - 10 לידים נבחרים
+  // היו לוקחים 15-20+ שניות לפני שהכפתור משתחרר בכלל. Promise.all מריץ את
+  // כל הבקשות *במקביל* - אותו מספר קריאות שרת, אבל זמן-קיר כולל ~בזמן בקשה
+  // אחת, לא N בקשות.
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = `מעדכן ${keys.length} לידים...`;
+  try {
+    await Promise.all(keys.map(async (key) => {
+      const sep = key.indexOf("::");
+      const tenantId = key.slice(0, sep);
+      const phone = key.slice(sep + 2);
+      try {
+        await fetch("/api/leads/status", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone, tenant_id: tenantId, status }),
+        });
+      } catch (err) {
+        console.error("עדכון בצע-בצוותא נכשל עבור", key, err);
+      }
+    }));
+    selectedLeads.clear();
+    await loadLeads();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
   }
-  selectedLeads.clear();
-  await loadLeads();
 });
 document.getElementById("bulkClearBtn").addEventListener("click", () => {
   selectedLeads.clear();
