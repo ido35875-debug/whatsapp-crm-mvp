@@ -1192,10 +1192,23 @@ def confirm_task_proposal(task_id: int) -> dict | None:
     לפי intent:
     - "cancel": מבטלת בפועל את הפגישה המקורית (related_task_id, status=
       'cancelled') - ורק אז מסמנת את שורת ההצעה עצמה כ-'done' (טופלה).
-    - "reschedule": מעדכנת את due_date/due_time של הפגישה המקורית לערכים
-      שהוצעו (ששמורים על שורת ההצעה עצמה) - ורק אז מסמנת את ההצעה כ-'done'.
-    - אחרת ("new", או הצעת cancel/reschedule בלי related_task_id תקין) -
-      שורת ההצעה עצמה הופכת לפגישה אמיתית (status='pending' רגיל)."""
+    - "reschedule", או "new" כש-related_task_id קיים (ראו ההערה למטה): מעדכנת
+      את due_date/due_time של הפגישה המקורית לערכים שהוצעו (ששמורים על שורת
+      ההצעה עצמה) - ורק אז מסמנת את ההצעה כ-'done'. "new" מטופל כאן **בדיוק**
+      כמו "reschedule" ברגע שיש related_task_id: לליד אחד יש לכל היותר פגישה
+      פתוחה אחת בכל רגע נתון (ראו find_related_task/scheduling_agent.py) -
+      אם הודעה חדשה מכריזה על פגישה כש-*כבר* יש פגישה פתוחה לליד הזה, מדובר
+      בהגדרה בעדכון אותה פגישה, לא בפגישה נוספת בלתי-תלויה, גם אם הניסוח
+      בהודעה עצמה לא הזכיר במפורש "הזזה"/"שינוי" (למשל "נקבעה פגישה ל-16:00"
+      כשכבר קיימת פגישה פתוחה ל-11:00 אותו ליד) - אחרת נוצרת פגישה כפולה:
+      הישנה (השגויה) נשארת פתוחה במקביל לחדשה (הנכונה), ושתיהן מוצגות
+      ב-UI/ביומן - ה-UI המציג "הפגישה הקרובה" (ממוין due_date/due_time עולה,
+      ראו db.get_tasks) מציג בפועל את הישנה/השגויה כי היא כרונולוגית קודמת
+      באותו יום, בזמן שהודעת האישור בוואטסאפ שנשלחה בפועל (built from the
+      proposal row עצמה) כבר הציגה את הזמן הנכון - בדיוק התקלה שדווחה.
+    - אחרת ("new" בלי related_task_id תקין, או הצעת cancel/reschedule בלי
+      related_task_id תקין) - שורת ההצעה עצמה הופכת לפגישה אמיתית (status=
+      'pending' רגיל)."""
     proposal = get_task(task_id)
     if not proposal or proposal["status"] != "pending_confirmation":
         return None
@@ -1205,7 +1218,7 @@ def confirm_task_proposal(task_id: int) -> dict | None:
     if intent == "cancel" and related_id and get_task(related_id):
         update_task_status(related_id, "cancelled")
         update_task_status(task_id, "done")
-    elif intent == "reschedule" and related_id and get_task(related_id):
+    elif intent in ("reschedule", "new") and related_id and get_task(related_id):
         update_task_datetime(related_id, proposal["due_date"], proposal["due_time"])
         # task_type="meeting" גם אם הפגישה המקורית נוצרה ידנית לפני התוספת הזו
         # (ללא task_type מפורש, default="followup") - ברגע שהיא מאושרת/מוזזת

@@ -1446,7 +1446,13 @@ def _process_note_entities_background(phone: str, tenant_id: str, text: str) -> 
     "" לא נשלח, רק ערכים שבאמת זוהו, כך שלא דורסים/מוחקים שדות קיימים בטעות),
     ומשימת פולו-אפ (status="pending", source="note_nlp", task_type="followup" -
     תזכורת-לעצמנו, לא פגישה מול הלקוח) נוצרת אם זוהתה כוונת תזמון כללית -
-    בדיוק כמו "⏰ חזור בהמשך" (openCallbackPanel), רק אוטומטי.
+    בדיוק כמו "⏰ חזור בהמשך" (openCallbackPanel), רק אוטומטי. אם לליד הזה
+    *כבר* יש משימת פולו-אפ פתוחה (status="pending", task_type="followup") -
+    מתעדכן התאריך/שעה שלה במקום ליצור שורה נוספת (אותה תקלת "שתי משימות
+    מקבילות - הישנה/השגויה מוצגת כ'הקרובה' כי היא כרונולוגית קודמת" שתוקנה
+    ל-task_type="meeting" ב-db.confirm_task_proposal/scheduling_agent.
+    find_related_task - פה המקבילה לפולו-אפים, שאין להם proposal/אישור
+    נציג ביניים, אז התיקון נעשה ישירות כאן).
 
     ⚠️ בנוסף: אם ההערה עצמה מתעדת בפועל קביעה/עדכון של **פגישה רשמית** מול
     הלקוח (למשל נציג מקליד "נקבעה פגישה ליום ראשון ב-10:00" כהערה על שיחה
@@ -1475,13 +1481,21 @@ def _process_note_entities_background(phone: str, tenant_id: str, text: str) -> 
 
     if entities.get("has_followup") and entities.get("followup_date"):
         try:
-            db.create_task(
-                phone, tenant_id=tenant_id, title="פולו-אפ (זוהה אוטומטית מהערה)",
-                due_date=entities["followup_date"], due_time=entities.get("followup_time"),
-                status="pending", source="note_nlp", task_type="followup",
+            existing_followups = db.get_tasks(
+                phone=phone, tenant_id=tenant_id, status="pending", task_type="followup",
             )
+            if existing_followups:
+                db.update_task_datetime(
+                    existing_followups[0]["id"], entities["followup_date"], entities.get("followup_time"),
+                )
+            else:
+                db.create_task(
+                    phone, tenant_id=tenant_id, title="פולו-אפ (זוהה אוטומטית מהערה)",
+                    due_date=entities["followup_date"], due_time=entities.get("followup_time"),
+                    status="pending", source="note_nlp", task_type="followup",
+                )
         except Exception as exc:
-            logger.warning("יצירת משימת פולו-אפ מ-NLP נכשלה (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc)
+            logger.warning("יצירת/עדכון משימת פולו-אפ מ-NLP נכשלה (tenant=%s, טלפון=%s): %s", tenant_id, phone, exc)
 
     try:
         # [:-1] - ההערה עצמה כבר נרשמה כ-message (channel="note") לפני שה-
@@ -2762,7 +2776,12 @@ def _detect_and_maybe_auto_confirm_scheduling(
     intent_result = scheduling_agent.detect_scheduling_intent(message_text, history_text=history_text)
     if not intent_result["has_intent"]:
         return
-    if intent_result["intent"] in ("cancel", "reschedule"):
+    # נבדקת לשלושת ה-intent-ים, לא רק cancel/reschedule: פגישה "חדשה" כש-כבר
+    # יש פגישה פתוחה לליד הזה היא בהגדרה עדכון שלה, לא פגישה כפולה (ראו
+    # ההערה המלאה ב-db.confirm_task_proposal) - זה התיקון לתקלה שדווחה: "11:00
+    # ישן" ו-"16:00 נכון" נשארו שני טאסקים מקבילים כי related_task_id מעולם
+    # לא חושב בשביל "new".
+    if intent_result["intent"] in ("cancel", "reschedule", "new"):
         related_task = scheduling_agent.find_related_task(phone, tenant_id)
     proposal_id = scheduling_agent.create_scheduling_proposal(
         phone, tenant_id, intent_result,

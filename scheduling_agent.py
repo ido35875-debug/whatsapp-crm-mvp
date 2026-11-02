@@ -129,13 +129,19 @@ def detect_scheduling_intent(message: str, history_text: str = "") -> dict:
 
 
 def find_related_task(phone: str, tenant_id: str) -> dict | None:
-    """מוצאת את הפגישה הקיימת (status='pending') הכי קרובה בזמן לליד הזה -
-    השערה סבירה ל"על איזו פגישה הלקוח מדבר" בבקשת ביטול/הזזת מועד
-    (db.get_tasks כבר ממיינת לפי due_date/due_time עולה - פגישה 1 היא
-    הבאה בתור). None אם אין אף פגישה פתוחה בכלל לליד הזה - הקורא
-    (create_scheduling_proposal) עדיין יוצר הצעה, רק בלי related_task_id,
-    כדי שהנציג ידע לבדוק ידנית איזו פגישה מדובר, במקום שההודעה "תיעלם"."""
-    pending = db.get_tasks(phone=phone, tenant_id=tenant_id, status="pending")
+    """מוצאת את הפגישה הקיימת (status='pending', task_type='meeting') הכי
+    קרובה בזמן לליד הזה - השערה סבירה ל"על איזו פגישה הלקוח מדבר" בבקשת
+    ביטול/הזזת מועד, **וגם** בהכרזה על פגישה "חדשה" כשכבר יש לליד הזה פגישה
+    פתוחה (ראו ההערה המלאה ב-db.confirm_task_proposal - לליד אחד יש לכל
+    היותר פגישה פתוחה אחת בכל רגע נתון, אז "פגישה חדשה" כש-אחת כבר פתוחה היא
+    בהגדרה עדכון שלה, לא פגישה כפולה). task_type='meeting' בכוונה (לא כל
+    status='pending', שכולל גם משימות follow-up) - אחרת בקשת תזמון פגישה
+    הייתה "מתייחסת" בטעות למשימת פולו-אפ-לעצמנו. db.get_tasks כבר ממיינת
+    לפי due_date/due_time עולה - פגישה 1 היא הבאה בתור. None אם אין אף
+    פגישה פתוחה בכלל לליד הזה - הקורא (create_scheduling_proposal) עדיין
+    יוצר הצעה, רק בלי related_task_id, כדי שהנציג ידע לבדוק ידנית איזו
+    פגישה מדובר, במקום שההודעה "תיעלם"."""
+    pending = db.get_tasks(phone=phone, tenant_id=tenant_id, status="pending", task_type="meeting")
     return pending[0] if pending else None
 
 
