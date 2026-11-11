@@ -212,16 +212,22 @@ class GreenAPIProvider(WhatsAppProvider):
     Green API אמיתי (ראו test_green_api.py לבדיקת חיבור/QR בנפרד); ה-shape
     שממומש כאן הוא הפורמט המתועד הרשמי, לא ניחוש."""
 
-    def __init__(self):
-        self.instance_id = os.environ.get("GREEN_API_INSTANCE_ID", "").strip()
-        self.token = os.environ.get("GREEN_API_TOKEN", "").strip()
+    def __init__(self, instance_id: str | None = None, token: str | None = None):
+        """instance_id/token אופציונליים - מאפשרים לבנות Provider עם אישורי
+        Green API ייעודיים של tenant ספציפי (ראו get_tenant_provider למטה),
+        בלי לגעת בהתנהגות הגלובלית הקיימת: כברירת מחדל (שני הפרמטרים None,
+        כמו שכל קוד קורא קיים כבר עושה) ממשיכים ליפול חזרה ל-.env הגלובלי
+        בדיוק כמו קודם."""
+        self.instance_id = (instance_id or os.environ.get("GREEN_API_INSTANCE_ID", "")).strip()
+        self.token = (token or os.environ.get("GREEN_API_TOKEN", "")).strip()
         if not (self.instance_id and self.token):
             raise RuntimeError(
-                "חסרים פרטי חיבור ל-Green API ב-.env: GREEN_API_INSTANCE_ID, GREEN_API_TOKEN"
+                "חסרים פרטי חיבור ל-Green API: GREEN_API_INSTANCE_ID, GREEN_API_TOKEN"
             )
         # GREEN_API_URL אופציונלי ב-.env - עוקף את הניחוש המחושב אם מוגדר (ראו
         # _default_green_api_url) - להעתקה ישירה מ"apiUrl" בלוח הבקרה, בלי תלות
-        # בכך שדפוס-הפרפיקס ימשיך להיות תקף.
+        # בכך שדפוס-הפרפיקס ימשיך להיות תקף. חל גם על instance ייעודי של
+        # tenant - אין GREEN_API_URL נפרד פר-tenant, רק הניחוש המחושב.
         self.api_url = os.environ.get("GREEN_API_URL", "").strip() or _default_green_api_url(self.instance_id)
 
     def _url(self, method: str) -> str:
@@ -477,6 +483,31 @@ def get_provider(name: str | None = None) -> WhatsAppProvider:
         else:
             raise ValueError(f"WHATSAPP_PROVIDER לא מוכר: {name!r} (נתמך: mock / green_api / twilio / ultramsg)")
     provider = _PROVIDER_INSTANCES[name]
+    if os.environ.get("DRY_RUN", "false").strip().lower() == "true":
+        return DryRunProviderProxy(provider)
+    return provider
+
+
+_TENANT_PROVIDER_INSTANCES: dict[str, WhatsAppProvider] = {}
+
+
+def get_tenant_provider(tenant_id: str) -> WhatsAppProvider:
+    """כמו get_provider, אבל בודקת קודם אם ל-tenant הזה יש Green API ייעודי
+    משלו (tenant_settings.get_green_api_credentials - ראו "4 ניסיונות פולו-אפ"
+    ב-scheduler.check_pending_followups, ה-caller היחיד כרגע) - אם כן, בונה
+    (ומטמנת per-tenant, לא לבנות requests.Session חדש בכל קריאה) GreenAPIProvider
+    עם האישורים הספציפיים שלו, עוטף ב-DryRunProviderProxy אם DRY_RUN=true
+    בדיוק כמו get_provider הרגיל. אם ל-tenant אין Green API משלו - נופלת חזרה
+    ל-get_provider() הגלובלי הרגיל (WHATSAPP_PROVIDER ב-.env), בדיוק כמו
+    tenant_settings.get_reactivation_days נופל לברירת המחדל הגלובלית."""
+    import tenant_settings
+    instance_id, token = tenant_settings.get_green_api_credentials(tenant_id)
+    if not (instance_id and token):
+        return get_provider()
+
+    if tenant_id not in _TENANT_PROVIDER_INSTANCES:
+        _TENANT_PROVIDER_INSTANCES[tenant_id] = GreenAPIProvider(instance_id=instance_id, token=token)
+    provider = _TENANT_PROVIDER_INSTANCES[tenant_id]
     if os.environ.get("DRY_RUN", "false").strip().lower() == "true":
         return DryRunProviderProxy(provider)
     return provider

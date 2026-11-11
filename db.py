@@ -1439,10 +1439,13 @@ def compute_lead_scores_bulk(phone_tenant_pairs: list[tuple[str, str]]) -> dict[
     בבקאנד, לא באג בלוגיקת ה-polling. compute_lead_score הוסרה כליל - אין
     עוד קורא יחיד-ליד, רק זו.
 
-    משקלים: הודעות פולו-אפ אוטומטיות (channel IN ('followup','followup_final') -
-    ראו scheduler.check_pending_followups) מוחרגות בכוונה גם ממניין ההודעות
-    וגם מ"עדכניות" (recency): אלו פניות **שלנו** יזמנו כלפי ליד ששקט, לא
-    פעילות/מעורבות אמיתית שלו.
+    משקלים: הודעות פולו-אפ אוטומטיות (channel IN scheduler._FOLLOWUP_CHANNELS -
+    'followup'/'followup_2'/'followup_3'/'followup_final', 4 השלבים - ראו
+    scheduler.check_pending_followups) מוחרגות בכוונה גם ממניין ההודעות וגם
+    מ"עדכניות" (recency): אלו פניות **שלנו** יזמנו כלפי ליד ששקט, לא פעילות/
+    מעורבות אמיתית שלו. ⚠️ הרשימה כאן מוזנת ישירות (לא import מ-scheduler -
+    db.py נטען לפני scheduler.py, ו-scheduler כבר מייבא db, אז import הפוך
+    כאן היה יוצר מעגליות) - אם _FOLLOWUP_CHANNELS משתנה שוב, לעדכן גם כאן.
 
     בונה תנאי OR לכל זוג (phone, tenant_id) - לא IN-על-זוגות (לא נתמך
     בפשטות בשני הבאקאנדים כאחד), אבל עדיין 4 round-trips בלבד בלי קשר
@@ -1458,7 +1461,7 @@ def compute_lead_scores_bulk(phone_tenant_pairs: list[tuple[str, str]]) -> dict[
 
         message_rows = conn.execute(
             f"SELECT phone, tenant_id, COUNT(*) AS cnt FROM messages "
-            f"WHERE ({conditions}) AND channel NOT IN ('followup', 'followup_final') "
+            f"WHERE ({conditions}) AND channel NOT IN ('followup', 'followup_2', 'followup_3', 'followup_final') "
             f"GROUP BY phone, tenant_id",
             params,
         ).fetchall()
@@ -1474,7 +1477,7 @@ def compute_lead_scores_bulk(phone_tenant_pairs: list[tuple[str, str]]) -> dict[
         last_activity_rows = conn.execute(
             f"SELECT phone, tenant_id, MAX(ts) AS last_ts FROM ("
             f"SELECT phone, tenant_id, timestamp AS ts FROM messages "
-            f"WHERE ({conditions}) AND channel NOT IN ('followup', 'followup_final') "
+            f"WHERE ({conditions}) AND channel NOT IN ('followup', 'followup_2', 'followup_3', 'followup_final') "
             f"UNION ALL "
             f"SELECT phone, tenant_id, created_at AS ts FROM calls WHERE ({conditions}) "
             f"UNION ALL "

@@ -68,3 +68,6 @@ cleaned_leads.xlsx
 Thumbs.db
 .vscode/
 .idea/
+
+# --- ייצוא מקומי של נתוני הנדל"ן מהפרודקשן (מידע אישי של לקוחות) ---
+data_realestate/

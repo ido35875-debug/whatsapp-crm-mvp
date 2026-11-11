@@ -1770,18 +1770,31 @@ def api_campaign_start(campaign_id):
 
 @app.route("/api/tenant-settings")
 def api_get_tenant_settings():
-    """הגדרות פר-tenant (כרגע רק reactivation_days) - קריאה בלבד, לשימוש פאנל
-    ההחייאה בדשבורד (טעינת הערך השמור כברירת מחדל בתיבת "לא נוצר קשר מעל __ ימים")."""
+    """הגדרות פר-tenant - קריאה בלבד, לשימוש פאנל ההחייאה/הגדרות בדשבורד
+    (טעינת הערכים השמורים כברירת מחדל). green_api_token **לא** מוחזר בטקסט
+    גלוי (ראו green_api_token_set) - instance_id/הודעת הפולו-אפ אינם סודיים
+    (לא יותר "רגישים" משדה reactivation_days), אבל הטוקן כן, ואין סיבה
+    שיחזור בכל טעינת עמוד רק כדי להציג בטופס עריכה."""
     tenant_id = request.args.get("tenant_id") or DEFAULT_TENANT_ID
-    return jsonify({"tenant_id": tenant_id, "reactivation_days": tenant_settings.get_reactivation_days(tenant_id)})
+    instance_id, token = tenant_settings.get_green_api_credentials(tenant_id)
+    return jsonify({
+        "tenant_id": tenant_id,
+        "reactivation_days": tenant_settings.get_reactivation_days(tenant_id),
+        "green_api_instance_id": instance_id,
+        "green_api_token_set": bool(token),
+        "followup_4th_message": tenant_settings.get_followup_4th_message(tenant_id),
+    })
 
 
 @app.route("/api/tenant-settings", methods=["POST"])
 def api_set_tenant_settings():
-    """שומר מרווח החייאה מותאם ל-tenant נתון - "כל עסק דורש חוקיות עסקית שונה
-    (קמעונאות מול נדל\"ן)": קמעונאות עשוי לרצות סף קצר (למשל 7 ימים), נדל"ן סף
-    ארוך יותר (למשל 30-60 יום). לא משפיע על scheduler.py (הסף האוטומטי הקיים
-    שם הוא פר-ורטיקל, לא פר-tenant - נשאר נפרד במכוון)."""
+    """שומר הגדרות פר-tenant: reactivation_days (כמו קודם), ובנוסף (אופציונלי,
+    כל שדה בנפרד - שולחים רק מה שרוצים לעדכן) Green API ייעודי לחברה הזו
+    (ראו whatsapp_provider.get_tenant_provider) והודעת הפולו-אפ-הרביעי
+    המותאמת-אישית שלה (ראו scheduler.check_pending_followups) - "כל סוכנות
+    תוכל להגדיר בעצמה" כפי שהתבקש. green_api_instance_id/green_api_token
+    חייבים להגיע **יחד** (לא ניתן לעדכן רק אחד מהשניים - צמד חסר-משמעות
+    בנפרד); לא נשלחים בכלל = לא נוגעים במה שכבר שמור."""
     data = request.get_json(silent=True) or {}
     tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
     try:
@@ -1791,7 +1804,24 @@ def api_set_tenant_settings():
     except (TypeError, ValueError):
         return jsonify({"error": "reactivation_days חייב להיות מספר שלם לא-שלילי"}), 400
     tenant_settings.set_reactivation_days(tenant_id, days)
-    return jsonify({"ok": True, "tenant_id": tenant_id, "reactivation_days": days})
+
+    instance_id = (data.get("green_api_instance_id") or "").strip()
+    token = (data.get("green_api_token") or "").strip()
+    if instance_id or token:
+        if not (instance_id and token):
+            return jsonify({"error": "green_api_instance_id ו-green_api_token חייבים להישלח יחד"}), 400
+        tenant_settings.set_green_api_credentials(tenant_id, instance_id, token)
+
+    followup_message = data.get("followup_4th_message")
+    if followup_message is not None and followup_message.strip():
+        tenant_settings.set_followup_4th_message(tenant_id, followup_message)
+
+    resp_instance_id, resp_token = tenant_settings.get_green_api_credentials(tenant_id)
+    return jsonify({
+        "ok": True, "tenant_id": tenant_id, "reactivation_days": days,
+        "green_api_instance_id": resp_instance_id, "green_api_token_set": bool(resp_token),
+        "followup_4th_message": tenant_settings.get_followup_4th_message(tenant_id),
+    })
 
 
 @app.route("/api/scheduler/status")

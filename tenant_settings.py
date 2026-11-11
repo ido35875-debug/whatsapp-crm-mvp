@@ -45,3 +45,44 @@ def set_reactivation_days(tenant_id: str, days: int) -> None:
     data = _load()
     data.setdefault(tenant_id, {})["reactivation_days"] = days
     _save(data)
+
+
+def get_green_api_credentials(tenant_id: str) -> tuple[str | None, str | None]:
+    """ה-Green API הייעודי של ה-tenant הזה (instance_id, token) - אם לא הוגדר
+    לו אחד משלו, מוחזר (None, None) והקורא (whatsapp_provider.get_tenant_
+    provider) נופל חזרה ל-Provider הגלובלי המשותף (WHATSAPP_PROVIDER ב-.env),
+    בדיוק כמו get_reactivation_days נופל ל-DEFAULT_REACTIVATION_DAYS.
+    ⚠️ אלו אישורי שליחה אמיתיים (לא רק הגדרה עסקית כמו reactivation_days) -
+    נשמרים כאן באותה רמת-אמון בדיוק כמו שאר קובץ ההגדרות הזה (JSON רגיל
+    ב-DATA_DIR, לא כספת-סודות ייעודית) - החלטה מודעת, לא פיקוח."""
+    tenant_data = _load().get(tenant_id, {})
+    instance_id = tenant_data.get("green_api_instance_id")
+    token = tenant_data.get("green_api_token")
+    return (instance_id or None, token or None)
+
+
+def set_green_api_credentials(tenant_id: str, instance_id: str, token: str) -> None:
+    if not instance_id or not token:
+        raise ValueError("instance_id/token חייבים להיות ערכים לא-ריקים")
+    data = _load()
+    data.setdefault(tenant_id, {})["green_api_instance_id"] = instance_id.strip()
+    data[tenant_id]["green_api_token"] = token.strip()
+    _save(data)
+
+
+def get_followup_4th_message(tenant_id: str) -> str | None:
+    """תבנית הודעה מותאמת-אישית שה-tenant הגדיר לעצמו לשליחה-אוטומטית
+    הרביעית/האחרונה בסדרת הפולו-אפ (ראו scheduler.check_pending_followups) -
+    None אם ה-tenant לא הגדיר תבנית משלו, ואז הקורא נופל חזרה ל-הודעה
+    שנוצרת ע"י AI (extract.generate_followup_message(final=True)), בדיוק
+    כמו ההתנהגות המקורית לפני שהתמיכה הזו נוספה."""
+    message = _load().get(tenant_id, {}).get("followup_4th_message")
+    return message or None
+
+
+def set_followup_4th_message(tenant_id: str, message: str) -> None:
+    if not message or not message.strip():
+        raise ValueError("טקסט ההודעה לא יכול להיות ריק")
+    data = _load()
+    data.setdefault(tenant_id, {})["followup_4th_message"] = message.strip()
+    _save(data)

@@ -33,7 +33,8 @@ def main() -> None:
     )
     scheduler._log(
         f"job נוסף: בדיקת פולו-אפים - מרווח {FOLLOWUP_INTERVAL_SECONDS} שניות, "
-        f"auto_followup={scheduler.AUTO_FOLLOWUP} (סף {scheduler.FOLLOWUP_HOURS}/{scheduler.FINAL_FOLLOWUP_HOURS} שעות)" +
+        f"auto_followup={scheduler.AUTO_FOLLOWUP} "
+        f"(סף {scheduler.FOLLOWUP_HOURS}/{scheduler.FOLLOWUP_STAGE2_HOURS}/{scheduler.FOLLOWUP_STAGE3_HOURS}/{scheduler.FINAL_FOLLOWUP_HOURS} שעות, 4 שלבים)" +
         ("" if scheduler.AUTO_FOLLOWUP else " (dry-run בלבד)") + "."
     )
     scheduler._log(

@@ -28,6 +28,7 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # מפורש - לא ת�
 
 import db
 import reactivate
+import tenant_settings
 from extract import (
     DEFAULT_TENANT_ID,
     _customer_key,
@@ -42,7 +43,7 @@ from extract import (
     update_lead_status,
 )
 from paths import DATA_DIR
-from whatsapp_provider import get_provider
+from whatsapp_provider import get_provider, get_tenant_provider
 
 CHAT_HISTORY_FILE = DATA_DIR / "chat_history.txt"
 
@@ -56,11 +57,21 @@ AUTO_SEND = os.environ.get("SCHEDULER_AUTO_SEND", "false").strip().lower() == "t
 FOLLOWUP_HOURS = int(os.environ.get("FOLLOWUP_HOURS", "24"))
 AUTO_FOLLOWUP = os.environ.get("SCHEDULER_AUTO_FOLLOWUP", "false").strip().lower() == "true"
 
-# תזכורת פולו-אפ **שנייה/אחרונה** - אם גם היא עברה בלי תשובה, זו הפנייה האוטומטית
+# שלב 2/3 - תזכורות ביניים (לא "סופיות" עדיין, אותו טון/פרומפט כמו שלב 1 -
+# ראו extract.generate_followup_message(final=False)) - נוספו כדי להאריך את
+# הרצף מ-2 שלבים ל-4 ("4 ניסיונות פולו-אפ ללא מענה" כפי שהתבקש).
+FOLLOWUP_STAGE2_HOURS = int(os.environ.get("FOLLOWUP_STAGE2_HOURS", "48"))
+FOLLOWUP_STAGE3_HOURS = int(os.environ.get("FOLLOWUP_STAGE3_HOURS", "96"))
+
+# תזכורת פולו-אפ **רביעית/אחרונה** - אם גם היא עברה בלי תשובה, זו הפנייה האוטומטית
 # האחרונה בנושא הזה (סגמנטציה: הליד נשאר בסטטוס "follow_up" בלי המשך אוטומטי -
 # ראו _FOLLOWUP_CHANNELS/check_pending_followups למטה). אותו דגל בטיחות
-# (SCHEDULER_AUTO_FOLLOWUP) שולט גם על השלב הזה - אין דגל נפרד.
-FINAL_FOLLOWUP_HOURS = int(os.environ.get("FINAL_FOLLOWUP_HOURS", "72"))
+# (SCHEDULER_AUTO_FOLLOWUP) שולט גם על השלב הזה - אין דגל נפרד. ה-tenant יכול
+# להגדיר לעצמו תוכן מותאם-אישית להודעה הרביעית הזו (tenant_settings.
+# get_followup_4th_message) ולשלוח אותה דרך ה-Green API הייעודי שלו (ראו
+# whatsapp_provider.get_tenant_provider) - שני אלה חלים **רק** על השלב
+# הרביעי, לא על 1-3.
+FINAL_FOLLOWUP_HOURS = int(os.environ.get("FINAL_FOLLOWUP_HOURS", "168"))
 
 # ---- No-Answer Call Log & Dynamic Follow-Up (ראו server.voice_dial_status) ----
 # דגל בטיחות **נפרד** משתי האוטומציות למעלה - שליחת WhatsApp אמיתית אחרי שיחת
@@ -205,24 +216,60 @@ def run_scan(tenant_id: str = DEFAULT_TENANT_ID) -> list[dict]:
     return results
 
 
-_FOLLOWUP_CHANNELS = ("followup", "followup_final")
+_FOLLOWUP_CHANNELS = ("followup", "followup_2", "followup_3", "followup_final")
+# (threshold_hours, channel) פר-שלב, בסדר - אינדקס 0 = שלב 1 (reminders_sent==0
+# כשנבדק), ...אינדקס 3 = שלב 4/אחרון (reminders_sent==3).
+_FOLLOWUP_STAGES = (
+    (FOLLOWUP_HOURS, "followup"),
+    (FOLLOWUP_STAGE2_HOURS, "followup_2"),
+    (FOLLOWUP_STAGE3_HOURS, "followup_3"),
+    (FINAL_FOLLOWUP_HOURS, "followup_final"),
+)
+
+
+def _render_tenant_custom_message(template: str, card: dict) -> str:
+    """ממלא {customer_name}/{business_name} בתבנית מותאמת-אישית של tenant
+    (tenant_settings.get_followup_4th_message) - תבנית טקסט פשוטה, לא AI
+    (בכוונה - זו ההזדמנות של ה-tenant לקבוע בדיוק מה ייצא, לא הצעה של
+    Claude). נופל חזרה לתבנית כמו שהיא (בלי placeholders שלא מולאו) אם יש
+    שגיאת format - אותו עיקרון בדיוק כמו outbound_engine.render_message,
+    עדיף הודעה לא-ממולאת-לגמרי מאשר שגיאת 500 שתופסת את כל הסריקה."""
+    safe_name = card.get("customer_name") or "שם"
+    safe_business = card.get("business_name") or "העסק שלכם"
+    try:
+        return template.format(customer_name=safe_name, business_name=safe_business)
+    except (KeyError, IndexError):
+        return template
 
 
 def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
     """סורק customers.json לחיפוש לידים שסומנו "נוצר קשר"/"follow_up"
     (lead_status in ("contacted","follow_up")) ולא קיבלו תגובה נכנסת מאז
-    status_changed_at (ראו extract.update_lead_status) - ומייצר/שולח עד שתי
-    הודעות פולו-אפ בשני שלבים:
-    - שלב 1 (FOLLOWUP_HOURS, ברירת מחדל 24ש): תזכורת ראשונה (channel="followup") -
-      ואז lead_status עובר אוטומטית ל-"follow_up" (סגמנטציה בדשבורד), בלי לגעת
-      ב-status_changed_at (כדי ששעון ה-72ש ימשיך להימדד מרגע "נוצר קשר" המקורי,
-      לא מרגע התזכורת).
-    - שלב 2 (FINAL_FOLLOWUP_HOURS, ברירת מחדל 72ש): תזכורת אחרונה/סופית
-      (channel="followup_final", טון שונה - ראו extract.generate_followup_
-      message(final=True)). אחריה אין עוד פולו-אפ אוטומטי - הליד נשאר
-      "follow_up" עד שנציג יתערב ידנית או שהלקוח יענה.
+    status_changed_at (ראו extract.update_lead_status) - ומייצר/שולח עד
+    **ארבע** הודעות פולו-אפ בארבעה שלבים (_FOLLOWUP_STAGES מעל):
+    - שלבים 1-3 (FOLLOWUP_HOURS/FOLLOWUP_STAGE2_HOURS/FOLLOWUP_STAGE3_HOURS,
+      ברירת מחדל 24/48/96 שעות): תזכורות רגילות (channel="followup"/
+      "followup_2"/"followup_3", אותו טון - extract.generate_followup_
+      message(final=False)). בשלב 1 בלבד lead_status עובר אוטומטית ל-
+      "follow_up" (סגמנטציה בדשבורד), בלי לגעת ב-status_changed_at (כדי
+      שהשעון ימשיך להימדד מרגע "נוצר קשר" המקורי, לא מרגע התזכורת).
+    - שלב 4/אחרון (FINAL_FOLLOWUP_HOURS, ברירת מחדל 168ש=7 ימים): תזכורת
+      אחרונה/סופית (channel="followup_final"). אם ה-tenant הגדיר לעצמו
+      תבנית מותאמת-אישית (tenant_settings.get_followup_4th_message) -
+      נשלחת היא (מולאת עם customer_name/business_name, לא AI); אחרת נופל
+      חזרה ל-extract.generate_followup_message(final=True) כמו קודם.
+      אחריה אין עוד פולו-אפ אוטומטי - הליד נשאר "follow_up" עד שנציג
+      יתערב ידנית או שהלקוח יענה.
     ספירת התזכורות שנשלחו מאז status_changed_at (לפי channel ב-history) קובעת
-    באיזה שלב הליד נמצא - בלי צורך בשדה-מצב נפרד.
+    באיזה שלב הליד נמצא - בלי צורך בשדה-מצב נפרד (attempts_count בפועל הוא
+    הספירה הזו, לא שדה DB נפרד - ראו הסבר שניתן למשתמש).
+
+    **הספק נבחר פר-tenant**, לא גלובלית לכל הסריקה (בניגוד להתנהגות הקודמת) -
+    whatsapp_provider.get_tenant_provider(card_tenant) נופל ל-Green API הגלובלי
+    (get_provider) אם ל-tenant אין Green API ייעודי משלו (tenant_settings.
+    get_green_api_credentials), אבל שולח דרך ה-instance הייעודי שלו אם יש -
+    וזה חל על **כל** ארבעת השלבים (לא רק הרביעי) - כדי שלא "יתחלף המספר" ללקוח
+    באמצע סדרת הפולו-אפ, מה שהיה מבלבל/נראה חשוד.
 
     tenant_id=None (ברירת מחדל) סורק את כל ה-tenants - בניגוד ל-run_scan, שדורש
     tenant_id ספציפי (ההחייאה תמיד רצה per-tenant דרך contacts.csv); כאן אין
@@ -231,18 +278,12 @@ def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
 
     **שליחה אמיתית רק אם AUTO_FOLLOWUP=true** (SCHEDULER_AUTO_FOLLOWUP ב-.env) -
     בדיוק כמו AUTO_SEND למעלה: ברירת המחדל היא dry-run (מייצר את ההודעה, רושם
-    בלוג, לא שולח כלום). שליחה בפועל דרך הספק הפעיל (WHATSAPP_PROVIDER - Green
-    API בפרודקשן, לא Twilio קשיח - ראו get_provider). כשל "ידוע ותקין" של הספק
-    (provider.is_soft_failure - למשל חסימת Trial ב-Twilio) נתפס ומטופל בדיוק
-    כמו בכל שאר נקודות השליחה בפרויקט (reactivate.py/send_bulk.py) - נרשם
-    כ-simulated, לא כשגיאה אמיתית."""
+    בלוג, לא שולח כלום). כשל "ידוע ותקין" של הספק (provider.is_soft_failure -
+    למשל חסימת Trial ב-Twilio) נתפס ומטופל בדיוק כמו בכל שאר נקודות השליחה
+    בפרויקט (reactivate.py/send_bulk.py) - נרשם כ-simulated, לא כשגיאה אמיתית."""
     now = datetime.now(timezone.utc)
     customers = load_customers()
     results = []
-    # הספק נבחר פעם אחת לכל הסריקה (לא פר-הודעה), ורק אם יש בכלל סיכוי לשלוח -
-    # בדיוק כמו reactivate._run_campaign_loop. dry-run (AUTO_FOLLOWUP=false)
-    # לא צריך ספק שליחה בכלל, אז לא בונים אחד בלי צורך.
-    provider = get_provider() if AUTO_FOLLOWUP else None
 
     for key, card in customers.items():
         card_tenant, _, phone = key.partition("::")
@@ -266,22 +307,27 @@ def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
             1 for h in history
             if h.get("channel") in _FOLLOWUP_CHANNELS and h.get("timestamp", "") > changed_at_str
         )
-        if reminders_sent >= 2:
-            continue  # גם התזכורת הראשונה וגם האחרונה כבר נשלחו - אין עוד פולו-אפ אוטומטי
+        if reminders_sent >= len(_FOLLOWUP_STAGES):
+            continue  # כל ארבע התזכורות כבר נשלחו - אין עוד פולו-אפ אוטומטי
 
-        is_final = reminders_sent == 1
-        threshold_hours = FINAL_FOLLOWUP_HOURS if is_final else FOLLOWUP_HOURS
+        threshold_hours, channel = _FOLLOWUP_STAGES[reminders_sent]
+        is_final = channel == "followup_final"
         if (now - changed_at).total_seconds() < threshold_hours * 3600:
             continue  # עדיין בתוך חלון ההמתנה לשלב הזה
 
-        channel = "followup_final" if is_final else "followup"
-        message = generate_followup_message(card, final=is_final)
+        tenant_custom_message = tenant_settings.get_followup_4th_message(card_tenant) if is_final else None
+        if tenant_custom_message:
+            message = _render_tenant_custom_message(tenant_custom_message, card)
+        else:
+            message = generate_followup_message(card, final=is_final)
         entry = {
             "phone": phone, "tenant_id": card_tenant, "name": card.get("customer_name"),
-            "message": message, "final": is_final, "sent": False, "simulated": False, "error": None,
+            "message": message, "final": is_final, "stage": reminders_sent + 1,
+            "sent": False, "simulated": False, "error": None,
         }
 
         if AUTO_FOLLOWUP:
+            provider = get_tenant_provider(card_tenant)
             try:
                 entry["sid"] = provider.send_message(phone, message)
                 entry["sent"] = True
@@ -299,9 +345,11 @@ def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
             status_label = "נשלח בפועל" if entry["sent"] else ("סימולציה (Trial)" if entry["simulated"] else f"נכשל: {entry['error']}")
 
             if not is_final and card.get("lead_status") != "follow_up":
-                # רק בשלב 1 - מקדמים סגמנטציה ל-"follow_up" בלי לגעת ב-status_changed_at
-                # (ראו docstring מעל). טעינה/שמירה טריות - לא על ה-customers שנטען
-                # בתחילת הפונקציה, כדי לא לדרוס עדכונים מקביליים אחרים.
+                # מקדמים סגמנטציה ל-"follow_up" בפעם הראשונה שנשלחת תזכורת כלשהי
+                # (בפועל קורה רק בשלב 1 - משלב 2 ואילך lead_status כבר "follow_up"
+                # אז התנאי no-op) - בלי לגעת ב-status_changed_at (ראו docstring
+                # מעל). טעינה/שמירה טריות - לא על ה-customers שנטען בתחילת
+                # הפונקציה, כדי לא לדרוס עדכונים מקביליים אחרים.
                 # ⚠️ בכוונה בתוך if AUTO_FOLLOWUP (לא מחוץ לו, כמו שהיה קודם - באג
                 # שתוקן: dry-run היה עדיין כותב את השינוי הזה בפועל ל-customers.json/
                 # DB, בניגוד מוחלט לעיקרון "dry-run = שום שינוי אמיתי לא קורה" שכל
@@ -315,12 +363,13 @@ def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
         else:
             status_label = "dry-run - לא נשלח"
 
-        stage_label = "סופי (72ש)" if is_final else "ראשון (24ש)"
+        stage_label = f"שלב {entry['stage']}/4 ({threshold_hours}ש)" + (" - סופי" if is_final else "")
         _log(f"פולו-אפ {stage_label} ({status_label}): {entry['name'] or phone} ({phone}, tenant={card_tenant})")
         results.append(entry)
 
     if not results:
-        _log(f"בדיקת פולו-אפים: אין לידים שממתינים מעל {FOLLOWUP_HOURS}/{FINAL_FOLLOWUP_HOURS} שעות בלי תשובה.")
+        thresholds = "/".join(str(h) for h, _ in _FOLLOWUP_STAGES)
+        _log(f"בדיקת פולו-אפים: אין לידים שממתינים מעל {thresholds} שעות (4 שלבים) בלי תשובה.")
     return results
 
 
@@ -678,7 +727,7 @@ def _loop() -> None:
     _log(
         f"מנוע התזמון הופעל. מרווח סריקה: {SCAN_INTERVAL_SECONDS} שניות. "
         f"auto_send={AUTO_SEND}" + ("" if AUTO_SEND else " (dry-run בלבד - לא שולח הודעות אמיתיות)") +
-        f" | auto_followup={AUTO_FOLLOWUP} (סף {FOLLOWUP_HOURS}/{FINAL_FOLLOWUP_HOURS} שעות)" +
+        f" | auto_followup={AUTO_FOLLOWUP} (סף {FOLLOWUP_HOURS}/{FOLLOWUP_STAGE2_HOURS}/{FOLLOWUP_STAGE3_HOURS}/{FINAL_FOLLOWUP_HOURS} שעות, 4 שלבים)" +
         ("" if AUTO_FOLLOWUP else " (dry-run בלבד)") +
         f" | auto_call_followup={AUTO_CALL_FOLLOWUP}" + ("" if AUTO_CALL_FOLLOWUP else " (dry-run בלבד)") +
         f" | auto_meeting_reminder={AUTO_MEETING_REMINDER}" + ("" if AUTO_MEETING_REMINDER else " (dry-run בלבד)") +
@@ -736,6 +785,8 @@ def status() -> dict:
         "last_run_at": _last_run_at,
         "auto_followup": AUTO_FOLLOWUP,
         "followup_hours": FOLLOWUP_HOURS,
+        "followup_stage2_hours": FOLLOWUP_STAGE2_HOURS,
+        "followup_stage3_hours": FOLLOWUP_STAGE3_HOURS,
         "final_followup_hours": FINAL_FOLLOWUP_HOURS,
         "auto_call_followup": AUTO_CALL_FOLLOWUP,
         "call_followup_cutoff_hour": CALL_FOLLOWUP_CUTOFF_HOUR,
