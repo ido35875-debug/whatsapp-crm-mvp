@@ -68,9 +68,9 @@ FOLLOWUP_STAGE3_HOURS = int(os.environ.get("FOLLOWUP_STAGE3_HOURS", "96"))
 # ראו _FOLLOWUP_CHANNELS/check_pending_followups למטה). אותו דגל בטיחות
 # (SCHEDULER_AUTO_FOLLOWUP) שולט גם על השלב הזה - אין דגל נפרד. ה-tenant יכול
 # להגדיר לעצמו תוכן מותאם-אישית להודעה הרביעית הזו (tenant_settings.
-# get_followup_4th_message) ולשלוח אותה דרך ה-Green API הייעודי שלו (ראו
-# whatsapp_provider.get_tenant_provider) - שני אלה חלים **רק** על השלב
-# הרביעי, לא על 1-3.
+# get_followup_4th_message) - התוכן המותאם חל **רק** על השלב הרביעי. הספק
+# הייעודי של ה-tenant (whatsapp_provider.get_tenant_provider) חל על **כל** 4
+# השלבים (ראו check_pending_followups).
 FINAL_FOLLOWUP_HOURS = int(os.environ.get("FINAL_FOLLOWUP_HOURS", "168"))
 
 # ---- No-Answer Call Log & Dynamic Follow-Up (ראו server.voice_dial_status) ----
@@ -216,7 +216,7 @@ def run_scan(tenant_id: str = DEFAULT_TENANT_ID) -> list[dict]:
     return results
 
 
-_FOLLOWUP_CHANNELS = ("followup", "followup_2", "followup_3", "followup_final")
+_FOLLOWUP_CHANNELS = db.FOLLOWUP_CHANNELS  # מקור-אמת יחיד ב-db.py (גם ציון החום משתמש בו)
 # (threshold_hours, channel) פר-שלב, בסדר - אינדקס 0 = שלב 1 (reminders_sent==0
 # כשנבדק), ...אינדקס 3 = שלב 4/אחרון (reminders_sent==3).
 _FOLLOWUP_STAGES = (
@@ -238,8 +238,44 @@ def _render_tenant_custom_message(template: str, card: dict) -> str:
     safe_business = card.get("business_name") or "העסק שלכם"
     try:
         return template.format(customer_name=safe_name, business_name=safe_business)
-    except (KeyError, IndexError):
+    except (KeyError, IndexError, ValueError, AttributeError):
         return template
+
+
+def _parse_ts(ts: str) -> datetime:
+    """ISO -> datetime מודע-timezone (חותמת נאיבית = UTC)."""
+    dt = datetime.fromisoformat(ts)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _next_due_followup_stage(history: list, changed_at_str: str, now: datetime) -> int | None:
+    """פונקציה טהורה: מחזירה אינדקס השלב הבא ב-_FOLLOWUP_STAGES שהגיע זמנו
+    (0-3), או None אם אין מה לשלוח כרגע. שני תנאים לשלב N:
+    - סף מוחלט מ-status_changed_at (כמו קודם).
+    - מרווח מינימלי מהפולו-אפ האחרון = הפרש הספים בין השלבים (24/48/72ש
+      בברירת מחדל) - אחרת ליד ישן (8+ ימים) היה מקבל את כל 4 ההודעות ברצף.
+    followup_final קיים (גם מהקוד הישן, 2 שלבים) = הרצף נגמר - לא שולחים
+    followup_3 ואז final שני."""
+    followups = [
+        h for h in history
+        if h.get("channel") in _FOLLOWUP_CHANNELS and h.get("timestamp", "") > changed_at_str
+    ]
+    if any(h.get("channel") == "followup_final" for h in followups):
+        return None
+    stage = len(followups)
+    if stage >= len(_FOLLOWUP_STAGES):
+        return None  # כל ארבע התזכורות כבר נשלחו
+
+    threshold_hours, _ = _FOLLOWUP_STAGES[stage]
+    if (now - _parse_ts(changed_at_str)).total_seconds() < threshold_hours * 3600:
+        return None  # עדיין בתוך חלון ההמתנה לשלב הזה
+
+    if stage > 0:
+        min_gap_hours = threshold_hours - _FOLLOWUP_STAGES[stage - 1][0]
+        last_followup_at = _parse_ts(max(h["timestamp"] for h in followups))
+        if (now - last_followup_at).total_seconds() < min_gap_hours * 3600:
+            return None  # מוקדם מדי מאז התזכורת הקודמת
+    return stage
 
 
 def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
@@ -261,7 +297,8 @@ def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
       אחריה אין עוד פולו-אפ אוטומטי - הליד נשאר "follow_up" עד שנציג
       יתערב ידנית או שהלקוח יענה.
     ספירת התזכורות שנשלחו מאז status_changed_at (לפי channel ב-history) קובעת
-    באיזה שלב הליד נמצא - בלי צורך בשדה-מצב נפרד (attempts_count בפועל הוא
+    באיזה שלב הליד נמצא (בנוסף נדרש מרווח מינימלי מהתזכורת הקודמת - ראו
+    _next_due_followup_stage) - בלי צורך בשדה-מצב נפרד (attempts_count בפועל הוא
     הספירה הזו, לא שדה DB נפרד - ראו הסבר שניתן למשתמש).
 
     **הספק נבחר פר-tenant**, לא גלובלית לכל הסריקה (בניגוד להתנהגות הקודמת) -
@@ -289,88 +326,107 @@ def check_pending_followups(tenant_id: str | None = None) -> list[dict]:
         card_tenant, _, phone = key.partition("::")
         if tenant_id and card_tenant != tenant_id:
             continue
-        if card.get("lead_status") not in ("contacted", "follow_up"):
-            continue
-        changed_at_str = card.get("status_changed_at")
-        if not changed_at_str:
-            continue  # כרטיס ישן מלפני שהשדה נוסף - אין בסיס לחשב ממנו טיימר
         try:
-            changed_at = datetime.fromisoformat(changed_at_str)
-        except ValueError:
+            entry = _process_followup_lead(key, card, now)
+        except _FollowupRecordError:
+            # הודעה כבר יצאה אבל לא נרשמה - המשך הסריקה ישלח שוב לכולם בכל סבב.
+            # עוצרים את כל הסריקה (כמו לפני ההגנה פר-ליד) עד שהתקלה תטופל.
+            raise
+        except Exception as exc:
+            # ליד אחד בעייתי לא עוצר את הסריקה לכל השאר
+            _log(f"פולו-אפ: שגיאה לא צפויה בליד {phone} (tenant={card_tenant}) - מדלג: {exc!r}")
             continue
-
-        history = card.get("history") or []
-        if any(h.get("direction") == "in" and h.get("timestamp", "") > changed_at_str for h in history):
-            continue  # כבר ענה מאז - אין צורך בפולו-אפ
-
-        reminders_sent = sum(
-            1 for h in history
-            if h.get("channel") in _FOLLOWUP_CHANNELS and h.get("timestamp", "") > changed_at_str
-        )
-        if reminders_sent >= len(_FOLLOWUP_STAGES):
-            continue  # כל ארבע התזכורות כבר נשלחו - אין עוד פולו-אפ אוטומטי
-
-        threshold_hours, channel = _FOLLOWUP_STAGES[reminders_sent]
-        is_final = channel == "followup_final"
-        if (now - changed_at).total_seconds() < threshold_hours * 3600:
-            continue  # עדיין בתוך חלון ההמתנה לשלב הזה
-
-        tenant_custom_message = tenant_settings.get_followup_4th_message(card_tenant) if is_final else None
-        if tenant_custom_message:
-            message = _render_tenant_custom_message(tenant_custom_message, card)
-        else:
-            message = generate_followup_message(card, final=is_final)
-        entry = {
-            "phone": phone, "tenant_id": card_tenant, "name": card.get("customer_name"),
-            "message": message, "final": is_final, "stage": reminders_sent + 1,
-            "sent": False, "simulated": False, "error": None,
-        }
-
-        if AUTO_FOLLOWUP:
-            provider = get_tenant_provider(card_tenant)
-            try:
-                entry["sid"] = provider.send_message(phone, message)
-                entry["sent"] = True
-            except Exception as exc:
-                if provider.is_soft_failure(exc):
-                    entry["simulated"] = True
-                else:
-                    entry["error"] = str(exc)
-
-            if entry["sent"] or entry["simulated"]:
-                # source_channel=channel (לא "whatsapp") - כדי שה-ספירה למעלה
-                # תוכל להבדיל שלב פולו-אפ מהודעה רגילה, ולא לשלוח כפול/לדלג שלב
-                log_manual_reply(phone, message, tenant_id=card_tenant, source_channel=channel, simulated=entry["simulated"])
-                db.log_message(phone, message, direction="out", tenant_id=card_tenant, channel=channel, simulated=entry["simulated"])
-            status_label = "נשלח בפועל" if entry["sent"] else ("סימולציה (Trial)" if entry["simulated"] else f"נכשל: {entry['error']}")
-
-            if not is_final and card.get("lead_status") != "follow_up":
-                # מקדמים סגמנטציה ל-"follow_up" בפעם הראשונה שנשלחת תזכורת כלשהי
-                # (בפועל קורה רק בשלב 1 - משלב 2 ואילך lead_status כבר "follow_up"
-                # אז התנאי no-op) - בלי לגעת ב-status_changed_at (ראו docstring
-                # מעל). טעינה/שמירה טריות - לא על ה-customers שנטען בתחילת
-                # הפונקציה, כדי לא לדרוס עדכונים מקביליים אחרים.
-                # ⚠️ בכוונה בתוך if AUTO_FOLLOWUP (לא מחוץ לו, כמו שהיה קודם - באג
-                # שתוקן: dry-run היה עדיין כותב את השינוי הזה בפועל ל-customers.json/
-                # DB, בניגוד מוחלט לעיקרון "dry-run = שום שינוי אמיתי לא קורה" שכל
-                # שאר הקובץ הזה מכבד. זה מה שגרם ללידים אמיתיים בקובץ ה-VIP המקומי
-                # לעבור ל-"follow_up" בלי אישור, רק מהרצה מקומית של השרת).
-                fresh_customers = load_customers()
-                fresh_card = fresh_customers.get(key)
-                if fresh_card is not None:
-                    fresh_card["lead_status"] = "follow_up"
-                    save_customers(fresh_customers)
-        else:
-            status_label = "dry-run - לא נשלח"
-
-        stage_label = f"שלב {entry['stage']}/4 ({threshold_hours}ש)" + (" - סופי" if is_final else "")
-        _log(f"פולו-אפ {stage_label} ({status_label}): {entry['name'] or phone} ({phone}, tenant={card_tenant})")
-        results.append(entry)
+        if entry is not None:
+            results.append(entry)
 
     if not results:
         thresholds = "/".join(str(h) for h, _ in _FOLLOWUP_STAGES)
         _log(f"בדיקת פולו-אפים: אין לידים שממתינים מעל {thresholds} שעות (4 שלבים) בלי תשובה.")
     return results
+
+
+class _FollowupRecordError(Exception):
+    """פולו-אפ יצא ללקוח אבל הרישום ל-history נכשל - חייב לעצור את הסריקה."""
+
+
+def _process_followup_lead(key: str, card: dict, now: datetime) -> dict | None:
+    """שלב פולו-אפ לליד יחיד (ראו check_pending_followups) - מחזיר entry או None."""
+    card_tenant, _, phone = key.partition("::")
+    if card.get("lead_status") not in ("contacted", "follow_up"):
+        return None
+    changed_at_str = card.get("status_changed_at")
+    if not changed_at_str:
+        return None  # כרטיס ישן מלפני שהשדה נוסף - אין בסיס לחשב ממנו טיימר
+    try:
+        _parse_ts(changed_at_str)
+    except ValueError:
+        return None
+
+    history = card.get("history") or []
+    if any(h.get("direction") == "in" and h.get("timestamp", "") > changed_at_str for h in history):
+        return None  # כבר ענה מאז - אין צורך בפולו-אפ
+
+    reminders_sent = _next_due_followup_stage(history, changed_at_str, now)
+    if reminders_sent is None:
+        return None
+
+    threshold_hours, channel = _FOLLOWUP_STAGES[reminders_sent]
+    is_final = channel == "followup_final"
+
+    tenant_custom_message = tenant_settings.get_followup_4th_message(card_tenant) if is_final else None
+    if tenant_custom_message:
+        message = _render_tenant_custom_message(tenant_custom_message, card)
+    else:
+        message = generate_followup_message(card, final=is_final)
+    entry = {
+        "phone": phone, "tenant_id": card_tenant, "name": card.get("customer_name"),
+        "message": message, "final": is_final, "stage": reminders_sent + 1,
+        "sent": False, "simulated": False, "error": None,
+    }
+
+    if AUTO_FOLLOWUP:
+        provider = get_tenant_provider(card_tenant)
+        try:
+            entry["sid"] = provider.send_message(phone, message)
+            entry["sent"] = True
+        except Exception as exc:
+            if provider.is_soft_failure(exc):
+                entry["simulated"] = True
+            else:
+                entry["error"] = str(exc)
+
+        if entry["sent"] or entry["simulated"]:
+            # source_channel=channel (לא "whatsapp") - כדי שה-ספירה למעלה
+            # תוכל להבדיל שלב פולו-אפ מהודעה רגילה, ולא לשלוח כפול/לדלג שלב
+            try:
+                log_manual_reply(phone, message, tenant_id=card_tenant, source_channel=channel, simulated=entry["simulated"])
+                db.log_message(phone, message, direction="out", tenant_id=card_tenant, channel=channel, simulated=entry["simulated"])
+            except Exception as exc:
+                raise _FollowupRecordError(f"פולו-אפ נשלח ל-{phone} אבל לא נרשם: {exc!r}") from exc
+        status_label = "נשלח בפועל" if entry["sent"] else ("סימולציה (Trial)" if entry["simulated"] else f"נכשל: {entry['error']}")
+
+        if not is_final and card.get("lead_status") != "follow_up":
+            # מקדמים סגמנטציה ל-"follow_up" בפעם הראשונה שנשלחת תזכורת כלשהי
+            # (בפועל קורה רק בשלב 1 - משלב 2 ואילך lead_status כבר "follow_up"
+            # אז התנאי no-op) - בלי לגעת ב-status_changed_at (ראו docstring
+            # מעל). טעינה/שמירה טריות - לא על ה-customers שנטען בתחילת
+            # הפונקציה, כדי לא לדרוס עדכונים מקביליים אחרים.
+            # ⚠️ בכוונה בתוך if AUTO_FOLLOWUP (לא מחוץ לו, כמו שהיה קודם - באג
+            # שתוקן: dry-run היה עדיין כותב את השינוי הזה בפועל ל-customers.json/
+            # DB, בניגוד מוחלט לעיקרון "dry-run = שום שינוי אמיתי לא קורה" שכל
+            # שאר הקובץ הזה מכבד. זה מה שגרם ללידים אמיתיים בקובץ ה-VIP המקומי
+            # לעבור ל-"follow_up" בלי אישור, רק מהרצה מקומית של השרת).
+            fresh_customers = load_customers()
+            fresh_card = fresh_customers.get(key)
+            if fresh_card is not None:
+                fresh_card["lead_status"] = "follow_up"
+                save_customers(fresh_customers)
+    else:
+        status_label = "dry-run - לא נשלח"
+
+    stage_label = f"שלב {entry['stage']}/4 ({threshold_hours}ש)" + (" - סופי" if is_final else "")
+    _log(f"פולו-אפ {stage_label} ({status_label}): {entry['name'] or phone} ({phone}, tenant={card_tenant})")
+    return entry
 
 
 def compute_call_followup_time(now_utc: datetime) -> datetime:

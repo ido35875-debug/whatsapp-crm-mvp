@@ -9,7 +9,8 @@
 הרצה:
     venv\\Scripts\\python.exe export_realestate_from_render.py [--tenant TENANT] [--out data_realestate]
 ואז:
-    DATA_DIR=data_realestate DATABASE_URL= python server.py
+    DATA_DIR=data_realestate DATABASE_URL= DRY_RUN=true venv\\Scripts\\python.exe server.py
+⚠️ בלי DRY_RUN=true הדשבורד המקומי שולח הודעות WhatsApp אמיתיות ללקוחות אמיתיים דרך ה-Provider שב-.env.
 """
 
 import argparse

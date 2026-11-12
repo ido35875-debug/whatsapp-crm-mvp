@@ -1794,31 +1794,52 @@ def api_set_tenant_settings():
     המותאמת-אישית שלה (ראו scheduler.check_pending_followups) - "כל סוכנות
     תוכל להגדיר בעצמה" כפי שהתבקש. green_api_instance_id/green_api_token
     חייבים להגיע **יחד** (לא ניתן לעדכן רק אחד מהשניים - צמד חסר-משמעות
-    בנפרד); לא נשלחים בכלל = לא נוגעים במה שכבר שמור."""
-    data = request.get_json(silent=True) or {}
+    בנפרד); לא נשלחים בכלל = לא נוגעים במה שכבר שמור.
+    כל שדה אופציונלי (גם reactivation_days) - 400 רק אם לא נשלח אף שדה מוכר
+    או ששדה שנשלח לא תקין. כל הוולידציה רצה **לפני** כתיבה כלשהי, כדי ששדה
+    לא-תקין אחד לא ישאיר שמירה חלקית של השאר."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
     tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
-    try:
-        days = int(data.get("reactivation_days"))
-        if days < 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        return jsonify({"error": "reactivation_days חייב להיות מספר שלם לא-שלילי"}), 400
-    tenant_settings.set_reactivation_days(tenant_id, days)
+    known_fields = ("reactivation_days", "green_api_instance_id", "green_api_token", "followup_4th_message")
+    if not any(data.get(field) is not None for field in known_fields):
+        return jsonify({"error": "לא נשלח אף שדה לעדכון (reactivation_days / green_api_instance_id+green_api_token / followup_4th_message)"}), 400
 
-    instance_id = (data.get("green_api_instance_id") or "").strip()
-    token = (data.get("green_api_token") or "").strip()
-    if instance_id or token:
-        if not (instance_id and token):
-            return jsonify({"error": "green_api_instance_id ו-green_api_token חייבים להישלח יחד"}), 400
-        tenant_settings.set_green_api_credentials(tenant_id, instance_id, token)
+    # --- ולידציה (בלי כתיבה) ---
+    days = None
+    if data.get("reactivation_days") is not None:
+        try:
+            days = int(data.get("reactivation_days"))
+            if days < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "reactivation_days חייב להיות מספר שלם לא-שלילי"}), 400
+
+    raw_instance_id = data.get("green_api_instance_id")
+    raw_token = data.get("green_api_token")
+    if not isinstance(raw_instance_id, (str, type(None))) or not isinstance(raw_token, (str, type(None))):
+        return jsonify({"error": "green_api_instance_id ו-green_api_token חייבים להיות טקסט"}), 400
+    instance_id = (raw_instance_id or "").strip()
+    token = (raw_token or "").strip()
+    if (instance_id or token) and not (instance_id and token):
+        return jsonify({"error": "green_api_instance_id ו-green_api_token חייבים להישלח יחד"}), 400
 
     followup_message = data.get("followup_4th_message")
+    if followup_message is not None and not isinstance(followup_message, str):
+        return jsonify({"error": "followup_4th_message חייב להיות טקסט"}), 400
+
+    # --- כתיבה (רק שדות שנשלחו) ---
+    if days is not None:
+        tenant_settings.set_reactivation_days(tenant_id, days)
+    if instance_id and token:
+        tenant_settings.set_green_api_credentials(tenant_id, instance_id, token)
     if followup_message is not None and followup_message.strip():
         tenant_settings.set_followup_4th_message(tenant_id, followup_message)
 
     resp_instance_id, resp_token = tenant_settings.get_green_api_credentials(tenant_id)
     return jsonify({
-        "ok": True, "tenant_id": tenant_id, "reactivation_days": days,
+        "ok": True, "tenant_id": tenant_id, "reactivation_days": tenant_settings.get_reactivation_days(tenant_id),
         "green_api_instance_id": resp_instance_id, "green_api_token_set": bool(resp_token),
         "followup_4th_message": tenant_settings.get_followup_4th_message(tenant_id),
     })
@@ -2610,6 +2631,10 @@ def _send_auto_reply_after_delay(provider, contact_id: str, reply_text: str, ten
     time.sleep(random.randint(AUTO_REPLY_MIN_DELAY_SECONDS, AUTO_REPLY_MAX_DELAY_SECONDS))
     try:
         provider.send_message(contact_id, reply_text)
+        logger.info(
+            "✅ תשובה אוטומטית נשלחה (ספק=%s, tenant=%s, טלפון=%s)",
+            type(provider).__name__, tenant_id, contact_id,
+        )
     except Exception as exc:
         logger.warning(
             "שליחת תשובה אוטומטית נכשלה אחרי השהיה (ספק=%s, tenant=%s): %s",
@@ -2924,6 +2949,11 @@ def _process_incoming_message_job(contact_id: str, message_text: str, tenant_id:
             # משמשת לערוצים בלי מענה אוטומטי בכלל (instagram/facebook) - לא
             # קוד כפול.
             card = process_message(contact_id, message_text, tenant_id=tenant_id, source_channel=source)
+            if source == "whatsapp" and not skip_reason:
+                if not _ai_enabled_for(contact_id, tenant_id):
+                    logger.info("🔇 אין מענה אוטומטי: ai_enabled=False לליד הזה (בירור צרכים הסתיים / מענה ידני / takeover) - tenant=%s, טלפון=%s", tenant_id, contact_id)
+                else:
+                    logger.info("🔇 אין מענה אוטומטי: התכונה whatsapp_ai כבויה ל-tenant=%s (טלפון=%s)", tenant_id, contact_id)
             if skip_reason:
                 logger.info(
                     "🚫 הודעה לא-עסקית מזוהה (ליד/איש-קשר חדש, בלי הקשר עסקי קודם) - "

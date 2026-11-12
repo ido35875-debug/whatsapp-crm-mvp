@@ -20,6 +20,8 @@ crm_data.db
 customers.json
 customers.backup_*.json
 chat_history.txt
+# הגדרות פר-tenant בזמן ריצה - עלול להכיל טוקן Green API אמיתי (POST /api/tenant-settings); קובץ חסר = ברירות מחדל
+tenant_settings.json
 
 # --- לוגים ---
 *.log
