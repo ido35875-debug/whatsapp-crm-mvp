@@ -250,8 +250,15 @@ class GreenAPIProvider(WhatsAppProvider):
         chat_id = f"{digits}@c.us"
         logger.info("[GreenAPIProvider] שליחה אל chatId=%r (מקור: %r)", chat_id, to)
         resp = requests.post(self._url("sendMessage"), json={"chatId": chat_id, "message": text}, timeout=15)
-        resp.raise_for_status()
+        if not resp.ok:
+            # לא raise_for_status: ההודעה שלו כוללת את ה-URL המלא עם הטוקן (דולף ללוגים),
+            # ומאבדת את גוף התשובה של Green API (שם ההסבר האמיתי - quota/instance וכו')
+            raise RuntimeError(
+                f"Green API sendMessage נכשל: HTTP {resp.status_code} "
+                f"(instance={self.instance_id}, chatId={chat_id}): {resp.text[:300]}"
+            )
         data = resp.json()
+        logger.info("[GreenAPIProvider] התקבל idMessage=%s עבור chatId=%r", data.get("idMessage"), chat_id)
         if "idMessage" not in data:
             raise RuntimeError(f"Green API לא החזיר idMessage בתגובה: {data}")
         return data["idMessage"]
