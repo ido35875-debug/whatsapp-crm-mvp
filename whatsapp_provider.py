@@ -24,6 +24,8 @@ import abc
 import logging
 import os
 import re
+import threading
+import time
 
 import requests
 
@@ -50,6 +52,37 @@ def _default_green_api_url(instance_id: str) -> str:
     # אוטומטית. GREEN_API_URL ב-.env (אופציונלי) דורס את זה במפורש אם צריך -
     # למשל אם התבנית הזו משתנה אצל Green API בעתיד, בלי לחכות לתיקון קוד.
     return f"https://{instance_id[:4]}.api.greenapi.com" if len(instance_id) >= 4 else "https://api.greenapi.com"
+
+
+def _phone_digits(raw: str | None) -> str:
+    """מנרמל מספר טלפון לספרות בלבד לצורך השוואה (EXPECTED_WHATSAPP_NUMBER מול
+    ה-wid של Green API): "+972-50-123-4567" / "972501234567@c.us" / "0501234567"
+    → "972501234567". 0 מוביל = פורמט מקומי ישראלי → קידומת 972."""
+    raw = (raw or "").split("@")[0].replace("(0)", "")  # "+972 (0)50..." - ה-0 בסוגריים לא נחייג
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if digits.startswith("00"):
+        digits = digits[2:]  # קידומת חיוג בינלאומית ("00972...")
+    elif digits.startswith("0"):
+        digits = "972" + digits[1:]
+    if digits.startswith("9720"):
+        digits = "972" + digits[4:]  # "+9720501234567" - 0 מקומי מיותר אחרי הקידומת
+    return digits
+
+
+def mask_phone(digits: str | None) -> str:
+    """מסתיר את אמצע המספר ללוג (PII) - "972501234567" → "9725****4567"."""
+    digits = digits or ""
+    if not digits:
+        return "(לא ידוע)"
+    if len(digits) <= 8:
+        return "*" * (len(digits) - 3) + digits[-3:]
+    return f"{digits[:4]}{'*' * (len(digits) - 8)}{digits[-4:]}"
+
+
+class WrongWhatsAppNumberError(RuntimeError):
+    """Green API מחובר למספר WhatsApp שונה מ-EXPECTED_WHATSAPP_NUMBER - השליחה
+    נחסמת כדי ששום הודעה לא תצא מהמספר הלא-נכון (מניעת בלבול instance בין
+    מערכת הנדל"ן למערכת הוויפים)."""
 
 
 class WhatsAppProvider(abc.ABC):
@@ -230,10 +263,129 @@ class GreenAPIProvider(WhatsAppProvider):
         # tenant - אין GREEN_API_URL נפרד פר-tenant, רק הניחוש המחושב.
         self.api_url = os.environ.get("GREEN_API_URL", "").strip() or _default_green_api_url(self.instance_id)
 
+        # בדיקת "מחובר למספר הנכון" (EXPECTED_WHATSAPP_NUMBER) - רלוונטית רק ל-
+        # instance הגלובלי (אישורים מה-.env). instance ייעודי של tenant (אישורים
+        # מפורשים, ראו get_tenant_provider) מחובר בכוונה למספר אחר משלו - שם רק
+        # נרשם המספר המחובר ללוג, בלי השוואה (אחרת כל שליחה שלו הייתה נחסמת).
+        is_global_instance = instance_id is None and token is None
+        expected_raw = os.environ.get("EXPECTED_WHATSAPP_NUMBER", "") if is_global_instance else ""
+        self.expected_number = _phone_digits(expected_raw) or None
+        self._number_check: dict | None = None  # מטמון תוצאת הבדיקה (פר-מופע)
+        self._number_check_at = 0.0
+        self._number_check_lock = threading.Lock()
+
+    # תוצאה מוצלחת נשמרת שעה (מספיק כדי לתפוס סריקת QR מחדש עם טלפון אחר, בלי
+    # להאט שליחות); כשל רשת נבדק שוב לכל היותר כל 10 דקות - לא בכל שליחה.
+    _NUMBER_CHECK_TTL_OK = 600  # 10 דק' - אחרי סריקת QR מחדש למספר אחר, החסימה תתפוס מהר
+    _NUMBER_CHECK_TTL_FAILED = 600
+
     def _url(self, method: str) -> str:
         return f"{self.api_url}/waInstance{self.instance_id}/{method}/{self.token}"
 
+    def _redact(self, text: str) -> str:
+        """מסיר את הטוקן מכל טקסט שעלול להגיע ללוג - חריגות requests (למשל
+        ConnectionError) כוללות את ה-URL המלא, ושם הטוקן יושב כחלק מהנתיב."""
+        text = str(text)
+        return text.replace(self.token, "***") if self.token else text
+
+    def get_connected_account(self) -> dict:
+        """שואל את Green API לאיזה מספר WhatsApp ה-instance מחובר כרגע.
+        getWaSettings מחזיר phone+stateInstance בקריאה אחת; אם phone חסר (גרסה/
+        מצב אחר) נופל ל-getSettings (שדה wid) ול-getStateInstance.
+        מחזיר {"phone": "972...", "wid": "972...@c.us", "state": "authorized"}.
+        מעלה RuntimeError (בלי הטוקן בהודעה) אם Green API לא נגיש/החזיר שגיאה."""
+        def _get(method: str) -> dict:
+            try:
+                resp = requests.get(self._url(method), timeout=4)
+            except requests.RequestException as exc:
+                raise RuntimeError(f"Green API {method}: {type(exc).__name__}: {self._redact(exc)[:200]}") from None
+            if not resp.ok:
+                raise RuntimeError(f"Green API {method}: HTTP {resp.status_code}: {self._redact(resp.text)[:200]}")
+            try:
+                data = resp.json()
+            except ValueError:
+                raise RuntimeError(f"Green API {method}: תשובה שאינה JSON") from None
+            return data if isinstance(data, dict) else {}
+
+        wa = _get("getWaSettings")
+        phone = _phone_digits(str(wa.get("phone") or ""))
+        state = wa.get("stateInstance") or ""
+        wid = ""
+        if not phone:
+            settings = _get("getSettings")
+            wid = str(settings.get("wid") or "")
+            phone = _phone_digits(wid)
+        if not state:
+            state = _get("getStateInstance").get("stateInstance") or ""
+        return {"phone": phone, "wid": wid or (f"{phone}@c.us" if phone else ""), "state": state or "unknown"}
+
+    def check_connected_number(self, force: bool = False) -> dict:
+        """בודק (פעם אחת, עם מטמון פר-מופע - ראו _NUMBER_CHECK_TTL_*) שה-instance
+        מחובר למספר הצפוי. מחזיר dict עם status:
+          "ok"        - תואם ל-EXPECTED_WHATSAPP_NUMBER
+          "unchecked" - EXPECTED_WHATSAPP_NUMBER לא מוגדר (רק נרשם המספר)
+          "mismatch"  - מחובר למספר אחר → send_message ייחסם
+          "unknown"   - הבדיקה עצמה נכשלה (רשת/instance לא מחובר) → לא חוסם
+        לעולם לא מדפיס את הטוקן או ה-URL."""
+        now = time.monotonic()
+        cached = self._number_check
+        if cached is not None and not force:
+            ttl = self._NUMBER_CHECK_TTL_FAILED if cached["status"] == "unknown" else self._NUMBER_CHECK_TTL_OK
+            if now - self._number_check_at < ttl:
+                return cached
+        with self._number_check_lock:
+            cached = self._number_check
+            if cached is not None and not force:
+                ttl = self._NUMBER_CHECK_TTL_FAILED if cached["status"] == "unknown" else self._NUMBER_CHECK_TTL_OK
+                if time.monotonic() - self._number_check_at < ttl:
+                    return cached
+            result = self._run_number_check()
+            self._number_check = result
+            self._number_check_at = time.monotonic()
+            return result
+
+    def _run_number_check(self) -> dict:
+        expected = self.expected_number
+        try:
+            account = self.get_connected_account()
+        except Exception as exc:  # רשת/HTTP - לא חוסמים שליחה בגלל כשל בדיקה
+            logger.warning(
+                "⚠️ Green API: בדיקת המספר המחובר נכשלה (instance=%s) - השליחה לא נחסמת: %s",
+                self.instance_id, self._redact(exc),
+            )
+            return {"status": "unknown", "phone": "", "state": "unknown", "expected": expected, "error": self._redact(exc)}
+
+        phone, state = account["phone"], account["state"]
+        logger.info("🔗 Green API מחובר למספר %s (state=%s, instance=%s)", mask_phone(phone), state, self.instance_id)
+        if not expected:
+            return {"status": "unchecked", "phone": phone, "state": state, "expected": None}
+        if not phone:
+            # instance לא מחובר (notAuthorized וכו') - אין מספר להשוות; השליחה
+            # תיכשל ממילא אצל Green API, לא חוסמים כאן.
+            logger.warning(
+                "⚠️ Green API: אין מספר מחובר (state=%s) - לא ניתן לאמת מול EXPECTED_WHATSAPP_NUMBER=%s",
+                state, mask_phone(expected),
+            )
+            return {"status": "unknown", "phone": "", "state": state, "expected": expected}
+        if phone != expected:
+            logger.error(
+                "🚨🚨 Green API מחובר למספר הלא-נכון! מחובר: %s | צפוי (EXPECTED_WHATSAPP_NUMBER): %s | "
+                "instance=%s - כל שליחה יוצאת נחסמת עד תיקון GREEN_API_INSTANCE_ID/GREEN_API_TOKEN "
+                "או EXPECTED_WHATSAPP_NUMBER.",
+                mask_phone(phone), mask_phone(expected), self.instance_id,
+            )
+            return {"status": "mismatch", "phone": phone, "state": state, "expected": expected}
+        logger.info("✅ Green API: המספר המחובר תואם ל-EXPECTED_WHATSAPP_NUMBER")
+        return {"status": "ok", "phone": phone, "state": state, "expected": expected}
+
     def send_message(self, to: str, text: str) -> str:
+        check = self.check_connected_number()
+        if check["status"] == "mismatch":
+            raise WrongWhatsAppNumberError(
+                f"השליחה נחסמה: Green API (instance={self.instance_id}) מחובר למספר "
+                f"{mask_phone(check['phone'])} ולא למספר הצפוי {mask_phone(check['expected'])} "
+                "(EXPECTED_WHATSAPP_NUMBER). בדקו את GREEN_API_INSTANCE_ID/GREEN_API_TOKEN."
+            )
         text = strip_emojis(text)
         # ⚠️ באג שתוקן: בלי נרמול, הודעה שמגיעה עם מספר לא-E.164 מלא (למשל
         # פורמט מקומי ישראלי "0501234567" - קורה בפועל ללידים ישנים/מיובאים
@@ -493,6 +645,30 @@ def get_provider(name: str | None = None) -> WhatsAppProvider:
     if os.environ.get("DRY_RUN", "false").strip().lower() == "true":
         return DryRunProviderProxy(provider)
     return provider
+
+
+def check_connected_number_at_startup() -> dict | None:
+    """נקראת מ-server.py בעליית השרת (python server.py). רלוונטית רק ל-Green
+    API; תחת DRY_RUN פותחת את DryRunProviderProxy ובודקת את הספק האמיתי (זו
+    קריאת GET לקריאה בלבד - שום הודעה לא נשלחת, והתנהגות ה-proxy לא משתנה).
+    תחת gunicorn (שלא מריץ __main__) אותה בדיקה רצה בעצלתיים בשליחה הראשונה -
+    ראו GreenAPIProvider.send_message. לעולם לא מפילה את עליית השרת."""
+    try:
+        provider = get_provider()
+    except Exception as exc:
+        logger.warning("⚠️ בדיקת מספר WhatsApp מחובר דולגה - לא ניתן לבנות provider: %s", exc)
+        return None
+    if isinstance(provider, DryRunProviderProxy):
+        logger.info("🔗 DRY_RUN פעיל - בדיקת המספר המחובר דולגה (בלי פנייה ל-Green API)")
+        return None
+    if not isinstance(provider, GreenAPIProvider):
+        return None
+    real = provider
+    try:
+        return real.check_connected_number()
+    except Exception as exc:
+        logger.warning("⚠️ בדיקת מספר WhatsApp מחובר נכשלה: %s", real._redact(exc))
+        return None
 
 
 _TENANT_PROVIDER_INSTANCES: dict[str, WhatsAppProvider] = {}

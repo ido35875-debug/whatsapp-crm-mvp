@@ -789,16 +789,17 @@ def _log_incoming_message(tenant_id: str, source: str, contact_id: str, message_
 
 @app.route("/")
 def index():
-    """מגיש את הדשבורד, ומזריק את מפתח ה-API הפעיל כקבוע JS (window.__API_KEY__)
-    בזמן ההגשה - **לא** שמור בתוך index.html עצמו (קובץ שנמצא ב-git, ראו
-    .gitignore) כדי שהמפתח לא ידלוף להיסטוריית ה-repo. עדיין גלוי בפועל לכל
-    מי שטוען את הדף (view-source/DevTools) - זו מגבלה מובנית של מפתח סטטי
-    בפרונט משותף, לא כשל במימוש: זה חוסם רק בקשות API "עיוורות" (בוטים/
-    כלי-סריקה שלא טענו את העמוד כלל), לא תוקף ממוקד שכבר פתח את האתר."""
+    """מגיש את הדשבורד כמו שהוא - **בלי** שום מפתח API מוזרק. עד 2026-11-14
+    הוזרק כאן API_SECRET_KEY הראשי כ-window.__API_KEY__, כך שכל מי שפתח את
+    הכתובת קיבל גישת אדמין מלאה. עכשיו הדשבורד מציג מסך התחברות (index.html:
+    loginOverlay) שבו המשתמש מדביק את מפתח ה-API האישי שלו (משתמש RBAC מטבלת
+    users - נוצר דרך create_user.py או POST /api/admin/users), מאומת מול
+    /api/me ונשמר ב-localStorage של הדפדפן. API_SECRET_KEY ממשיך לעבוד כמפתח
+    אדמין בצד-שרת (curl/API), הוא פשוט לא נחשף בעמוד."""
     html = (BASE_DIR / "index.html").read_text(encoding="utf-8")
-    injected = f'<script>window.__API_KEY__={json.dumps(API_SECRET_KEY)};</script>'
-    html = html.replace("</head>", injected + "</head>", 1)
-    return Response(html, mimetype="text/html")
+    resp = Response(html, mimetype="text/html")
+    resp.headers["Cache-Control"] = "no-store"  # שלא תוגש גרסה ישנה (עם מפתח מוזרק) מ-cache
+    return resp
 
 
 @app.route("/api/leads")
@@ -3338,5 +3339,10 @@ if __name__ == "__main__":
         "מפעיל שרת על %s:%s (debug=%s, verify_twilio_signature=%s, log_level=%s)",
         HOST, PORT, FLASK_DEBUG, VERIFY_TWILIO_SIGNATURE, LOG_LEVEL,
     )
+    # בדיקת "מחובר למספר הנכון" (EXPECTED_WHATSAPP_NUMBER, Green API בלבד) - רק
+    # לוג/חסימת שליחה, לא מפילה את השרת. תחת gunicorn אותה בדיקה רצה בעצלתיים
+    # בשליחה הראשונה (GreenAPIProvider.send_message).
+    from whatsapp_provider import check_connected_number_at_startup
+    check_connected_number_at_startup()
     scheduler.start()
     app.run(host=HOST, port=PORT, debug=FLASK_DEBUG, use_reloader=False)

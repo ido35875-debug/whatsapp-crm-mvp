@@ -4,9 +4,13 @@
 ובודקים שה-AI באמת יודע לחלץ ממנה שם לקוח, שם עסק ומיקום.
 """
 
+import copy
 import json
 import logging
 import os
+import tempfile
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,27 +82,149 @@ def _use_database() -> bool:
     return bool(db.DATABASE_URL)
 
 
-def load_customers() -> dict:
-    """כש-DATABASE_URL מוגדר - הכרטיסים נטענים מהמסד (הקבוע בענן). אחרת מקובץ
-    customers.json המקומי (ברירת מחדל, בלי שינוי התנהגות)."""
-    if _use_database():
-        return db.load_customers_rows()
+# ---- שכבת האחסון של הכרטיסים ----
+# כל כתיבה שוטפת היא **פר-כרטיס ואטומית** (update_card/_move_card/_delete_card) -
+# לא load הכל → שינוי כרטיס אחד → save הכל. בפרודקשן gunicorn מריץ 2 workers +
+# threads ברקע (תור webhook, תשובות מושהות, scheduler), ומחזור read-modify-write
+# על כל המילון דרס עדכונים מקביליים לכרטיסים *אחרים* (lost update) ומחק כרטיס
+# שנוצר בינתיים (replace_customers_rows מחק כל שורה שחסרה במילון).
+#
+# מצב JSON מקומי (DATABASE_URL ריק): _json_lock (process-wide) עוטף load→mutate→
+# write, והכתיבה אטומית (קובץ זמני באותה תיקייה + os.replace) - קורא לעולם לא
+# רואה קובץ קטוע. ⚠️ הגנה בין *processes* שונים לא מובטחת במצב המקומי (אין נעילת
+# קובץ) - ההרצה המקומית היא process יחיד; בפרודקשן (Postgres) הנעילה היא FOR UPDATE.
+_json_lock = threading.RLock()
+
+
+def _read_customers_file() -> dict:
     if CUSTOMERS_FILE.exists():
         return json.loads(CUSTOMERS_FILE.read_text(encoding="utf-8"))
     return {}
 
 
-def save_customers(customers: dict) -> None:
-    log = logging.getLogger("whatsapp_crm")
+def _write_customers_file_atomic(customers: dict) -> None:
+    """כתיבה לקובץ זמני באותה תיקייה ואז os.replace (אטומי באותה מערכת קבצים).
+    ב-Windows os.replace עלול להיכשל ב-PermissionError אם תהליך אחר מחזיק את
+    הקובץ פתוח לקריאה ברגע הזה (למשל עורך/סקריפט חיצוני) - כמה ניסיונות חוזרים
+    קצרים לפני שמוותרים."""
+    target = CUSTOMERS_FILE
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(customers, fh, ensure_ascii=False, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        for attempt in range(20):
+            try:
+                os.replace(tmp_name, target)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def load_customers() -> dict:
+    """כש-DATABASE_URL מוגדר - הכרטיסים נטענים מהמסד (הקבוע בענן). אחרת מקובץ
+    customers.json המקומי. קריאה בלבד - **לא** לשנות את המילון ולשמור אותו
+    בחזרה; לכתיבה השתמשו ב-update_card (או בפונקציות update_lead_* למטה)."""
     if _use_database():
-        summary = db.replace_customers_rows(customers)
-        log.info("✅ כרטיסי לידים נשמרו במסד (%d לידים, עודכנו %d, נמחקו %d)",
-                 len(customers), summary["upserted"], summary["deleted"])
+        return db.load_customers_rows()
+    with _json_lock:
+        return _read_customers_file()
+
+
+def update_card(key: str, mutate_fn, default: dict | None = None) -> dict:
+    """עדכון אטומי של כרטיס **אחד** - הפרימיטיב היחיד לכתיבה שוטפת לכרטיסים.
+
+    mutate_fn(card, is_new) משנה את card במקום (ערך ההחזרה שלו מתעלם).
+    - הכרטיס קיים: card = הכרטיס הנוכחי (טרי, נקרא בתוך הנעילה), is_new=False.
+    - הכרטיס חסר ו-default לא None: card = עותק של default, is_new=True (יצירה).
+    - הכרטיס חסר ו-default None: KeyError(key), שום דבר לא נכתב.
+    חריגה מתוך mutate_fn = שום שינוי לא נכתב. מחזיר את הכרטיס אחרי השינוי.
+
+    Postgres: טרנזקציה אחת, SELECT ... FOR UPDATE על השורה הזו בלבד (ראו
+    db.update_customer_row). JSON מקומי: _json_lock + כתיבה אטומית.
+    mutate_fn רץ בתוך הנעילה - לא לבצע בו קריאות רשת/AI/שליחה (רק שינוי ה-dict)."""
+
+    def _apply(current: dict | None) -> dict:
+        if current is None:
+            if default is None:
+                raise KeyError(key)
+            card, is_new = copy.deepcopy(default), True
+        else:
+            card, is_new = current, False
+        mutate_fn(card, is_new)
+        return card
+
+    if _use_database():
+        return db.update_customer_row(key, _apply, create=default is not None)
+    with _json_lock:
+        customers = _read_customers_file()
+        card = _apply(customers.get(key))
+        customers[key] = card
+        _write_customers_file_atomic(customers)
+        return card
+
+
+def _move_card(old_key: str, new_key: str, mutate_fn) -> dict:
+    """rekey אטומי של כרטיס בודד (old_key→new_key). KeyError אם old_key חסר,
+    db.CustomerKeyConflict אם new_key כבר קיים. לא נוגע בכרטיסים אחרים."""
+    if _use_database():
+        return db.move_customer_row(old_key, new_key, mutate_fn)
+    with _json_lock:
+        customers = _read_customers_file()
+        if old_key not in customers:
+            raise KeyError(old_key)
+        if new_key in customers:
+            raise db.CustomerKeyConflict(new_key)
+        card = mutate_fn(customers[old_key])
+        del customers[old_key]
+        customers[new_key] = card
+        _write_customers_file_atomic(customers)
+        return card
+
+
+def _delete_card(key: str) -> bool:
+    """מחיקת כרטיס בודד - **רק** עבור delete_lead (המחיקה המפורשת הקיימת)."""
+    if _use_database():
+        return db.delete_customer_row(key)
+    with _json_lock:
+        customers = _read_customers_file()
+        if key not in customers:
+            return False
+        del customers[key]
+        _write_customers_file_atomic(customers)
+        return True
+
+
+def save_customers(customers: dict) -> None:
+    """⚠️ שמירה בכמות (bulk) - לתאימות לאחור לסקריפטים בלבד (deduplicate_customers.py,
+    _pilot_reset_status.py וכו'), **לא** לקוד שוטף (השתמשו ב-update_card).
+
+    בטוחה יותר מבעבר: **לעולם לא מוחקת** כרטיסים שחסרים במילון (לא במסד ולא
+    בקובץ - במצב JSON המילון ממוזג לתוך התוכן הנוכחי של הקובץ). עדיין חשופה
+    ל-lost update על כרטיסים שבמילון: ערך שנטען מוקדם דורס שינוי מקבילי שקרה
+    בינתיים. למחיקת כרטיס - delete_lead."""
+    log = logging.getLogger("whatsapp_crm")
+    log.warning("⚠️ save_customers: שמירה בכמות של %d כרטיסים (bulk) - לא אטומית פר-כרטיס; "
+                "לקוד שוטף להשתמש ב-extract.update_card", len(customers))
+    if _use_database():
+        summary = db.upsert_customers_rows(customers)
+        log.info("✅ כרטיסי לידים נשמרו במסד (%d לידים, עודכנו %d, לא נמחק דבר)",
+                 len(customers), summary["upserted"])
         return
-    CUSTOMERS_FILE.write_text(
-        json.dumps(customers, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    log.info("✅ customers.json נכתב: %s (סה\"כ %d לידים)", CUSTOMERS_FILE, len(customers))
+    with _json_lock:
+        merged = _read_customers_file()
+        merged.update(customers)
+        _write_customers_file_atomic(merged)
+    log.info("✅ customers.json נכתב: %s (סה\"כ %d לידים)", CUSTOMERS_FILE, len(merged))
 
 
 def _append_history(
@@ -120,6 +246,12 @@ def _customer_key(tenant_id: str, phone: str) -> str:
     # מפתח מורכב tenant::phone - מונע התנגשות בין לקוחות של עסקים (tenants) שונים
     # שבמקרה יש להם אותו מספר טלפון/מזהה
     return f"{tenant_id}::{phone}"
+
+
+def _new_card(phone: str, tenant_id: str) -> dict:
+    """כרטיס ברירת מחדל ליצירה (update_card(..., default=...)) - זהה ל-
+    customers.get(key, {"phone": ..., "tenant_id": ...}) שהיה בכל פונקציה."""
+    return {"phone": phone, "tenant_id": tenant_id}
 
 
 # קידומות ידועות לשמות פרטיים מרובי-מילים בעברית - אם המילה הראשונה היא אחת
@@ -198,18 +330,15 @@ def upsert_customer(
     source_channel: str = "whatsapp",
     raw_message: str | None = None,
 ) -> dict:
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    card.setdefault("source_channel", source_channel)  # הערוץ שממנו הגיע הלקוח לראשונה
-    for field in ("customer_name", "business_name", "location", "property_type", "budget"):
-        if extracted.get(field):
-            card[field] = extracted[field]
-    if raw_message:
-        _append_history(card, source_channel, raw_message)
-    customers[key] = card
-    save_customers(customers)
-    return card
+    def _mutate(card: dict, _is_new: bool) -> None:
+        card.setdefault("source_channel", source_channel)  # הערוץ שממנו הגיע הלקוח לראשונה
+        for field in ("customer_name", "business_name", "location", "property_type", "budget"):
+            if extracted.get(field):
+                card[field] = extracted[field]
+        if raw_message:
+            _append_history(card, source_channel, raw_message)
+
+    return update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
 
 
 def process_message(
@@ -530,16 +659,14 @@ def record_automated_reply(
     qualification_turn) יחלקו את אותה לוגיקת-תוצאה-אחרי-שליחה, בלי כפילות קוד
     ובלי שבירור הצרכים "ישכח" לעדכן lead_status/history המוטבע כמו שהתשובה
     הרגילה כבר עושה."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers[key]
-    _append_history(card, source_channel, reply_text, direction="out")
-    if card.get("lead_status") in (None, "", "new", "follow_up", "no_answer"):
-        card["lead_status"] = "contacted"
-        card["status_changed_at"] = datetime.now(timezone.utc).isoformat()
-    customers[key] = card
-    save_customers(customers)
-    return card
+    def _mutate(card: dict, _is_new: bool) -> None:
+        _append_history(card, source_channel, reply_text, direction="out")
+        if card.get("lead_status") in (None, "", "new", "follow_up", "no_answer"):
+            card["lead_status"] = "contacted"
+            card["status_changed_at"] = datetime.now(timezone.utc).isoformat()
+
+    # בלי default - כרטיס חסר = KeyError, בדיוק כמו customers[key] שהיה כאן
+    return update_card(_customer_key(tenant_id, phone), _mutate)
 
 
 MEETING_REMINDER_PROMPT = """\
@@ -743,13 +870,13 @@ def apply_qualification_turn_result(
 ) -> dict:
     """מיישמת את **כל** תוצאת תור בירור הצרכים הקצר (ראו server._run_lead_
     qualification_turn/sales_agent.run_qualification_turn) במחזור load_
-    customers→save_customers **אחד בלבד** - לא ארבע קריאות נפרדות (מונה
+    customers→save_customers **אחד בלבד** (היום: update_card אחד) - לא ארבע קריאות נפרדות (מונה
     התורות, update_lead_fields, רישום ההודעה היוצאת, ואולי update_lead_
     ai_enabled), שכל אחת מהן קודם עשתה load+save משלה.
 
     ⚠️ זה קריטי לעמידות בפני קריסה/אתחול שרת (Postgres, DATABASE_URL מוגדר):
-    save_customers→db.replace_customers_rows כותבת שורה שהשתנתה בטרנזקציה
-    אחת (INSERT...ON CONFLICT DO UPDATE + commit יחיד) - ולכן מספר התורות,
+    update_card→db.update_customer_row כותבת את השורה הזו בלבד בטרנזקציה
+    אחת (SELECT FOR UPDATE + INSERT...ON CONFLICT DO UPDATE + commit יחיד) - ולכן מספר התורות,
     השדות שנאספו (purpose/property_type/customer_name), ההודעה שנרשמה
     ו-ai_enabled **כולם מתעדכנים יחד, אטומית, או לא מתעדכנים כלל** אם השרת
     קרס/התאפס בדיוק באמצע התור הזה. ארבע קריאות נפרדות (המודל הקודם) היו
@@ -759,31 +886,26 @@ def apply_qualification_turn_result(
     נכון בהמשך.
 
     מחזירה את הכרטיס המעודכן."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+    def _mutate(card: dict, _is_new: bool) -> None:
+        card["qualification_turns"] = int(card.get("qualification_turns") or 0) + 1
 
-    card["qualification_turns"] = int(card.get("qualification_turns") or 0) + 1
+        def _set(field: str, value: str | None) -> None:
+            if value:
+                card[field] = value.strip()
 
-    def _set(field: str, value: str | None) -> None:
-        if value:
-            card[field] = value.strip()
+        _set("purpose", purpose)
+        _set("property_type", property_type)
+        _set("customer_name", customer_name)
 
-    _set("purpose", purpose)
-    _set("property_type", property_type)
-    _set("customer_name", customer_name)
+        _append_history(card, source_channel, reply_text, direction="out")
+        if card.get("lead_status") in (None, "", "new", "follow_up", "no_answer"):
+            card["lead_status"] = "contacted"
+            card["status_changed_at"] = datetime.now(timezone.utc).isoformat()
 
-    _append_history(card, source_channel, reply_text, direction="out")
-    if card.get("lead_status") in (None, "", "new", "follow_up", "no_answer"):
-        card["lead_status"] = "contacted"
-        card["status_changed_at"] = datetime.now(timezone.utc).isoformat()
+        if mute:
+            card["ai_enabled"] = False
 
-    if mute:
-        card["ai_enabled"] = False
-
-    customers[key] = card
-    save_customers(customers)
-    return card
+    return update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
 
 
 def mark_speed_to_lead_outreach_sent(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
@@ -796,13 +918,11 @@ def mark_speed_to_lead_outreach_sent(phone: str, tenant_id: str = DEFAULT_TENANT
     ראו api_create_lead - הוא בהגדרה "ליד חדש מקמפיין", לא "ליד קיים
     במאגר" שההגנה הקשיחה ב-import_source נועדה לחסום). בלי הדגל הזה, תגובת
     הליד להודעת הפתיחה הייתה נחסמת בטעות כאילו הוא לקוח קיים."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    card["speed_to_lead_outreach_sent"] = True
-    customers[key] = card
-    save_customers(customers)
-    return card
+    return update_card(
+        _customer_key(tenant_id, phone),
+        lambda card, _is_new: card.__setitem__("speed_to_lead_outreach_sent", True),
+        default=_new_card(phone, tenant_id),
+    )
 
 
 def mark_meeting_booked(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
@@ -816,13 +936,11 @@ def mark_meeting_booked(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
     מול הליד הזה" הוא עובדה היסטורית, גם אם המועד הספציפי השתנה/בוטל מאוחר
     יותר; מי שרוצה את המועד/הסטטוס העדכני המדויק ימשיך להשתמש ב-calendar_
     tasks (ראו GET /api/calendar/agenda)."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    card["meeting_booked"] = True
-    customers[key] = card
-    save_customers(customers)
-    return card
+    return update_card(
+        _customer_key(tenant_id, phone),
+        lambda card, _is_new: card.__setitem__("meeting_booked", True),
+        default=_new_card(phone, tenant_id),
+    )
 
 
 def update_activity_summary(phone: str, summary: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
@@ -830,13 +948,11 @@ def update_activity_summary(phone: str, summary: str, tenant_id: str = DEFAULT_T
     נכנסת (ראו server.py._process_incoming_message_job, מבוסס extract.
     generate_executive_summary) - מטא-דאטה בלבד, בדיוק כמו update_lead_voice_
     extraction: לא נרשם ב-history בנפרד ולא נוגע ב-lead_status."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    card["activity_summary"] = summary
-    customers[key] = card
-    save_customers(customers)
-    return card
+    return update_card(
+        _customer_key(tenant_id, phone),
+        lambda card, _is_new: card.__setitem__("activity_summary", summary),
+        default=_new_card(phone, tenant_id),
+    )
 
 
 def log_manual_reply(
@@ -849,14 +965,11 @@ def log_manual_reply(
     """רושם הודעה יוצאת שנשלחה ידנית ע"י נציג מהדשבורד. בכוונה לא נוגע ב-lead_status -
     בניגוד ל-update_lead_status, זו לא בהכרח פעולת חימום/מעקב שמשנה את שלב הליד.
     simulated=True: ההודעה נרשמה כתיעוד, אבל Twilio חסם את השליחה בפועל (חשבון Trial)."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    card.setdefault("source_channel", source_channel)
-    _append_history(card, source_channel, message, direction="out", simulated=simulated)
-    customers[key] = card
-    save_customers(customers)
-    return card
+    def _mutate(card: dict, _is_new: bool) -> None:
+        card.setdefault("source_channel", source_channel)
+        _append_history(card, source_channel, message, direction="out", simulated=simulated)
+
+    return update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
 
 
 def log_call_summary(
@@ -868,14 +981,11 @@ def log_call_summary(
     """רושם תקציר שיחת טלפון (מיוצר ע"י Claude מתוך הערות חופשיות שהקליד הנציג -
     ראו generate_call_summary) בהיסטוריית הכרטיס, בערוץ channel="voice". בכוונה לא
     נוגע ב-lead_status - כמו log_manual_reply."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    card.setdefault("source_channel", "whatsapp")  # לא דורסים את הערוץ המקורי שהליד הגיע ממנו
-    _append_history(card, "voice", summary, direction="out", simulated=simulated)
-    customers[key] = card
-    save_customers(customers)
-    return card
+    def _mutate(card: dict, _is_new: bool) -> None:
+        card.setdefault("source_channel", "whatsapp")  # לא דורסים את הערוץ המקורי שהליד הגיע ממנו
+        _append_history(card, "voice", summary, direction="out", simulated=simulated)
+
+    return update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
 
 
 def import_lead(
@@ -911,77 +1021,60 @@ def import_lead(
     מפורש מוחק שדה): ערך ריק/None פשוט לא נוגע בשדה הקיים - ייבוא חזרה של
     אותו קובץ, או קובץ עם עמודות חסרות לחלק מהשורות, לא ימחק נתונים שכבר
     קיימים בכרטיס מהיסטוריה/עריכה ידנית קודמת."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    is_new = key not in customers
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    if customer_name:
-        card["customer_name"] = customer_name
-    if business_name:
-        card["business_name"] = business_name
-    if location:
-        card["location"] = location
-    if lead_status:
-        card["lead_status"] = lead_status
-    if import_source:
-        card["import_source"] = import_source
-    if category:
-        card["category"] = category
-    if agent:
-        card["agent"] = agent
-    if notes:
-        card["notes"] = notes
-    if email:
-        card["email"] = email
-    if address:
-        card["address"] = address
-    if property_type:
-        card["property_type"] = property_type
-    if budget:
-        card["budget"] = budget
-    if requirements:
-        card["requirements"] = requirements
-    if rooms:
-        card["rooms"] = rooms
-    if project:
-        card["project"] = project
-    if client_id:
-        card["client_id"] = client_id
-    customers[key] = card
-    save_customers(customers)
-    return card, is_new
+    fields = {
+        "customer_name": customer_name,
+        "business_name": business_name,
+        "location": location,
+        "lead_status": lead_status,
+        "import_source": import_source,
+        "category": category,
+        "agent": agent,
+        "notes": notes,
+        "email": email,
+        "address": address,
+        "property_type": property_type,
+        "budget": budget,
+        "requirements": requirements,
+        "rooms": rooms,
+        "project": project,
+        "client_id": client_id,
+    }
+    created = {"is_new": False}
+
+    def _mutate(card: dict, is_new: bool) -> None:
+        created["is_new"] = is_new  # נקבע בתוך הנעילה - נכון גם תחת יצירה מקבילית
+        for field, value in fields.items():
+            if value:
+                card[field] = value
+
+    card = update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
+    return card, created["is_new"]
 
 
 def update_lead_category(phone: str, category: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
     """מעדכן קטגוריה חופשית לליד (למשל "נדל\"ן"/"פרטי"/"משפחה") - שדה סיווג ידני,
     לא קשור ל-lead_status. category ריק ("") מנקה את השדה. לא נרשם ב-history - זה
     מטא-דאטה כמו import_source, לא אינטראקציה עם הלקוח."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    if category:
-        card["category"] = category
-    else:
-        card.pop("category", None)
-    customers[key] = card
-    save_customers(customers)
-    return card
+    def _mutate(card: dict, _is_new: bool) -> None:
+        if category:
+            card["category"] = category
+        else:
+            card.pop("category", None)
+
+    return update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
 
 
 def update_lead_agent(phone: str, agent: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
     """מעדכן "סוכן מטפל" (agent) - שדה טקסט חופשי, מטא-דאטה בלבד (בדיוק כמו
     update_lead_category - לא נרשם ב-history, לא קשור ל-lead_status). agent ריק
     ("") מנקה את השדה."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    if agent:
-        card["agent"] = agent
-    else:
-        card.pop("agent", None)
-    customers[key] = card
-    save_customers(customers)
-    return card
+    def _mutate(card: dict, _is_new: bool) -> None:
+        if agent:
+            card["agent"] = agent
+        else:
+            card.pop("agent", None)
+
+    return update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
 
 
 def update_lead_ai_enabled(phone: str, ai_enabled: bool, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
@@ -991,13 +1084,11 @@ def update_lead_ai_enabled(phone: str, ai_enabled: bool, tenant_id: str = DEFAUL
     תישלח תשובה אוטומטית; מענה ייעשה ידנית בלבד דרך /api/messages/send.
     שדה חסר על כרטיס קיים נחשב True (ברירת המחדל) - ראו _ai_enabled_for,
     כך שאין צורך במיגרציה ל-378 הלידים הקיימים."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    card["ai_enabled"] = bool(ai_enabled)
-    customers[key] = card
-    save_customers(customers)
-    return card
+    return update_card(
+        _customer_key(tenant_id, phone),
+        lambda card, _is_new: card.__setitem__("ai_enabled", bool(ai_enabled)),
+        default=_new_card(phone, tenant_id),
+    )
 
 
 def update_lead_voice_extraction(
@@ -1013,18 +1104,15 @@ def update_lead_voice_extraction(
     customer_name מתעדכן **רק אם עדיין לא ידוע** - לא דורס שם שכבר קיים בכרטיס
     בגלל חילוץ פחות אמין מתמלול. מטא-דאטה בלבד - לא נרשם ב-history בנפרד (התמלול
     עצמו כבר נרשם כהודעה רגילה דרך db.log_message) ולא נוגע ב-lead_status."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    if customer_name and not card.get("customer_name"):
-        card["customer_name"] = customer_name
-    if property_type:
-        card["property_type"] = property_type
-    if budget:
-        card["budget"] = budget
-    customers[key] = card
-    save_customers(customers)
-    return card
+    def _mutate(card: dict, _is_new: bool) -> None:
+        if customer_name and not card.get("customer_name"):
+            card["customer_name"] = customer_name
+        if property_type:
+            card["property_type"] = property_type
+        if budget:
+            card["budget"] = budget
+
+    return update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
 
 
 def update_lead_status(
@@ -1045,20 +1133,17 @@ def update_lead_status(
     (scheduler.check_pending_followups: "לא נוצר קשר תוך X שעות מאז שסומן 'נוצר
     קשר'") - שדה חדש, תואם-לאחור: כרטיסים ישנים בלי השדה פשוט לא ייכנסו לטיימר
     עד העדכון הבא שלהם."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
-    card.setdefault("source_channel", source_channel)
-    card["lead_status"] = status
-    card["status_changed_at"] = datetime.now(timezone.utc).isoformat()
-    for k, value in (extra or {}).items():
-        if value:
-            card[k] = value
-    if note:
-        _append_history(card, source_channel, note, direction=direction, simulated=simulated)
-    customers[key] = card
-    save_customers(customers)
-    return card
+    def _mutate(card: dict, _is_new: bool) -> None:
+        card.setdefault("source_channel", source_channel)
+        card["lead_status"] = status
+        card["status_changed_at"] = datetime.now(timezone.utc).isoformat()
+        for k, value in (extra or {}).items():
+            if value:
+                card[k] = value
+        if note:
+            _append_history(card, source_channel, note, direction=direction, simulated=simulated)
+
+    return update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
 
 
 def update_lead_fields(
@@ -1103,40 +1188,37 @@ def update_lead_fields(
     purpose: "investment" (השקעה) / "residential" (מגורים) - נאסף ע"י בירור
     הצרכים הקצר (sales_agent.run_qualification_turn, ראו server._run_lead_
     qualification_turn) - אותה בדיוק שיטת "" מוחקת/None לא נוגע."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    card = customers.get(key, {"phone": phone, "tenant_id": tenant_id})
+    fields = (
+        ("customer_name", customer_name),
+        ("business_name", business_name),
+        ("location", location),
+        ("agent", agent),
+        ("category", category),
+        ("notes", notes),
+        ("client_id", client_id),
+        ("email", email),
+        ("address", address),
+        ("property_type", property_type),
+        ("budget", budget),
+        ("requirements", requirements),
+        ("rooms", rooms),
+        ("project", project),
+        ("purpose", purpose),
+    )
 
-    def _set(field: str, value: str | None) -> None:
-        if value is None:
-            return
-        value = value.strip()
-        if value:
-            card[field] = value
-        else:
-            card.pop(field, None)
+    def _mutate(card: dict, _is_new: bool) -> None:
+        for field, value in fields:
+            if value is None:
+                continue
+            value = value.strip()
+            if value:
+                card[field] = value
+            else:
+                card.pop(field, None)
+        if lead_status:
+            card["lead_status"] = lead_status
 
-    _set("customer_name", customer_name)
-    _set("business_name", business_name)
-    _set("location", location)
-    _set("agent", agent)
-    _set("category", category)
-    _set("notes", notes)
-    _set("client_id", client_id)
-    _set("email", email)
-    _set("address", address)
-    _set("property_type", property_type)
-    _set("budget", budget)
-    _set("requirements", requirements)
-    _set("rooms", rooms)
-    _set("project", project)
-    _set("purpose", purpose)
-    if lead_status:
-        card["lead_status"] = lead_status
-
-    customers[key] = card
-    save_customers(customers)
-    return card
+    return update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
 
 
 def rekey_lead(old_phone: str, new_phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
@@ -1152,21 +1234,28 @@ def rekey_lead(old_phone: str, new_phone: str, tenant_id: str = DEFAULT_TENANT_I
     if not new_phone:
         raise ValueError("מספר טלפון חדש לא יכול להיות ריק")
 
-    customers = load_customers()
     old_key = _customer_key(tenant_id, old_phone)
-    if old_key not in customers:
-        raise ValueError("הליד המקורי לא נמצא")
     if new_phone == old_phone:
-        return customers[old_key]
+        card = load_customers().get(old_key)
+        if card is None:
+            raise ValueError("הליד המקורי לא נמצא")
+        return card
 
     new_key = _customer_key(tenant_id, new_phone)
-    if new_key in customers:
-        raise ValueError(f"המספר {new_phone} כבר שייך לליד אחר קיים - לא ניתן למזג לידים כאן")
 
-    card = customers.pop(old_key)
-    card["phone"] = new_phone
-    customers[new_key] = card
-    save_customers(customers)
+    def _mutate(card: dict) -> dict:
+        card["phone"] = new_phone
+        return card
+
+    # העברה אטומית של הכרטיס הזה בלבד (בדיקת קיום/התנגשות + מחיקת המפתח הישן
+    # + הוספת החדש - באותה נעילה/טרנזקציה), ורק אחריה עמודת phone בטבלאות הלוג
+    # (חוק בטיחות 5 - שני החלקים, לא UPDATE חלקי)
+    try:
+        card = _move_card(old_key, new_key, _mutate)
+    except KeyError:
+        raise ValueError("הליד המקורי לא נמצא") from None
+    except db.CustomerKeyConflict:
+        raise ValueError(f"המספר {new_phone} כבר שייך לליד אחר קיים - לא ניתן למזג לידים כאן") from None
     db.rekey_phone(old_phone, new_phone, tenant_id=tenant_id)
     return card
 
@@ -1176,12 +1265,8 @@ def delete_lead(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> bool:
     (messages/calls/calendar_tasks, ראו db.delete_lead_activity). פעולה הרסנית
     ובלתי הפיכה - האישור האנושי (מודאל אישור) הוא באחריות ה-UI (index.html),
     לא כאן. מחזיר True אם הליד נמצא ונמחק, False אם לא היה קיים מלכתחילה."""
-    customers = load_customers()
-    key = _customer_key(tenant_id, phone)
-    if key not in customers:
+    if not _delete_card(_customer_key(tenant_id, phone)):
         return False
-    del customers[key]
-    save_customers(customers)
     db.delete_lead_activity(phone, tenant_id=tenant_id)
     return True
 

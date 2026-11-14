@@ -1360,6 +1360,7 @@
       <i data-lucide="user-circle" class="h-3.5 w-3.5 text-indigo-400"></i>
       <span class="min-w-0 flex-1 truncate text-slate-300" id="currentUserName">טוען...</span>
       <button type="button" id="switchUserBtn" class="text-slate-500 hover:text-indigo-400" title="החלף משתמש (מפתח API)"><i data-lucide="key-round" class="h-3.5 w-3.5"></i></button>
+      <button type="button" id="logoutBtn" class="text-slate-500 hover:text-rose-400" title="התנתק"><i data-lucide="log-out" class="h-3.5 w-3.5"></i></button>
     </div>
     <div class="mt-auto border-t border-slate-800/80 p-3">
       <button type="button" id="themeToggle" class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 transition hover:bg-slate-800/60 hover:text-slate-100" title="החלף מצב תצוגה">
@@ -1405,8 +1406,9 @@
         </div>
       </div>
     </header>
-    <!-- אזהרת API_SECRET_KEY חסר (מוצג רק אם window.__API_KEY__ הוזרק ריק, ראו
-         server.py:index ו-checkApiKeyConfigured למטה) - כל בקשות ה-/api/* ייכשלו
+    <!-- (2026-11-14: מוסתר תמיד - המפתח כבר לא מוזרק מהשרת, "אין מפתח" מטופל
+         במסך ההתחברות loginOverlay; ראו checkApiKeyConfigured.) היסטורית: אזהרת
+         API_SECRET_KEY חסר - כל בקשות ה-/api/* ייכשלו
          ב-401 במצב הזה, וזה נראה בדשבורד כ"אין חיבור לשרת" (סימפטום מטעה - השרת
          כן חי, רק חוסם fail-closed כי אין מפתח תקין). נפוץ בפריסה ראשונה בענן -
          .env לא מועלה ל-git בכוונה, כך שמשתני הסביבה חייבים הגדרה ידנית בלוח
@@ -2198,35 +2200,131 @@
   </div>
 </aside>
 
+<!-- מסך התחברות (2026-11-14): השרת כבר לא מזריק את API_SECRET_KEY לעמוד
+     (ראו server.py:index). המשתמש מדביק את מפתח ה-API האישי שלו (משתמש RBAC -
+     create_user.py / POST /api/admin/users), המפתח מאומת מול GET /api/me ונשמר
+     ב-localStorage. מוצג כברירת מחדל ומוסתר מיד ע"י הסקריפט למטה אם כבר יש מפתח
+     שמור - כדי שהדשבורד לא "יהבהב" בלי התחברות. -->
+<div id="loginOverlay" dir="rtl"
+  style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(2,6,23,0.96);">
+  <form id="loginForm" autocomplete="off"
+    class="w-full max-w-sm rounded-xl border border-slate-800 bg-slate-900 p-6 text-slate-100 shadow-2xl">
+    <h2 class="mb-1 text-lg font-semibold">התחברות ל-CRM</h2>
+    <p class="mb-4 text-sm text-slate-400">הדביקו את מפתח ה-API האישי שקיבלתם ממנהל המערכת.</p>
+    <label for="loginApiKey" class="mb-1 block text-xs text-slate-400">מפתח API</label>
+    <input id="loginApiKey" type="password" required spellcheck="false"
+      class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-indigo-500" />
+    <div id="loginError" class="mb-3 text-sm text-rose-400" style="display:none;"></div>
+    <button type="submit" id="loginSubmit"
+      class="w-full rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">התחבר</button>
+  </form>
+</div>
+
 <script>
 // שער אימות API (שלב 6 - CLAUDE.md) - עוטף את fetch הגלובלי פעם אחת במקום לגעת
 // בעשרות קריאות fetch("/api/...") מפוזרות בקובץ הזה, כדי שאף קריאה לא תישכח
-// בטעות. window.__API_KEY__ מוזרק ע"י השרת בזמן הגשת GET / (ראו server.py:
-// index()) - זה תמיד המפתח הראשי (אדמין) - לא שמור בקובץ הזה עצמו (שנמצא
-// ב-git) כדי שהמפתח לא ידלוף להיסטוריית ה-repo.
-//
-// RBAC (שלב 2): "🔑 החלף משתמש" בסיידבר שומר override ב-localStorage (מפתח
-// API של partner/client) - אם קיים, הוא גובר על window.__API_KEY__ להדגמה/
-// בדיקה של תפקידים שונים באותו דפדפן בלי דף login נפרד. localStorage הוא
-// per-browser בלבד (לא per-server-session) - זו נוחות הדגמה, לא מנגנון אימות
-// אמיתי בפני עצמו (המפתח עדיין מאומת בשרת בכל בקשה, ראו _require_api_key).
-function activeApiKey() {
+// בטעות. המפתח הוא המפתח האישי של המשתמש המחובר (localStorage "crm_api_key"),
+// שהוזן במסך ההתחברות ואומת מול /api/me - השרת **לא** מזריק שום מפתח לעמוד
+// (עד 2026-11-14 הוזרק כאן המפתח הראשי כ-window.__API_KEY__ - דליפת אדמין לכל
+// מי שפתח את הכתובת). המפתח עדיין מאומת בשרת בכל בקשה (_require_api_key).
+const API_KEY_STORAGE = "crm_api_key";
+const LEGACY_API_KEY_STORAGE = "crm_api_key_override"; // "🔑 החלף משתמש" הישן
+
+function getApiKey() {
   try {
-    return localStorage.getItem("crm_api_key_override") || window.__API_KEY__ || "";
+    return localStorage.getItem(API_KEY_STORAGE) || localStorage.getItem(LEGACY_API_KEY_STORAGE) || "";
   } catch (e) {
-    return window.__API_KEY__ || "";
+    return "";
   }
 }
+// שם ישן - נשאר כ-alias כדי לא לשבור קוד קיים שקורא לו
+const activeApiKey = getApiKey;
+
+function setApiKey(key) {
+  localStorage.setItem(API_KEY_STORAGE, key);
+  try { localStorage.removeItem(LEGACY_API_KEY_STORAGE); } catch (e) {}
+}
+
+function logout() {
+  try {
+    localStorage.removeItem(API_KEY_STORAGE);
+    localStorage.removeItem(LEGACY_API_KEY_STORAGE);
+  } catch (e) {}
+  location.reload();
+}
+
+function showLoginOverlay(message) {
+  const overlay = document.getElementById("loginOverlay");
+  const err = document.getElementById("loginError");
+  if (err) {
+    err.textContent = message || "";
+    err.style.display = message ? "" : "none";
+  }
+  if (overlay) overlay.style.display = "flex";
+  const input = document.getElementById("loginApiKey");
+  if (input) setTimeout(() => input.focus(), 0);
+}
+
+const _originalFetch = window.fetch.bind(window);
+let _sessionExpiredShown = false;
 
 (function () {
-  const originalFetch = window.fetch.bind(window);
   window.fetch = (input, init = {}) => {
     const url = typeof input === "string" ? input : (input && input.url) || "";
-    if (url.startsWith("/api/")) {
-      init = { ...init, headers: { ...(init.headers || {}), "X-API-Key": activeApiKey() } };
+    if (!url.startsWith("/api/")) return _originalFetch(input, init);
+    const key = getApiKey();
+    if (!key) {
+      // לא מחוברים - לא שולחים בכלל לשרת (שלא יציף 401 ברקע מאחורי מסך ההתחברות)
+      return Promise.resolve(new Response(JSON.stringify({ error: "לא מחובר" }), {
+        status: 401, headers: { "Content-Type": "application/json" },
+      }));
     }
-    return originalFetch(input, init);
+    init = { ...init, headers: { ...(init.headers || {}), "X-API-Key": key } };
+    return _originalFetch(input, init).then(res => {
+      if (res.status === 401 && !_sessionExpiredShown) {
+        // מפתח שמור אבל השרת דוחה אותו (משתמש נמחק/מפתח הוחלף) - חזרה למסך ההתחברות
+        _sessionExpiredShown = true;
+        try {
+          localStorage.removeItem(API_KEY_STORAGE);
+          localStorage.removeItem(LEGACY_API_KEY_STORAGE);
+        } catch (e) {}
+        showLoginOverlay("המפתח השמור כבר לא תקף - התחברו מחדש.");
+      }
+      return res;
+    });
   };
+})();
+
+(function initLogin() {
+  const overlay = document.getElementById("loginOverlay");
+  if (getApiKey()) overlay.style.display = "none";
+  else showLoginOverlay("");
+
+  document.getElementById("loginForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const input = document.getElementById("loginApiKey");
+    const btn = document.getElementById("loginSubmit");
+    const key = (input.value || "").trim();
+    if (!key) return;
+    btn.disabled = true;
+    btn.textContent = "בודק...";
+    try {
+      // _originalFetch ישירות - העטיפה למעלה הייתה דורסת את X-API-Key במפתח השמור (הריק)
+      const res = await _originalFetch("/api/me", { headers: { "X-API-Key": key } });
+      if (res.status === 401) throw new Error("מפתח לא תקין");
+      if (!res.ok) throw new Error("שגיאת שרת (HTTP " + res.status + ")");
+      try {
+        setApiKey(key);
+      } catch (e) {
+        throw new Error("הדפדפן חוסם שמירה מקומית (localStorage) - לא ניתן להתחבר");
+      }
+      location.reload();
+    } catch (err) {
+      showLoginOverlay(err.message || "ההתחברות נכשלה");
+      btn.disabled = false;
+      btn.textContent = "התחבר";
+    }
+  });
 })();
 
 const STATUS_META = {
@@ -4826,12 +4924,15 @@ document.querySelectorAll(".sidebar-nav-item[data-section]").forEach(btn => {
 let currentUser = null;
 
 async function loadCurrentUser() {
+  if (!getApiKey()) return; // לא מחוברים - מסך ההתחברות מוצג, אין מה לטעון
   try {
     const res = await fetch("/api/me");
+    if (res.status === 401) return; // עטיפת fetch כבר החזירה את מסך ההתחברות
     if (!res.ok) throw new Error("HTTP " + res.status);
     currentUser = await res.json();
   } catch (err) {
-    currentUser = { role: "admin", name: "לא זוהה", tenant_ids: [] };
+    // כשל רשת/שרת זמני - לא מניחים admin (כמו פעם); תפקיד מינימלי עד רענון
+    currentUser = { role: "client", name: "לא זוהה (שגיאת שרת)", tenant_ids: [] };
   }
   document.getElementById("currentUserName").textContent = `${currentUser.name} · ${currentUser.role}`;
   document.querySelectorAll(".sidebar-nav-item[data-roles]").forEach(btn => {
@@ -4842,18 +4943,31 @@ async function loadCurrentUser() {
   });
 }
 
+// "🔑 החלף משתמש" = התנתקות + חזרה למסך ההתחברות (שם מדביקים מפתח של משתמש
+// אחר, והוא מאומת מול /api/me לפני שנשמר - לא prompt עיוור כמו פעם).
 document.getElementById("switchUserBtn").addEventListener("click", () => {
-  const current = (() => { try { return localStorage.getItem("crm_api_key_override") || ""; } catch (e) { return ""; } })();
-  const next = window.prompt(
-    "הדבק מפתח API של משתמש (partner/client) כדי להתחזות לתצוגה שלו, או השאר ריק כדי לחזור לאדמין הראשי:",
-    current
-  );
-  if (next === null) return; // ביטול
+  if (window.confirm("להתנתק ולהתחבר עם מפתח API של משתמש אחר?")) logout();
+});
+document.getElementById("logoutBtn").addEventListener("click", () => logout());
+
+// "📤 ייצוא לידים" היה קישור <a href> רגיל - ניווט דפדפן לא שולח X-API-Key,
+// ולכן קיבל 401 מאז שבוטל ?api_key= ב-query string. מוריד דרך fetch (עם המפתח)
+// ושומר כקובץ.
+document.getElementById("exportBtn")?.addEventListener("click", async (ev) => {
+  ev.preventDefault();
   try {
-    if (next.trim()) localStorage.setItem("crm_api_key_override", next.trim());
-    else localStorage.removeItem("crm_api_key_override");
-  } catch (e) { /* localStorage לא זמין - מתעלמים, נשארים על המפתח הראשי */ }
-  location.reload();
+    const res = await fetch("/api/leads/export");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "leads_export.csv";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  } catch (err) {
+    alert("ייצוא הלידים נכשל: " + err.message);
+  }
 });
 
 // ---- הגדרות החברה - Self-Service Tenant Feature Flags (admin/partner, ראו
@@ -4988,7 +5102,7 @@ async function checkServerStatus() {
       // השרת בהחלט חי (קיבלנו תגובת HTTP תקינה) - רק חוסם fail-closed כי המפתח
       // חסר/שגוי (ראו apiKeyMissingBanner). "אין חיבור לשרת" כאן היה מטעה -
       // נראה כתקלת רשת בזמן שזו בעצם הגדרת סביבה חסרה/שגויה.
-      text.textContent = "שגיאת הרשאה (401) - בדוק API_SECRET_KEY";
+      text.textContent = "לא מחובר (401) - התחברו עם מפתח API";
       dot.classList.add("bg-rose-400");
       return;
     }
@@ -6305,9 +6419,12 @@ try {
 // override מקומי) - האבחנה החשובה: זה שונה ממקרה שבו יש מפתח אבל הוא שגוי
 // (אז 401 עדיין יתפוס, אבל ה"באג" האמיתי שם הוא הקשה/הגדרה שגויה, לא היעדר
 // הגדרה בשרת לגמרי) - ראו ההערה המלאה ב-HTML של הבאנר.
+// (2026-11-14) מאז שהמפתח כבר לא מוזרק מהשרת, "אין מפתח" = "לא מחובר" ומטופל
+// במסך ההתחברות (loginOverlay) - הבאנר נשאר מוסתר תמיד. נשמר כפונקציה ריקה-
+// למעשה כי checkServerStatus קורא לה.
 function checkApiKeyConfigured() {
   const banner = document.getElementById("apiKeyMissingBanner");
-  if (banner) banner.style.display = activeApiKey() ? "none" : "";
+  if (banner) banner.style.display = "none";
 }
 checkApiKeyConfigured();
 

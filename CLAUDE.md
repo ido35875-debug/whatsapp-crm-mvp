@@ -105,8 +105,9 @@
 
 - אין Multi-Tenant אמיתי - מאגר כרטיסים יחיד גלובלי (`customers.json` / טבלת Postgres אחת), בלי בידוד עסקים.
 - Omnichannel חלקי - רק WhatsApp מחובר בפועל; IG/FB placeholder בלבד.
-- `customers.json` כקובץ שטוח (מצב מקומי) - לא בטוח לכתיבה מקבילית תחת עומס. גם במצב Postgres, `save_customers` מסנכרן את כל המילון (`replace_customers_rows` - כולל מחיקת שורות שחסרות במילון), כך שכתיבות מקבילות עלולות לדרוס זו את זו.
-- `/api/*` מוגן במפתח (`API_SECRET_KEY` / משתמשי RBAC, `X-API-Key` או `Bearer`) - בלי מפתח תקין מוחזר 401. אבל המפתח הראשי מוזרק לדשבורד (`window.__API_KEY__`), כך שכל מי שפותח את הדף יכול לשלוף אותו. `/webhook` עצמו לא מאומת ב-Green API (נשען על סודיות הכתובת).
+- כתיבה לכרטיסים היא **פר-כרטיס ואטומית** (מ-2026-11-14): `extract.update_card`/`_move_card`/`_delete_card` → ב-Postgres `db.update_customer_row` (`SELECT ... FOR UPDATE`), מקומית נעילה + כתיבת קובץ אטומית. `save_customers` (bulk, לסקריפטים) **לא מוחקת לעולם** - מחיקה רק דרך `delete_lead`/`_delete_card`. מקומית אין הגנה בין כמה processes (מקומית רץ process אחד).
+- `/api/*` מוגן במפתח (`X-API-Key` או `Bearer`) - בלי מפתח תקין מוחזר 401. הדשבורד דורש התחברות עם מפתח אישי של משתמש RBAC (נוצר ב-`create_user.py` או `POST /api/admin/users`); `API_SECRET_KEY` הוא מפתח אדמין לצד-שרת בלבד ולא מוזרק לדף. המפתח האישי נשמר ב-`localStorage`. `/webhook` עצמו לא מאומת ב-Green API (נשען על סודיות הכתובת).
+- `EXPECTED_WHATSAPP_NUMBER` (אופציונלי): אם מוגדר ו-Green API מחובר למספר אחר - כל שליחה מה-instance הגלובלי נחסמת (`WrongWhatsAppNumberError`). מונע ערבוב instance בין מערכת הנדל"ן לוויפים.
 - סודות (`TWILIO_AUTH_TOKEN` וכו') בטקסט גלוי ב-`.env` - אין secret manager.
 - אין HTTPS/rate limiting באפליקציה עצמה (מניחים proxy/ngrok/LB מול production).
 - Voice Twilio (גישור אמיתי) לא מוגדר/לא נבדק - חסרים `AGENT_PHONE_NUMBER`/`PUBLIC_BASE_URL`.

@@ -39,7 +39,7 @@ from extract import (
     last_contact_at,
     load_customers,
     log_manual_reply,
-    save_customers,
+    update_card,
     update_lead_status,
 )
 from paths import DATA_DIR
@@ -416,11 +416,12 @@ def _process_followup_lead(key: str, card: dict, now: datetime) -> dict | None:
             # DB, בניגוד מוחלט לעיקרון "dry-run = שום שינוי אמיתי לא קורה" שכל
             # שאר הקובץ הזה מכבד. זה מה שגרם ללידים אמיתיים בקובץ ה-VIP המקומי
             # לעבור ל-"follow_up" בלי אישור, רק מהרצה מקומית של השרת).
-            fresh_customers = load_customers()
-            fresh_card = fresh_customers.get(key)
-            if fresh_card is not None:
-                fresh_card["lead_status"] = "follow_up"
-                save_customers(fresh_customers)
+            # update_card: עדכון אטומי של הכרטיס הזה בלבד (בלי default - כרטיס
+            # שנמחק בינתיים לא נוצר מחדש, בדיוק כמו ה-"if fresh_card is not None").
+            try:
+                update_card(key, lambda c, _is_new: c.__setitem__("lead_status", "follow_up"))
+            except KeyError:
+                pass
     else:
         status_label = "dry-run - לא נשלח"
 

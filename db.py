@@ -62,6 +62,11 @@ if IS_POSTGRES:
     _PG_POOL_MIN = int(os.environ.get("DB_POOL_MIN", "1"))
     _PG_POOL_MAX = int(os.environ.get("DB_POOL_MAX", "10"))
     _pg_pool = psycopg2.pool.ThreadedConnectionPool(_PG_POOL_MIN, _PG_POOL_MAX, DATABASE_URL)
+    # ThreadedConnectionPool זורק PoolError מיד כשהוא מלא, ולא ממתין. תחת עומס
+    # (threads שממתינים לנעילת כרטיס FOR UPDATE מחזיקים חיבור) זה הפיל פעולות.
+    # הסמפור גורם לממתין לחכות לחיבור פנוי, עד DB_POOL_WAIT_SECONDS.
+    _PG_POOL_WAIT_SECONDS = float(os.environ.get("DB_POOL_WAIT_SECONDS", "30"))
+    _pg_pool_slots = threading.BoundedSemaphore(_PG_POOL_MAX)
 
     IntegrityError = psycopg2.IntegrityError
 else:
@@ -121,6 +126,7 @@ class _PGConnection:
 
     def __init__(self, raw):
         self._raw = raw
+        self._returned = False
 
     @property
     def row_factory(self):
@@ -156,12 +162,26 @@ class _PGConnection:
                 self._raw.rollback()
         except Exception:
             pass
-        _pg_pool.putconn(self._raw)
+        if self._returned:
+            return  # close() כפול לא מחזיר את החיבור/הסמפור פעמיים
+        self._returned = True
+        try:
+            _pg_pool.putconn(self._raw)
+        finally:
+            _pg_pool_slots.release()
 
 
 def _connect_raw():
     if IS_POSTGRES:
-        return _PGConnection(_pg_pool.getconn())
+        if not _pg_pool_slots.acquire(timeout=_PG_POOL_WAIT_SECONDS):
+            raise psycopg2.pool.PoolError(
+                f"אין חיבור פנוי ל-Postgres אחרי {_PG_POOL_WAIT_SECONDS:.0f} שניות (DB_POOL_MAX={_PG_POOL_MAX})"
+            )
+        try:
+            return _PGConnection(_pg_pool.getconn())
+        except BaseException:
+            _pg_pool_slots.release()
+            raise
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
@@ -1811,8 +1831,12 @@ def delete_user(user_id: str) -> bool:
 
 
 # ---- customers (כרטיסי לידים) - חלופה ל-customers.json כש-DATABASE_URL מוגדר ----
-# כל שורה = כרטיס אחד (מפתח tenant::phone + JSON של הכרטיס). השמירה היא שורה-שורה:
-# רק שורות שהשתנו נכתבות, ושורות שנמחקו מהמילון מוסרות - לא דריסה של כל הטבלה.
+# כל שורה = כרטיס אחד (מפתח tenant::phone + JSON של הכרטיס). כתיבה שוטפת היא
+# פר-כרטיס ואטומית (update_customer_row/move_customer_row/delete_customer_row -
+# ראו extract.update_card): gunicorn מריץ כמה workers + threads ברקע, וסנכרון של
+# כל המילון (load הכל → שינוי כרטיס אחד → save הכל) דרס עדכונים מקביליים לכרטיסים
+# אחרים ומחק כרטיסים שנוצרו בינתיים. upsert_customers_rows (bulk) נשאר לסקריפטים
+# בלבד, ולעולם לא מוחק.
 
 def load_customers_rows() -> dict:
     conn = _get_connection()
@@ -1823,18 +1847,132 @@ def load_customers_rows() -> dict:
         conn.close()
 
 
-def replace_customers_rows(customers: dict) -> dict:
-    """מסנכרן את הטבלה למילון נתון: מעדכן/מוסיף רק שורות שהשתנו, ומוחק שורות שחסרות.
-    מחזיר סיכום {upserted, deleted}."""
+def _card_payload(card: dict) -> str:
+    return json.dumps(card, ensure_ascii=False, sort_keys=True)
+
+
+def _begin_card_transaction(conn) -> None:
+    """פותח טרנזקציה לכתיבה פר-כרטיס. Postgres: psycopg2 פותח טרנזקציה אוטומטית
+    בשאילתה הראשונה (autocommit כבוי) - הנעילה עצמה היא SELECT ... FOR UPDATE.
+    SQLite (רק אם DATABASE_URL מוגדר לא-postgres - לא תצורה רגילה): BEGIN IMMEDIATE
+    נועל את הקובץ לכתיבה מראש, כי ל-SQLite אין FOR UPDATE."""
+    if not IS_POSTGRES:
+        conn.execute("BEGIN IMMEDIATE")
+
+
+def _select_card_for_update(conn, cust_key: str):
+    lock_clause = " FOR UPDATE" if IS_POSTGRES else ""
+    return conn.execute(
+        f"SELECT data FROM customers WHERE cust_key = ?{lock_clause}", (cust_key,)
+    ).fetchone()
+
+
+def update_customer_row(cust_key: str, mutate_fn, create: bool = False):
+    """עדכון אטומי של כרטיס **אחד** בלבד (שורה אחת), בטרנזקציה אחת:
+    SELECT ... FOR UPDATE (נעילת השורה עד commit) → mutate_fn(card) → כתיבה חזרה
+    של אותה שורה בלבד. שום שורה אחרת בטבלה לא נקראת/נכתבת/נמחקת - שני workers/
+    threads שמעדכנים כרטיסים *שונים* לא דורסים זה את זה, ושניים שמעדכנים את
+    *אותו* כרטיס מסודרים בתור (השני מחכה לנעילה ורואה את הגרסה שהראשון כתב).
+
+    mutate_fn(card: dict | None) -> dict | None: מקבל את הכרטיס הנוכחי (None אם
+    לא קיים) ומחזיר את הכרטיס לכתיבה, או None = לא לכתוב כלום. חריגה מתוך
+    mutate_fn = rollback, שום שינוי. מחזיר את מה ש-mutate_fn החזיר.
+
+    create=True ושורה לא קיימת: מכניסים קודם שורת placeholder (INSERT ... ON
+    CONFLICT DO NOTHING) כדי לנעול גם את *יצירת* הכרטיס - אם thread/worker אחר
+    יוצר את אותו מפתח במקביל, ה-INSERT שלנו מחכה ל-commit שלו, ואז אנחנו קוראים
+    מחדש (FOR UPDATE) ומפעילים את mutate_fn על הכרטיס שהוא יצר, במקום לדרוס אותו.
+    ה-placeholder לעולם לא נראה לקוראים אחרים (לא committed עד הכתיבה הסופית,
+    ונעלם ב-rollback)."""
+    conn = _get_connection()
+    try:
+        _begin_card_transaction(conn)
+        row = _select_card_for_update(conn, cust_key)
+        if row is None and create:
+            cur = conn.execute(
+                "INSERT INTO customers (cust_key, data) VALUES (?, ?) ON CONFLICT (cust_key) DO NOTHING",
+                (cust_key, "{}"),
+            )
+            if cur.rowcount == 0:
+                # מישהו אחר יצר את הכרטיס בינתיים (ו-commit) - עובדים על הגרסה שלו
+                row = _select_card_for_update(conn, cust_key)
+        current_payload = row["data"] if row is not None else None
+        current = json.loads(current_payload) if current_payload is not None else None
+        result = mutate_fn(current)
+        if result is None:
+            return None  # בלי commit - close() עושה rollback (כולל ה-placeholder אם נוצר)
+        payload = _card_payload(result)
+        if payload != current_payload:
+            conn.execute(
+                "INSERT INTO customers (cust_key, data) VALUES (?, ?) "
+                "ON CONFLICT (cust_key) DO UPDATE SET data = EXCLUDED.data",
+                (cust_key, payload),
+            )
+        conn.commit()
+        return result
+    finally:
+        conn.close()  # בלי commit (חריגה) = rollback (ראו _PGConnection.close / sqlite3)
+
+
+class CustomerKeyConflict(Exception):
+    """move_customer_row: מפתח היעד כבר שייך לכרטיס קיים אחר."""
+
+
+def move_customer_row(old_key: str, new_key: str, mutate_fn) -> dict:
+    """העברת כרטיס בודד ממפתח למפתח (rekey) בטרנזקציה אחת: נועל את השורה הישנה,
+    mutate_fn(card) -> card (למשל עדכון phone), מכניס תחת new_key ומוחק את old_key.
+    KeyError אם old_key לא קיים; CustomerKeyConflict אם new_key כבר קיים (כולל
+    יצירה מקבילית - ה-INSERT הרגיל (בלי ON CONFLICT) נכשל על ה-UNIQUE). לא נוגע
+    בשום שורה אחרת. עמודת phone בטבלאות הלוג - באחריות הקורא (rekey_phone)."""
+    conn = _get_connection()
+    try:
+        _begin_card_transaction(conn)
+        row = _select_card_for_update(conn, old_key)
+        if row is None:
+            raise KeyError(old_key)
+        if _select_card_for_update(conn, new_key) is not None:
+            raise CustomerKeyConflict(new_key)
+        card = mutate_fn(json.loads(row["data"]))
+        try:
+            conn.execute(
+                "INSERT INTO customers (cust_key, data) VALUES (?, ?)", (new_key, _card_payload(card))
+            )
+        except IntegrityError as exc:
+            raise CustomerKeyConflict(new_key) from exc
+        conn.execute("DELETE FROM customers WHERE cust_key = ?", (old_key,))
+        conn.commit()
+        return card
+    finally:
+        conn.close()
+
+
+def delete_customer_row(cust_key: str) -> bool:
+    """מוחק שורת כרטיס אחת בלבד. משמש רק את extract.delete_lead (המחיקה המפורשת
+    הקיימת) - לא נתיב מחיקה חדש. True אם נמחקה שורה בפועל."""
+    conn = _get_connection()
+    try:
+        cur = conn.execute("DELETE FROM customers WHERE cust_key = ?", (cust_key,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def upsert_customers_rows(customers: dict) -> dict:
+    """שמירה בכמות (bulk) - מעדכן/מוסיף רק שורות שהתוכן שלהן שונה מהמסד.
+    **לעולם לא מוחק** שורות שחסרות במילון (בעבר replace_customers_rows כן מחק -
+    כרטיס שנוצר ע"י worker אחר בין load ל-save היה נמחק). עדיין חשוף ל-lost
+    update על כרטיסים שבמילון (ערך ישן דורס חדש) - לקוד שוטף להשתמש ב-
+    update_customer_row. מחזיר {upserted, deleted=0}."""
     conn = _get_connection()
     try:
         existing = {
             row["cust_key"]: row["data"]
             for row in conn.execute("SELECT cust_key, data FROM customers").fetchall()
         }
-        upserted = deleted = 0
+        upserted = 0
         for key, card in customers.items():
-            payload = json.dumps(card, ensure_ascii=False, sort_keys=True)
+            payload = _card_payload(card)
             if existing.get(key) == payload:
                 continue
             conn.execute(
@@ -1843,11 +1981,13 @@ def replace_customers_rows(customers: dict) -> dict:
                 (key, payload),
             )
             upserted += 1
-        for key in existing:
-            if key not in customers:
-                conn.execute("DELETE FROM customers WHERE cust_key = ?", (key,))
-                deleted += 1
         conn.commit()
-        return {"upserted": upserted, "deleted": deleted}
+        return {"upserted": upserted, "deleted": 0}
     finally:
         conn.close()
+
+
+def replace_customers_rows(customers: dict) -> dict:
+    """תאימות לאחור בלבד - **כבר לא מוחק** שורות (ראו upsert_customers_rows).
+    השם נשמר כדי שסקריפטים ישנים לא יישברו; מחיקה רק דרך delete_customer_row."""
+    return upsert_customers_rows(customers)
