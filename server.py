@@ -2103,6 +2103,13 @@ def api_campaign_start(campaign_id):
     with _running_campaigns_lock:
         if run_key in _running_campaigns or _campaign_running_in_db(tenant_id, campaign_id):
             return jsonify(already_running_msg), 409
+        # runner חי (בכל worker) כבר שולח מהמספר של ה-tenant - גם אם זה קמפיין אחר.
+        # run_campaign עצמו נועל ב-DB ויסרב בכל מקרה; כאן רק הודעה ברורה ל-UI.
+        if db.outbound_lock_active(outbound_engine.outbound_lock_key(tenant_id), outbound_engine.RUN_LOCK_STALE_SECONDS):
+            return jsonify({
+                "error": "כבר מתבצעת שליחת קמפיין מהמספר הזה - המתינו לסיומה (שליחה טורית, 45-90 שנ' בין הודעות)",
+                "campaign_id": campaign_id,
+            }), 409
         # skipped_quota = נעצרו במכסה היומית בהרצה קודמת - קליק חוזר ממשיך איתם
         pending = [r for r in rows if r.get("status") in ("queued", "skipped_quota")]
         if not pending:

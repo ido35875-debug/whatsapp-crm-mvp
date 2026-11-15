@@ -1051,6 +1051,42 @@ def import_lead(
     return card, created["is_new"]
 
 
+def append_imported_history(
+    phone: str, entries: list[dict], tenant_id: str = DEFAULT_TENANT_ID
+) -> tuple[int, int]:
+    """מוסיף לסוף history רשומות שיובאו ממערכת חיצונית (למשל הערות/פעילויות
+    מבמבי - migrate_bmby.py) עם חותמת הזמן **המקורית** שלהן. append-only (חוק
+    בטיחות 6): לא משנה/ממיין/מוחק רשומה קיימת - רק מוסיף בסוף.
+
+    אידמפוטנטי: כל רשומה חייבת "import_ref" יציב (ValueError אחרת); רשומה
+    שה-import_ref שלה כבר קיים בכרטיס (או כפול בתוך entries עצמו) מדולגת -
+    הרצה חוזרת לעולם לא מכפילה. timestamp חייב להיות ISO מודע-timezone
+    (last_contact_at משווה חותמות - ערבוב naive/aware היה מפיל TypeError).
+    הכרטיס חייב להתקיים (KeyError אחרת - לא יוצר כרטיס). אטומי פר-כרטיס
+    (update_card). מחזיר (appended, skipped_as_duplicate)."""
+    for entry in entries:
+        if not entry.get("import_ref"):
+            raise ValueError("append_imported_history: כל רשומה חייבת import_ref")
+        ts = datetime.fromisoformat(entry["timestamp"])
+        if ts.tzinfo is None:
+            raise ValueError(f"append_imported_history: timestamp בלי timezone: {entry['timestamp']}")
+    counts = {"appended": 0, "skipped": 0}
+
+    def _mutate(card: dict, _is_new: bool) -> None:
+        history = card.setdefault("history", [])
+        seen = {h.get("import_ref") for h in history if h.get("import_ref")}
+        for entry in entries:
+            if entry["import_ref"] in seen:
+                counts["skipped"] += 1
+                continue
+            history.append(dict(entry))
+            seen.add(entry["import_ref"])
+            counts["appended"] += 1
+
+    update_card(_customer_key(tenant_id, phone), _mutate)
+    return counts["appended"], counts["skipped"]
+
+
 def update_lead_category(phone: str, category: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
     """מעדכן קטגוריה חופשית לליד (למשל "נדל\"ן"/"פרטי"/"משפחה") - שדה סיווג ידני,
     לא קשור ל-lead_status. category ריק ("") מנקה את השדה. לא נרשם ב-history - זה

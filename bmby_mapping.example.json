@@ -1,0 +1,131 @@
+{
+  "_comment": "תבנית מיפוי ל-migrate_bmby.py. מפתחות שמתחילים ב-'_' הם הערות ומתעלמים מהם. העתיקו ל-bmby_mapping.json והתאימו לייצוא האמיתי: הריצו קודם dry-run - הדוח מציג לכל קובץ אילו עמודות מופו ואילו לא (columns_unmapped), וכל סטטוס שלא מופה. שמות העמודות כאן הם ניחושים (עברית+אנגלית) - לא אומתו מול ייצוא BMBY אמיתי. השוואת כותרות: לא תלוית רישיות/רווחים כפולים/BOM, ״ = \".",
+
+  "files": {
+    "_comment": "שמות קבצים לחיפוש בתיקיית --input, לפי הסדר; תומך ב-glob (*). הסיומת קובעת CSV/XLSX. כל הקבצים אופציונליים, אבל נדרש לפחות contacts או leads.",
+    "contacts": {"names": ["contacts.csv", "contacts.xlsx", "אנשי קשר.csv", "אנשי קשר.xlsx", "*contacts*", "*אנשי*קשר*"]},
+    "leads": {"names": ["leads.csv", "leads.xlsx", "פניות.csv", "פניות.xlsx", "לידים.csv", "לידים.xlsx", "*leads*", "*פניות*"]},
+    "tasks": {"names": ["tasks.csv", "tasks.xlsx", "משימות.csv", "משימות.xlsx", "*tasks*", "*משימות*"]},
+    "activities": {"names": ["activities.csv", "activities.xlsx", "פעילויות.csv", "פעילויות.xlsx", "הערות.csv", "הערות.xlsx", "*activit*", "*פעילו*"]}
+  },
+
+  "columns": {
+    "_comment": "source (מקור הגעה) נכתב כשורה בבלוק ההערות ('מקור בבמבי: ...') - לא ל-import_source (ששמור לסימון bmby_migration_<date>). לכל קובץ: שדה-פנימי -> רשימת שמות עמודה אפשריים (הראשון שקיים בקובץ ועם ערך - נבחר). phone: כל העמודות שקיימות נאספות; הנייד הישראלי הראשון (05x) = הטלפון הראשי (מפתח הכרטיס), השאר נכנסים ל-notes. תא עם כמה מספרים מופרדים ב-, ; / מפוצל.",
+    "contacts": {
+      "contact_id": ["מזהה איש קשר", "מס' איש קשר", "מספר איש קשר", "מזהה לקוח", "מס' לקוח", "קוד לקוח", "contact id", "contact_id", "client id", "id", "מזהה"],
+      "customer_name": ["שם מלא", "שם איש קשר", "שם הלקוח", "שם לקוח", "full name", "name", "שם"],
+      "first_name": ["שם פרטי", "first name", "firstname"],
+      "last_name": ["שם משפחה", "last name", "lastname", "surname"],
+      "phone": ["טלפון נייד", "נייד", "סלולרי", "טלפון סלולרי", "mobile", "cell", "cellphone", "טלפון נייד 2", "נייד 2", "טלפון", "טלפון בית", "טלפון עבודה", "phone", "phone 2", "home phone", "work phone", "טל"],
+      "email": ["דואר אלקטרוני", "דוא\"ל", "אימייל", "מייל", "email", "e-mail"],
+      "address": ["כתובת", "רחוב", "address", "street"],
+      "location": ["עיר", "ישוב", "יישוב", "אזור", "city", "area"],
+      "agent": ["נציג מטפל", "איש מכירות", "סוכן מטפל", "סוכן", "נציג", "אחראי", "owner", "assigned to", "sales rep", "agent"],
+      "category": ["סיווג", "קטגוריה", "סוג לקוח", "category"],
+      "source": ["מקור הגעה", "מקור", "source", "lead source"],
+      "notes": ["הערות", "הערה", "תיאור", "notes", "remarks", "comments"],
+      "status": ["סטטוס", "סטטוס לקוח", "מצב", "status"],
+      "project": ["פרויקט", "שם פרויקט", "project"],
+      "budget": ["תקציב", "budget"],
+      "property_type": ["סוג נכס", "סוג דירה", "property type"],
+      "rooms": ["חדרים", "מספר חדרים", "rooms"],
+      "requirements": ["דרישות", "העדפות", "requirements"],
+      "created_at": ["תאריך יצירה", "נוצר בתאריך", "תאריך הוספה", "created", "created at", "creation date"],
+      "updated_at": ["תאריך עדכון", "עודכן בתאריך", "תאריך עדכון אחרון", "עדכון אחרון", "updated", "last update", "modified"]
+    },
+    "leads": {
+      "lead_id": ["מזהה פניה", "מזהה פנייה", "מס' פניה", "מס' פנייה", "מספר פניה", "מזהה ליד", "lead id", "lead_id", "inquiry id", "id"],
+      "contact_id": ["מזהה איש קשר", "מס' איש קשר", "מזהה לקוח", "מס' לקוח", "קוד לקוח", "contact id", "contact_id", "client id"],
+      "customer_name": ["שם מלא", "שם איש קשר", "שם הלקוח", "שם לקוח", "full name", "name", "שם"],
+      "first_name": ["שם פרטי", "first name"],
+      "last_name": ["שם משפחה", "last name"],
+      "phone": ["טלפון נייד", "נייד", "סלולרי", "mobile", "cell", "טלפון", "phone"],
+      "email": ["דואר אלקטרוני", "דוא\"ל", "אימייל", "מייל", "email"],
+      "project": ["פרויקט", "שם פרויקט", "פרויקט מבוקש", "project", "project name"],
+      "status": ["סטטוס פניה", "סטטוס פנייה", "סטטוס ליד", "סטטוס", "שלב", "status", "stage"],
+      "agent": ["נציג מטפל", "איש מכירות", "סוכן מטפל", "סוכן", "נציג", "אחראי", "owner", "assigned to", "agent"],
+      "location": ["עיר", "אזור מבוקש", "אזור", "city", "area"],
+      "budget": ["תקציב", "טווח מחיר", "budget", "price range"],
+      "property_type": ["סוג נכס", "סוג דירה", "property type"],
+      "rooms": ["חדרים", "מספר חדרים", "rooms"],
+      "requirements": ["דרישות", "העדפות", "requirements"],
+      "source": ["מקור פניה", "מקור פנייה", "מקור הגעה", "מקור", "source", "lead source"],
+      "notes": ["הערות", "הערה", "תיאור", "notes"],
+      "created_at": ["תאריך פניה", "תאריך פנייה", "תאריך יצירה", "created", "created at"],
+      "updated_at": ["תאריך עדכון", "עדכון אחרון", "תאריך עדכון סטטוס", "updated", "last update"]
+    },
+    "tasks": {
+      "task_id": ["מזהה משימה", "מס' משימה", "מספר משימה", "task id", "task_id", "id"],
+      "contact_id": ["מזהה איש קשר", "מס' איש קשר", "מזהה לקוח", "contact id", "contact_id"],
+      "lead_id": ["מזהה פניה", "מזהה פנייה", "מס' פניה", "מזהה ליד", "lead id", "lead_id"],
+      "title": ["נושא", "כותרת", "שם משימה", "subject", "title"],
+      "description": ["תיאור", "פירוט", "הערות", "description", "notes"],
+      "due_date": ["תאריך יעד", "תאריך ביצוע", "מועד", "תאריך", "due date", "due", "date"],
+      "due_time": ["שעה", "שעת ביצוע", "time", "due time"],
+      "status": ["סטטוס", "מצב", "status"],
+      "type": ["סוג משימה", "סוג", "type", "task type"],
+      "agent": ["נציג מטפל", "אחראי", "מבצע", "assigned to", "owner", "agent"],
+      "created_at": ["תאריך יצירה", "created", "created at"]
+    },
+    "activities": {
+      "activity_id": ["מזהה פעילות", "מס' פעילות", "מזהה הערה", "activity id", "activity_id", "id"],
+      "contact_id": ["מזהה איש קשר", "מס' איש קשר", "מזהה לקוח", "contact id", "contact_id"],
+      "lead_id": ["מזהה פניה", "מזהה פנייה", "מס' פניה", "מזהה ליד", "lead id", "lead_id"],
+      "date": ["תאריך ושעה", "תאריך פעילות", "מועד", "תאריך", "date", "datetime", "created"],
+      "type": ["סוג פעילות", "סוג", "type", "activity type"],
+      "subject": ["נושא", "כותרת", "subject"],
+      "text": ["תוכן", "פירוט", "הערה", "הערות", "תיאור", "סיכום", "text", "content", "note", "description"],
+      "agent": ["נציג", "מבצע", "נוצר ע\"י", "משתמש", "user", "agent", "created by"]
+    }
+  },
+
+  "lead_status_map": {
+    "_comment": "טקסט סטטוס בבמבי -> lead_status פנימי (new/contacted/follow_up/hot/not_relevant/reactivation/human_handling/no_answer). השוואה לא תלוית רישיות/רווחים. ערך שכבר תקין (למשל 'hot') מתקבל ישירות. סטטוס שלא מופיע כאן: הסטטוס בכרטיס לא משתנה, הטקסט המקורי נשמר ב-bmby_status וב-notes ('סטטוס בבמבי: ...') ומדווח. null = לא לקבוע סטטוס (כמו לא ממופה, בלי אזהרה).",
+    "חדש": "new", "ליד חדש": "new", "פניה חדשה": "new", "פנייה חדשה": "new", "new": "new",
+    "בטיפול": "contacted", "נוצר קשר": "contacted", "בתהליך": "contacted", "in progress": "contacted", "contacted": "contacted",
+    "במעקב": "follow_up", "פולו אפ": "follow_up", "לחזור": "follow_up", "חזרה": "follow_up", "follow up": "follow_up",
+    "חם": "hot", "ליד חם": "hot", "מתעניין": "hot", "תואמה פגישה": "hot", "פגישה": "hot", "משא ומתן": "hot", "מו\"מ": "hot",
+    "לא רלוונטי": "not_relevant", "לא מעוניין": "not_relevant", "סגור - לא רלוונטי": "not_relevant", "lost": "not_relevant",
+    "אין מענה": "no_answer", "לא עונה": "no_answer", "no answer": "no_answer",
+    "רדום": "reactivation", "קר": "reactivation",
+    "נסגרה עסקה": null, "רכש": null, "won": null
+  },
+
+  "status_policy": "fill_missing",
+  "_status_policy": "fill_missing (ברירת מחדל): סטטוס מבמבי נכתב רק לכרטיס חדש/בלי סטטוס - כרטיס שכבר מטופל במערכת שומר את הסטטוס שלו. overwrite: במבי גובר. בשני המקרים status_changed_at לא נקבע (ומוסר אם הסטטוס הוחלף) - כדי שלא יתחיל טיימר פולו-אפ אוטומטי; התאריך המקורי נשמר ב-bmby_status_updated_at.",
+
+  "field_policy": "fill_missing",
+  "_field_policy": "fill_missing (ברירת מחדל): בכרטיס קיים לא דורסים שדה שכבר יש בו ערך שונה (מדווח ב-field_conflicts). overwrite: ערכי במבי דורסים.",
+
+  "default_category": "נדל\"ן",
+  "_default_category": "קטגוריה לכרטיסים בלי עמודת קטגוריה; null = לא לקבוע.",
+
+  "task_status_map": {
+    "_comment": "סטטוס משימה בבמבי -> pending/done/cancelled. רק pending מיובא, אלא אם --include-done-tasks.",
+    "פתוחה": "pending", "פתוח": "pending", "ממתינה": "pending", "בטיפול": "pending", "לביצוע": "pending", "open": "pending", "pending": "pending",
+    "בוצעה": "done", "בוצע": "done", "הושלמה": "done", "סגורה": "done", "סגור": "done", "done": "done", "completed": "done", "closed": "done",
+    "בוטלה": "cancelled", "בוטל": "cancelled", "cancelled": "cancelled", "canceled": "cancelled"
+  },
+  "task_status_empty": "pending",
+  "_task_status_empty": "סטטוס למשימה שתא הסטטוס שלה ריק.",
+  "task_status_default": null,
+  "_task_status_default": "סטטוס למשימה עם סטטוס לא ממופה; null = לדלג ולדווח.",
+
+  "task_type_map": {
+    "_comment": "סוג משימה בבמבי -> followup/meeting. ⚠️ meeting = פגישה מול לקוח: אם SCHEDULER_AUTO_MEETING_REMINDER/INVITE יודלקו, הסקדולר ישלח עליהן תזכורות/זימונים ללקוח.",
+    "פגישה": "meeting", "פגישה במשרד": "meeting", "סיור באתר": "meeting", "meeting": "meeting",
+    "שיחה": "followup", "שיחת טלפון": "followup", "חזרה ללקוח": "followup", "תזכורת": "followup", "call": "followup", "follow up": "followup"
+  },
+  "task_type_default": "followup",
+  "task_missing_due_date": "today",
+  "_task_missing_due_date": "today = משימה פתוחה בלי תאריך יעד תקבע להיום (שתופיע ביומן); skip = לדלג ולדווח.",
+
+  "date_formats": ["%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y", "%d.%m.%Y %H:%M", "%d.%m.%Y", "%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%d/%m/%y %H:%M", "%d/%m/%y"],
+  "_date_formats": "ISO 8601 נבדק תמיד קודם. תאריכי Excel (תא תאריך) נקראים ישירות. תאריך בלי אזור זמן = שעון timezone למטה; נשמר ב-history כ-UTC ISO. משימות: due_date/due_time נשמרים בשעון מקומי (כמו שהיומן מצפה).",
+  "timezone": "Asia/Jerusalem",
+
+  "csv_encodings": ["utf-8-sig", "cp1255"],
+  "_csv_encodings": "CSV מבמבי/Excel בעברית לעיתים בקידוד Windows-1255 - נבדקים לפי הסדר.",
+
+  "history_message_prefix": "[במבי] "
+}

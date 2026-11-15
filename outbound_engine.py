@@ -20,6 +20,7 @@ import logging
 import os
 import random
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,7 +33,8 @@ from whatsapp_send import _to_e164
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # נתיב מפורש - עמיד לכל דרך הרצה/פריסה
 
-logger = logging.getLogger(__name__)
+# ילד של "whatsapp_crm" (server.py) - בלי זה שורות INFO מכאן לא הגיעו ללוג בכלל (אין handler)
+logger = logging.getLogger("whatsapp_crm.outbound")
 
 # Anti-Ban rate limiter - השהיה רנדומלית בין הודעה להודעה. איטי יותר מ-
 # reactivate.RATE_LIMIT_* (15-30 שניות) בכוונה: אלו אנשי קשר חדשים לגמרי
@@ -42,8 +44,55 @@ logger = logging.getLogger(__name__)
 # הוא קצב *בין הודעה להודעה בתוך קמפיין יזום* ללקוחות חדשים (outbound קר);
 # ה-delay ב-server.py הוא השהיה לפני *מענה חוזר לאותו לקוח* שכבר כתב אלינו
 # (inbound). שני מנגנונים נפרדים בכוונה, למטרות שונות - לא כפילות/טעות.
-MIN_DELAY_SECONDS = int(os.environ.get("OUTBOUND_MIN_DELAY_SECONDS", "45"))
-MAX_DELAY_SECONDS = int(os.environ.get("OUTBOUND_MAX_DELAY_SECONDS", "90"))
+# רצפה קשיחה: משתנה סביבה שגוי (0/ריק) לא יכול לבטל את המרווח בפרודקשן.
+ANTI_BAN_FLOOR_SECONDS = 45
+MIN_DELAY_SECONDS = max(int(os.environ.get("OUTBOUND_MIN_DELAY_SECONDS", "45")), ANTI_BAN_FLOOR_SECONDS)
+MAX_DELAY_SECONDS = max(int(os.environ.get("OUTBOUND_MAX_DELAY_SECONDS", "90")), MIN_DELAY_SECONDS)
+# runner נחשב "מת" אם לא רענן את הנעילה כך וכך שניות (מרענן כל ~5 שניות גם בזמן השהיה)
+RUN_LOCK_STALE_SECONDS = 120
+
+
+def outbound_lock_key(tenant_id: str) -> str:
+    """נעילה אחת לכל tenant (= מספר WhatsApp אחד) - גם שני קמפיינים שונים לא ירוצו במקביל."""
+    return f"outbound:{tenant_id}"
+
+
+def _wait_for_anti_ban_gap(
+    tenant_id: str, lock_key: str, owner: str, position: str, phone: str,
+    last_attempt_at: datetime | None = None,
+) -> bool:
+    """חוסם עד שעבר מרווח אקראי של MIN-MAX שניות מהשליחה האחרונה של ה-tenant -
+    המאוחר מבין: השליחה האחרונה בפועל ב-DB (כל runner/קמפיין) וניסיון השליחה
+    האחרון של ה-runner הזה (כולל ניסיון שנכשל). רושם ללוג כמה ממתינים, ומרענן את
+    הנעילה תוך כדי. מחזיר False אם הנעילה אבדה (runner אחר השתלט) - אז אסור לשלוח."""
+    gap = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
+    candidates = [t for t in (db.last_outbound_sent_at(tenant_id), last_attempt_at) if t is not None]
+    last_sent = max(candidates) if candidates else None
+    if last_sent is None:
+        logger.info("📤 [קמפיין %s] %s: שליחה ראשונה של ה-tenant - שולח עכשיו אל %s", tenant_id, position, phone)
+        return True
+    elapsed = (datetime.now(timezone.utc) - last_sent).total_seconds()
+    remaining = gap - elapsed
+    if remaining <= 0:
+        logger.info(
+            "📤 [קמפיין %s] %s: עברו %.0f שנ' מהשליחה הקודמת (מרווח נדרש %.0f) - שולח עכשיו אל %s",
+            tenant_id, position, elapsed, gap, phone,
+        )
+        return True
+    logger.info(
+        "⏳ [קמפיין %s] %s: Anti-Ban - ממתין %.0f שנ' לפני שליחה אל %s (מרווח %.0f שנ' מהשליחה הקודמת)",
+        tenant_id, position, remaining, phone, gap,
+    )
+    deadline = time.monotonic() + remaining
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        time.sleep(min(5.0, left))
+        if not db.heartbeat_outbound_lock(lock_key, owner):
+            logger.error("🚨 [קמפיין %s] הנעילה אבדה בזמן ההמתנה - עוצר בלי לשלוח", tenant_id)
+            return False
+    return True
 
 # מכסה יומית פר-tenant - עצירה מוחלטת (לא רק השהיה) כשמגיעים אליה, כדי לא
 # לחצות סף שנראה כמו bulk-spam בעיני WhatsApp/UltraMsg. נאכפת מול
@@ -313,10 +362,39 @@ def run_campaign(tenant_id: str, campaign_id: str) -> dict:
         for status in ("queued", "skipped_quota")
         for item in db.get_outbound_queue(tenant_id=tenant_id, campaign_id=campaign_id, status=status)
     ]
-    provider = get_provider()
     summary = {"sent": 0, "simulated": 0, "failed": 0, "skipped_quota": 0, "cancelled": 0}
+    if not items:
+        return summary
+
+    # נעילה אחת לכל tenant, בין כל ה-workers: רק runner אחד שולח מהמספר בכל רגע.
+    # בלעדיה, כל worker של gunicorn שקיבל "התחל" הריץ runner משלו, וכל runner תפס
+    # פריט אחר ושלח מיד - כך יצאו כמה הודעות בבת אחת בלי מרווח.
+    lock_key = outbound_lock_key(tenant_id)
+    owner = f"{campaign_id}:{uuid.uuid4().hex[:8]}"
+    if not db.acquire_outbound_lock(lock_key, owner, RUN_LOCK_STALE_SECONDS):
+        logger.warning("⛔ [קמפיין %s] runner אחר כבר שולח מה-tenant הזה - לא מתחיל runner נוסף (campaign=%s)", tenant_id, campaign_id)
+        summary["locked"] = True
+        return summary
+    logger.info(
+        "▶️ [קמפיין %s] התחלת שליחה טורית: campaign=%s, %d פריטים, מרווח %d-%d שנ' בין הודעות",
+        tenant_id, campaign_id, len(items), MIN_DELAY_SECONDS, MAX_DELAY_SECONDS,
+    )
+    try:
+        _run_campaign_items(tenant_id, items, summary, lock_key, owner)
+    finally:
+        db.release_outbound_lock(lock_key, owner)
+        logger.info("⏹️ [קמפיין %s] סיום שליחה: campaign=%s, סיכום=%s", tenant_id, campaign_id, summary)
+    return summary
+
+
+def _run_campaign_items(tenant_id: str, items: list[dict], summary: dict, lock_key: str, owner: str) -> None:
+    """לולאת השליחה הטורית - רצה רק כשה-runner מחזיק בנעילת ה-tenant (ראו run_campaign)."""
+    provider = get_provider()
+    last_attempt_at: datetime | None = None
+    total = len(items)
 
     for i, item in enumerate(items):
+        db.heartbeat_outbound_lock(lock_key, owner)
         if db.count_sent_today(tenant_id) >= DAILY_QUOTA:
             # מעבר מותנה ל-skipped_quota: runner מקביל שכבר תפס/שלח את הפריט לא
             # יידרס. פריט שכבר skipped_quota פשוט נשאר כך.
@@ -324,9 +402,15 @@ def run_campaign(tenant_id: str, campaign_id: str) -> dict:
                 summary["skipped_quota"] += 1
             continue
 
-        # תפיסה אטומית (queued/skipped_quota)→sending - רק runner אחד זוכה בכל פריט,
-        # כך שקליק כפול/טאב נוסף/שני workers לא שולחים את אותה הודעה פעמיים. נכשל =
-        # runner אחר כבר מטפל בו (או שבוטל/נשלח בינתיים) - דילוג שקט, בלי השהיה.
+        # מנוע ה-Anti-Ban: חוסם *לפני* כל שליחה עד שעבר מרווח אקראי של 45-90 שנ'
+        # מהשליחה הקודמת של ה-tenant. ההמתנה לפני התפיסה והבדיקה מחדש - כך שמצב
+        # הליד נבדק ממש לפני השליחה, לא דקה וחצי קודם.
+        position = f"הודעה {i + 1}/{total}"
+        if not _wait_for_anti_ban_gap(tenant_id, lock_key, owner, position, item["phone"], last_attempt_at):
+            return
+
+        # תפיסה אטומית (queued/skipped_quota)→sending - הגנה נוספת מפני שליחה כפולה
+        # (הנעילה כבר מבטיחה runner יחיד). נכשל = הפריט טופל/בוטל בינתיים - דילוג.
         if not db.claim_outbound_item(item["id"], from_status=item["status"]):
             continue
 
@@ -345,6 +429,8 @@ def run_campaign(tenant_id: str, campaign_id: str) -> dict:
                 continue  # לא נשלח כלום - אין צורך בהשהיית Anti-Ban
 
         outcome = None  # "sent"/"simulated" - לרישום בכרטיס אחרי שהסטטוס כבר עודכן
+        last_attempt_at = datetime.now(timezone.utc)  # גם ניסיון שנכשל נספר למרווח
+        logger.info("📨 [קמפיין %s] %s: שולח עכשיו אל %s", tenant_id, position, item["phone"])
         try:
             provider.send_message(item["phone"], item["message"])
             db.update_outbound_status(item["id"], "sent", sent_at=datetime.now(timezone.utc).isoformat())
@@ -365,11 +451,3 @@ def run_campaign(tenant_id: str, campaign_id: str) -> dict:
             # הסטטוס כבר sent/simulated ב-DB - כשל רישום לא יגרום לשליחה חוזרת.
             # card_key = הכרטיס שנמצא בבדיקה מחדש (גם כשהמפתח שונה מ-item.phone)
             _log_crm_send(tenant_id, card_key, item["message"], simulated=(outcome == "simulated"))
-
-        # מנוע ה-Anti-Ban: השהיה רנדומלית לפני הפריט הבא (לא אחרי האחרון) - קצב
-        # קבוע בין ניסיונות בלי קשר לתוצאה (נשלח/סימולציה/כשל), בדיוק כמו
-        # reactivate.py - אחרת כשל חוזר היה יכול "לברוח" מהמגבלה.
-        if i < len(items) - 1:
-            time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
-
-    return summary

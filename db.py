@@ -38,7 +38,7 @@ import os
 import re
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from paths import DATA_DIR
 
@@ -305,6 +305,10 @@ def _init_schema(conn) -> None:
         # נשארים מקור-האמת היחיד לכל סוג, ו-task_type רק מתאר למה הם מתייחסים;
         # ה-API/ה-UI כבר מציגים אותם תחת שמות נפרדים (ראו api_calendar_agenda).
         ("task_type", "ALTER TABLE calendar_tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'followup'"),
+        # מזהה חיצוני יציב למשימה שיובאה ממערכת אחרת (למשל "bmby:task:123" -
+        # ראו migrate_bmby.py) - בסיס לאידמפוטנטיות של ייבוא חוזר (find_task_
+        # by_external_ref). null לכל משימה שנוצרה במערכת עצמה.
+        ("external_ref", "ALTER TABLE calendar_tasks ADD COLUMN external_ref TEXT"),
     ):
         if column not in existing_task_columns:
             conn.execute(ddl)
@@ -431,6 +435,19 @@ def _init_schema(conn) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_outbound_queue_campaign ON outbound_queue(campaign_id)")
+    # נעילת runner של קמפיינים - שורה אחת לכל tenant (lock_key), כדי שרק runner אחד
+    # ישלח מכל מספר WhatsApp בכל רגע, גם בין workers שונים של gunicorn (ראו
+    # acquire_outbound_lock). heartbeat_at נשמר כ-TEXT ISO ב-UTC בשני הבאקאנדים.
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS outbound_locks (
+            id {_PK},
+            lock_key TEXT NOT NULL UNIQUE,
+            owner TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL
+        )
+        """
+    )
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS users (
@@ -1139,6 +1156,7 @@ def create_task(
     intent: str | None = None,
     related_task_id: int | None = None,
     task_type: str = "followup",
+    external_ref: str | None = None,
 ) -> int:
     """יוצר משימת מעקב/תזכורת (follow-up) לליד, או הצעת-פגישה אוטומטית (ראו
     scheduling_agent.create_scheduling_proposal - status="pending_confirmation",
@@ -1153,12 +1171,39 @@ def create_task(
         now = datetime.now(timezone.utc).isoformat()
         cur = conn.execute(
             "INSERT INTO calendar_tasks "
-            "(tenant_id, phone, title, due_date, due_time, notes, status, source, intent, related_task_id, task_type, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (tenant_id, phone, title, due_date, due_time, notes, status, source, intent, related_task_id, task_type, now, now),
+            "(tenant_id, phone, title, due_date, due_time, notes, status, source, intent, related_task_id, task_type, "
+            "external_ref, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (tenant_id, phone, title, due_date, due_time, notes, status, source, intent, related_task_id, task_type,
+             external_ref, now, now),
         )
         conn.commit()
         return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def find_task_by_external_ref(tenant_id: str, external_ref: str) -> dict | None:
+    """משימה לפי (tenant_id, external_ref) - לאידמפוטנטיות של ייבוא ממערכת
+    חיצונית (migrate_bmby.py). **קריאה בלבד ובלי שום שינוי סכימה**: בכוונה
+    _connect_raw ולא _get_connection (שמריץ _init_schema = CREATE/ALTER) -
+    כדי ש-dry-run של מיגרציה לא ייצור את crm_data.db/את העמודה. אם הקובץ/
+    הטבלה/העמודה עוד לא קיימים - אין משימה כזו (None)."""
+    if not external_ref:
+        return None
+    if not IS_POSTGRES and not DB_FILE.exists():
+        return None
+    conn = _connect_raw()
+    try:
+        if "external_ref" not in _existing_columns(conn, "calendar_tasks"):
+            return None
+        if not IS_POSTGRES:
+            conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM calendar_tasks WHERE tenant_id = ? AND external_ref = ? ORDER BY id ASC",
+            (tenant_id, external_ref),
+        ).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 
@@ -1786,6 +1831,94 @@ def campaign_is_running(tenant_id: str, campaign_id: str) -> bool:
 STALE_SENDING_SECONDS = int(os.environ.get("OUTBOUND_STALE_SENDING_SECONDS", "600"))
 # runner נחשב פעיל עד דקה אחרי ההשהיה המקסימלית בין פריטים (OUTBOUND_MAX_DELAY_SECONDS)
 RUN_IDLE_SECONDS = int(os.environ.get("OUTBOUND_MAX_DELAY_SECONDS", "90")) + 60
+
+
+def acquire_outbound_lock(lock_key: str, owner: str, stale_seconds: int) -> bool:
+    """נעילה בין-תהליכית (גם בין workers של gunicorn) ל-runner של קמפיין. מחזיר
+    True אם owner מחזיק בנעילה: נוצרה עכשיו, כבר שלו, או שהקודמת "מתה" (אין
+    heartbeat יותר מ-stale_seconds - runner שקרס). אחרת False."""
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    stale_before = (now - timedelta(seconds=stale_seconds)).isoformat()
+    conn = _get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE outbound_locks SET owner = ?, heartbeat_at = ? "
+            "WHERE lock_key = ? AND (owner = ? OR heartbeat_at < ?)",
+            (owner, now_iso, lock_key, owner, stale_before),
+        )
+        conn.commit()
+        if cur.rowcount == 1:
+            return True
+        try:
+            conn.execute(
+                "INSERT INTO outbound_locks (lock_key, owner, heartbeat_at) VALUES (?, ?, ?)",
+                (lock_key, owner, now_iso),
+            )
+            conn.commit()
+            return True
+        except IntegrityError:
+            return False  # runner אחר חי ומחזיק בנעילה
+    finally:
+        conn.close()
+
+
+def heartbeat_outbound_lock(lock_key: str, owner: str) -> bool:
+    """מרענן את הנעילה (נקרא לאורך ההשהיות). False = הנעילה כבר לא שלנו."""
+    conn = _get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE outbound_locks SET heartbeat_at = ? WHERE lock_key = ? AND owner = ?",
+            (datetime.now(timezone.utc).isoformat(), lock_key, owner),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def release_outbound_lock(lock_key: str, owner: str) -> None:
+    conn = _get_connection()
+    try:
+        conn.execute("DELETE FROM outbound_locks WHERE lock_key = ? AND owner = ?", (lock_key, owner))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def outbound_lock_active(lock_key: str, stale_seconds: int) -> bool:
+    """True אם runner חי מחזיק בנעילה (heartbeat טרי) - לבדיקת ה-server לפני start."""
+    stale_before = (datetime.now(timezone.utc) - timedelta(seconds=stale_seconds)).isoformat()
+    conn = _get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM outbound_locks WHERE lock_key = ? AND heartbeat_at >= ?",
+            (lock_key, stale_before),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def last_outbound_sent_at(tenant_id: str) -> datetime | None:
+    """זמן השליחה האחרונה בפועל של קמפיין מה-tenant הזה (כל הקמפיינים) - בסיס
+    לאכיפת המרווח Anti-Ban לפני כל הודעה, גם מעבר לגבולות runner/קמפיין."""
+    conn = _get_connection()
+    try:
+        row = conn.execute(
+            "SELECT MAX(sent_at) AS last FROM outbound_queue WHERE tenant_id = ? AND status IN ('sent', 'simulated')",
+            (tenant_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    value = row["last"] if row else None
+    if not value:
+        return None
+    try:
+        ts = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
 def count_sent_today(tenant_id: str) -> int:
