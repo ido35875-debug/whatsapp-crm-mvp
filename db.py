@@ -522,7 +522,22 @@ def _ensure_schema(conn) -> None:
 
 def _get_connection():
     conn = _connect_raw()
-    _ensure_schema(conn)
+    try:
+        _ensure_schema(conn)
+        return conn
+    except Exception:
+        # בעליית פריסה כמה תהליכים (2 workers + clock) מריצים את _init_schema במקביל;
+        # המפסידים במרוץ נופלים על DuplicateColumn/UniqueViolation. קודם החיבור לא
+        # נסגר - דלף מה-pool (וסלוט בסמפור) נשאר "idle in transaction" והבקשה קיבלה 500.
+        # עכשיו: סוגרים (rollback + החזרה ל-pool) ומנסים פעם אחת נוספת - בניסיון
+        # השני התהליך המנצח כבר יצר הכל, והבדיקות (IF NOT EXISTS/_existing_columns) עוברות.
+        conn.close()
+    conn = _connect_raw()
+    try:
+        _ensure_schema(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 

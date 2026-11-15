@@ -394,7 +394,10 @@ def _run_campaign_items(tenant_id: str, items: list[dict], summary: dict, lock_k
     total = len(items)
 
     for i, item in enumerate(items):
-        db.heartbeat_outbound_lock(lock_key, owner)
+        if not db.heartbeat_outbound_lock(lock_key, owner):
+            # runner אחר השתלט (אנחנו נתקענו מעבר ל-RUN_LOCK_STALE_SECONDS) - לא שולחים במקביל אליו
+            logger.error("🚨 [קמפיין %s] הנעילה אבדה - עוצר את ה-runner הזה בלי לשלוח", tenant_id)
+            return
         if db.count_sent_today(tenant_id) >= DAILY_QUOTA:
             # מעבר מותנה ל-skipped_quota: runner מקביל שכבר תפס/שלח את הפריט לא
             # יידרס. פריט שכבר skipped_quota פשוט נשאר כך.
