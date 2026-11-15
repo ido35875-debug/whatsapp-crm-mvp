@@ -1675,6 +1675,7 @@ def get_outbound_campaigns(tenant_id: str | None = None) -> list[dict]:
                 SUM(CASE WHEN status = 'simulated' THEN 1 ELSE 0 END) AS simulated,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
                 SUM(CASE WHEN status = 'skipped_quota' THEN 1 ELSE 0 END) AS skipped_quota,
+                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
                 MIN(created_at) AS created_at
             FROM outbound_queue {where}
             GROUP BY campaign_id, tenant_id
@@ -1707,6 +1708,70 @@ def update_outbound_status(
         conn.close()
 
 
+def claim_outbound_item(item_id: int, to_status: str = "sending", from_status: str = "queued") -> bool:
+    """מעבר סטטוס אטומי (compare-and-set) לפריט בתור: UPDATE ... WHERE id=? AND
+    status=from_status. מחזיר True רק אם בדיוק שורה אחת השתנתה - כלומר הקורא
+    הזה "זכה" בפריט. מונע שליחה כפולה כששני runners (קליק כפול על start, טאב
+    נוסף, שני workers של gunicorn) מעבדים את אותו קמפיין במקביל: רק אחד מהם
+    יצליח להעביר queued→sending. עובד זהה ב-SQLite וב-Postgres (rowcount של
+    UPDATE; _PGConnection מוסיף RETURNING רק ל-INSERT)."""
+    conn = _get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE outbound_queue SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+            (to_status, datetime.now(timezone.utc).isoformat(), item_id, from_status),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def campaign_is_running(tenant_id: str, campaign_id: str) -> bool:
+    """True אם יש בקמפיין פריט כלשהו בסטטוס 'sending' (runner פעיל באמצע שליחה) -
+    לשימוש ה-server כדי לא להתחיל runner נוסף. ההגנה האמיתית מפני שליחה כפולה
+    היא claim_outbound_item; זו רק בדיקה ל-UX. פריט 'sending' שלא עודכן יותר מ-
+    STALE_SENDING_SECONDS (runner שקרס באמצע) לא נחשב "רץ" - אחרת הקמפיין היה
+    נחסם ב-409 לתמיד. הפריט עצמו נשאר 'sending' ולא יישלח שוב (בכוונה)."""
+    conn = _get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT status, updated_at FROM outbound_queue WHERE tenant_id = ? AND campaign_id = ?",
+            (tenant_id, campaign_id),
+        ).fetchall()
+    finally:
+        conn.close()
+    now = datetime.now(timezone.utc)
+
+    def _age_seconds(value) -> float | None:
+        try:
+            ts = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (now - ts).total_seconds()
+
+    has_pending = any(r["status"] in ("queued", "skipped_quota") for r in rows)
+    for row in rows:
+        age = _age_seconds(row["updated_at"])
+        if row["status"] == "sending":
+            if age is None or age < STALE_SENDING_SECONDS:
+                return True  # גיל לא ידוע - עדיף "רץ" (409) מאשר להתיר runner נוסף
+        elif has_pending and row["status"] != "queued" and age is not None and age < RUN_IDLE_SECONDS:
+            # runner בהשהיית Anti-Ban בין פריטים (אין כרגע פריט ב-sending): פריט טופל
+            # לאחרונה ועדיין יש פריטים ממתינים. בלי זה, worker שני של gunicorn היה
+            # מתחיל runner מקביל ומקצר את המרווח בין הודעות.
+            return True
+    return False
+
+
+# runner תקין מעדכן כל פריט תוך שניות (ההשהיה של 45-90 שנ' היא *בין* פריטים, כשאין פריט ב-sending)
+STALE_SENDING_SECONDS = int(os.environ.get("OUTBOUND_STALE_SENDING_SECONDS", "600"))
+# runner נחשב פעיל עד דקה אחרי ההשהיה המקסימלית בין פריטים (OUTBOUND_MAX_DELAY_SECONDS)
+RUN_IDLE_SECONDS = int(os.environ.get("OUTBOUND_MAX_DELAY_SECONDS", "90")) + 60
+
+
 def count_sent_today(tenant_id: str) -> int:
     """כמה הודעות outbound נשלחו בפועל היום (UTC) עבור ה-tenant הזה - sent+
     simulated נספרים יחד (שתיהן "ניסיון שליחה אמיתי" מבחינת קצב/מכסה, בדיוק
@@ -1718,7 +1783,10 @@ def count_sent_today(tenant_id: str) -> int:
         today = datetime.now(timezone.utc).date().isoformat()
         row = conn.execute(
             "SELECT COUNT(*) AS cnt FROM outbound_queue "
-            "WHERE tenant_id = ? AND status IN ('sent', 'simulated') AND sent_at LIKE ?",
+            # CAST: ב-Postgres sent_at הוא TIMESTAMP, ו-LIKE ישיר עליו נכשל
+            # ("operator does not exist: timestamp ~~ unknown") - הפיל כל קמפיין
+            # כבר בפריט הראשון. ב-SQLite זה TEXT ממילא - ה-CAST לא משנה דבר.
+            "WHERE tenant_id = ? AND status IN ('sent', 'simulated') AND CAST(sent_at AS TEXT) LIKE ?",
             (tenant_id, f"{today}%"),
         ).fetchone()
         return row["cnt"] if row else 0

@@ -71,6 +71,7 @@ try:
     # ב-"import reactivate" למשל, לפני שמגיעים בכלל לבלוק שתופס אותו.
     import command_copilot
     import db
+    import extract
     import import_leads
     import note_entity_extraction
     import outbound_engine
@@ -1706,7 +1707,12 @@ def api_campaigns_import():
     if ext not in ALLOWED_IMPORT_EXTENSIONS:
         return jsonify({"error": f"סוג קובץ לא נתמך: '{ext or 'ללא סיומת'}'. נתמכים: CSV, XLSX"}), 400
 
-    tenant_id = request.form.get("tenant_id") or DEFAULT_TENANT_ID
+    role_err = _campaign_write_role_or_error()
+    if role_err:
+        return role_err
+    tenant_id, err = _campaign_tenant_or_error(request.form.get("tenant_id") or None)
+    if err:
+        return err
     message_template = request.form.get("message_template") or None
 
     try:
@@ -1715,6 +1721,11 @@ def api_campaigns_import():
         return jsonify({"error": f"שגיאה בקריאת הקובץ: {exc}"}), 400
 
     mapped_rows = [_map_row(raw_row, CAMPAIGN_FIELD_ALIASES) for raw_row in raw_rows]
+    # category="crm_lead" שמור לפריטי CRM (import_crm_leads) - run_campaign מטפל
+    # בהם אחרת (בדיקת כרטיס + רישום בכרטיס). שורת CSV לעולם לא מתחזה לפריט CRM.
+    for row in mapped_rows:
+        if str(row.get("category") or "").strip().lower() == _CRM_LEAD_CATEGORY:
+            row["category"] = None
     campaign_id = uuid.uuid4().hex[:12]
     result = outbound_engine.import_campaign_rows(
         mapped_rows, tenant_id=tenant_id, campaign_id=campaign_id, message_template=message_template
@@ -1728,20 +1739,292 @@ def api_campaigns_import():
     })
 
 
+# ---- קמפיין Outbound מתוך לידי ה-CRM הקיימים (במקום העלאת CSV) ----
+# בחירת הלידים עצמה ב-extract.select_campaign_leads/campaign_filter_options
+# (קריאה בלבד מהכרטיסים), הכנסה לתור ב-outbound_engine.import_crm_leads (תור
+# בלבד, לא שליחה). השליחה בפועל נשארת **רק** דרך POST /api/campaigns/<id>/start
+# (קליק אנושי מפורש - חוק בטיחות #1).
+CAMPAIGN_TEMPLATE_MAX_LEN = 1000
+CAMPAIGN_PROJECT_MAX_LEN = 200
+# סטטוסים שלא נכנסים לקמפיין אלא אם המשתמש סימן אותם במפורש
+CAMPAIGN_DEFAULT_EXCLUDED_STATUSES = {"not_relevant", "human_handling"}
+# סטטוסי תור "פתוחים" - ליד שכבר ממתין/נשלח כרגע בקמפיין אחר לא נכנס שוב
+CAMPAIGN_OPEN_QUEUE_STATUSES = ("queued", "sending", "skipped_quota")  # skipped_quota ממשיך בהרצה הבאה
+CAMPAIGN_PREVIEW_SAMPLE_SIZE = 5
+
+
+def _campaign_tenant_or_error(requested_tenant_id):
+    """מחזיר (tenant_id, None) אם מותר למשתמש הנוכחי לפעול על ה-tenant, אחרת
+    (None, response 403). אותה אכיפה כמו _authorize_lead_access - partner/client
+    לא יכולים לכוון קמפיין ל-tenant שלא הוקצה להם."""
+    tenant_id = requested_tenant_id or DEFAULT_TENANT_ID
+    if not isinstance(tenant_id, str):
+        return None, (jsonify({"error": "tenant_id חייב להיות מחרוזת"}), 400)
+    allowed_tenant_ids = _effective_tenant_ids(tenant_id)
+    if allowed_tenant_ids is not None and tenant_id not in allowed_tenant_ids:
+        return None, (jsonify({"error": "אין הרשאה ל-tenant הזה"}), 403)
+    return tenant_id, None
+
+
+_CRM_LEAD_CATEGORY = getattr(outbound_engine, "CRM_LEAD_CATEGORY", "crm_lead").lower()
+# תפקידים שמותר להם לשנות/להפעיל קמפיין (ייבוא, יצירה מלידים, התחלת שליחה).
+# client - קריאה בלבד (רשימה/תור מסונן/תצוגה מקדימה): הוא מוגבל ללידים שלו
+# (client_id) בעוד שקמפיין הוא ברמת tenant שלם.
+CAMPAIGN_WRITE_ROLES = ("admin", "partner")
+
+
+def _campaign_write_role_or_error():
+    if g.current_user.get("role") not in CAMPAIGN_WRITE_ROLES:
+        return jsonify({"error": "הפעולה מותרת רק למנהל/שותף (admin/partner)"}), 403
+    return None
+
+
+def _campaign_rows_or_error(campaign_id: str, requested_tenant_id=None):
+    """שולף את שורות התור של הקמפיין לפי ה-tenant **האמיתי** שלהן (לא סומך על
+    tenant_id שבבקשה) ומאמת הרשאה. מחזיר (tenant_id, rows, None) או
+    (None, None, response) - 404 לקמפיין לא קיים, 403 ל-tenant לא מורשה."""
+    rows = db.get_outbound_queue(campaign_id=campaign_id)
+    if not rows:
+        return None, None, (jsonify({"error": "קמפיין לא נמצא"}), 404)
+    tenants = sorted({r.get("tenant_id") or DEFAULT_TENANT_ID for r in rows})
+    if len(tenants) > 1:
+        # campaign_id אמור להיות ייחודי (uuid); אם בכל זאת משותף - חייבים לבחור במפורש
+        if requested_tenant_id not in tenants:
+            return None, None, (jsonify({"error": "campaign_id משותף לכמה tenants - יש לציין tenant_id"}), 400)
+        tenant_id = requested_tenant_id
+    else:
+        tenant_id = tenants[0]
+    allowed_tenant_ids = _effective_tenant_ids(tenant_id)
+    if allowed_tenant_ids is not None and tenant_id not in allowed_tenant_ids:
+        return None, None, (jsonify({"error": "אין הרשאה לקמפיין הזה"}), 403)
+    rows = [r for r in rows if (r.get("tenant_id") or DEFAULT_TENANT_ID) == tenant_id]
+    return tenant_id, rows, None
+
+
+def _filter_rows_for_client(rows: list[dict], tenant_id: str) -> list[dict]:
+    """client רואה רק פריטי תור של לידים שבבעלותו (client_id) - כמו /api/leads."""
+    required_client_id = _effective_client_id()
+    if required_client_id is None:
+        return rows
+    cards = load_customers()
+    return [
+        r for r in rows
+        if (cards.get(f"{tenant_id}::{r.get('phone')}") or {}).get("client_id") == required_client_id
+    ]
+
+
+# שומר UX בתוך התהליך: קמפיין שכבר רץ ב-thread לא מתחיל שוב (409). ההגנה
+# האמיתית בין workers של gunicorn היא ה-claim האטומי ב-DB (outbound_engine/db).
+_running_campaigns: set[tuple[str, str]] = set()
+_running_campaigns_lock = threading.Lock()
+
+
+def _campaign_running_in_db(tenant_id: str, campaign_id: str) -> bool:
+    checker = getattr(db, "campaign_is_running", None)
+    if checker is None:
+        return False
+    try:
+        return bool(checker(tenant_id, campaign_id))
+    except Exception:
+        logger.exception("campaign_is_running נכשל (campaign_id=%s)", campaign_id)
+        return False
+
+
+def _mask_phone(phone) -> str:
+    phone = str(phone or "")
+    if len(phone) <= 7:
+        return "•••" + phone[-2:]
+    return f"{phone[:5]}•••{phone[-3:]}"
+
+
+def _render_campaign_message(template, lead: dict) -> str:
+    """אותה פונקציה ש-import_crm_leads משתמש בה - התצוגה המקדימה = מה שייכנס לתור
+    (כולל תבנית ה-CRM כברירת מחדל/נפילה-חזרה על placeholder שגוי)."""
+    return outbound_engine.render_crm_message(template, lead.get("name"), lead.get("company"), lead.get("project"))
+
+
+def _select_crm_campaign_leads(tenant_id: str, statuses, project):
+    """בוחר לידים לקמפיין ומסנן חסומים/כבר-בתור/סטטוסים מוחרגים/כפילויות.
+    מחזיר (eligible_leads, excluded_counts). לא כותב שום דבר."""
+    leads = extract.select_campaign_leads(tenant_id, statuses=statuses or None, project=project or None)
+
+    # client רואה רק לידים שבבעלותו (client_id) - כמו _authorize_lead_access
+    required_client_id = _effective_client_id()
+    client_cards = load_customers() if required_client_id is not None else None
+
+    open_phones = set()
+    for queue_status in CAMPAIGN_OPEN_QUEUE_STATUSES:
+        for item in db.get_outbound_queue(tenant_id=tenant_id, status=queue_status):
+            normalized = _normalize_phone(str(item.get("phone") or ""))
+            if normalized:
+                open_phones.add(normalized)
+
+    selected_statuses = set(statuses or [])
+    excluded = {"blocked": 0, "already_queued": 0, "status": 0, "duplicate": 0}
+    eligible = []
+    seen = set()
+    for lead in leads:
+        if client_cards is not None:
+            card = client_cards.get(lead.get("key") or "") or {}
+            if card.get("client_id") != required_client_id:
+                continue  # לא בבעלותו - לא נספר כהחרגה (לא חושפים ספירה)
+        raw_phone = str(lead.get("phone") or "")
+        normalized = _normalize_phone(raw_phone)
+        if not normalized:
+            continue
+        lead_status = lead.get("lead_status") or "new"
+        if lead_status in CAMPAIGN_DEFAULT_EXCLUDED_STATUSES and lead_status not in selected_statuses:
+            excluded["status"] += 1
+            continue
+        # אותו נרמול כמו ה-webhook (_normalize_phone) - ובנוסף המספר כפי שנשמר בכרטיס
+        if normalized in BLOCKED_CONTACTS or db.is_contact_blocked(normalized, tenant_id=tenant_id) or (
+            raw_phone != normalized and db.is_contact_blocked(raw_phone, tenant_id=tenant_id)
+        ):
+            excluded["blocked"] += 1
+            continue
+        if normalized in open_phones:
+            excluded["already_queued"] += 1
+            continue
+        if normalized in seen:
+            excluded["duplicate"] += 1
+            continue
+        seen.add(normalized)
+        eligible.append(lead)
+    return eligible, excluded
+
+
+@app.route("/api/campaigns/lead-filters")
+def api_campaign_lead_filters():
+    """אפשרויות הסינון לבחירת לידים לקמפיין (ספירה לפי סטטוס/פרויקט) - קריאה בלבד."""
+    tenant_id, err = _campaign_tenant_or_error(request.args.get("tenant_id") or None)
+    if err:
+        return err
+    options = extract.campaign_filter_options(tenant_id)
+    return jsonify({"tenant_id": tenant_id, **options})
+
+
+@app.route("/api/campaigns/from-leads", methods=["POST"])
+def api_campaign_from_leads():
+    """יוצר קמפיין Outbound מלידי CRM קיימים. preview=true (ברירת מחדל): לא
+    כותב כלום, רק מחזיר ספירה/החרגות/דוגמאות. preview=false: מכניס לתור בלבד
+    (status='queued') - **לא** מתחיל שליחה; זה נשאר רק ב-POST /api/campaigns/
+    <id>/start אחרי קליק אנושי (חוק בטיחות #1)."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "גוף הבקשה חייב להיות JSON"}), 400
+
+    tenant_id, err = _campaign_tenant_or_error(data.get("tenant_id") or None)
+    if err:
+        return err
+
+    statuses = data.get("statuses")
+    if statuses is None:
+        statuses = []
+    if not isinstance(statuses, list) or not all(isinstance(s, str) for s in statuses):
+        return jsonify({"error": "statuses חייב להיות רשימה של מחרוזות"}), 400
+    invalid = sorted({s for s in statuses if s not in VALID_LEAD_STATUSES})
+    if invalid:
+        return jsonify({"error": f"סטטוס לא חוקי: {', '.join(invalid)}"}), 400
+    statuses = list(dict.fromkeys(statuses))
+
+    project = data.get("project")
+    if project is not None and not isinstance(project, str):
+        return jsonify({"error": "project חייב להיות מחרוזת"}), 400
+    project = (project or "").strip() or None
+    if project and len(project) > CAMPAIGN_PROJECT_MAX_LEN:
+        return jsonify({"error": f"שם הפרויקט ארוך מדי (עד {CAMPAIGN_PROJECT_MAX_LEN} תווים)"}), 400
+
+    message_template = data.get("message_template")
+    if message_template is not None and not isinstance(message_template, str):
+        return jsonify({"error": "message_template חייב להיות מחרוזת"}), 400
+    message_template = (message_template or "").strip() or None
+    if message_template and len(message_template) > CAMPAIGN_TEMPLATE_MAX_LEN:
+        return jsonify({"error": f"תבנית ההודעה ארוכה מדי (עד {CAMPAIGN_TEMPLATE_MAX_LEN} תווים)"}), 400
+
+    preview = data.get("preview", True)
+    if not isinstance(preview, bool):
+        return jsonify({"error": "preview חייב להיות true/false"}), 400
+
+    eligible, excluded = _select_crm_campaign_leads(tenant_id, statuses, project)
+    count = len(eligible)
+
+    if preview:
+        template = message_template  # None/ריק -> render_crm_message משתמש בתבנית ה-CRM
+        sample = [
+            {
+                "name": lead.get("name") or "",
+                "phone": _mask_phone(lead.get("phone")),
+                "lead_status": lead.get("lead_status") or "new",
+                "project": lead.get("project") or "",
+                "message": _render_campaign_message(template, lead),
+            }
+            for lead in eligible[:CAMPAIGN_PREVIEW_SAMPLE_SIZE]
+        ]
+        return jsonify({
+            "ok": True,
+            "preview": True,
+            "tenant_id": tenant_id,
+            "count": count,
+            "excluded": excluded,
+            "sample": sample,
+            "daily_quota": outbound_engine.DAILY_QUOTA,
+        })
+
+    role_err = _campaign_write_role_or_error()
+    if role_err:
+        return role_err
+
+    if count == 0:
+        return jsonify({"error": "אין לידים מתאימים לפי הסינון שנבחר - לא נוצר קמפיין", "excluded": excluded}), 400
+
+    campaign_id = uuid.uuid4().hex[:12]
+    result = outbound_engine.import_crm_leads(
+        eligible, tenant_id=tenant_id, campaign_id=campaign_id, message_template=message_template
+    )
+    logger.info(
+        "📣 קמפיין מלידי CRM נוצר (תור בלבד, לא נשלח): campaign_id=%s user=%s tenant=%s statuses=%s project=%s count=%d queued=%d",
+        campaign_id, g.current_user.get("user_id"), tenant_id, statuses or "all", project or "all",
+        count, result.get("queued", 0),
+    )
+    return jsonify({
+        "ok": True,
+        "campaign_id": campaign_id,
+        "tenant_id": tenant_id,
+        "queued": result.get("queued", 0),
+        "skipped": result.get("skipped", []),
+        "excluded": excluded,
+        "daily_quota": outbound_engine.DAILY_QUOTA,
+    })
+
+
 @app.route("/api/campaigns")
 def api_campaigns_list():
     """רשימת קמפיינים מקובצת עם ספירות לפי סטטוס (queued/sent/simulated/failed/
-    skipped_quota) - ללשונית B2B Campaigns בדשבורד."""
-    tenant_id = request.args.get("tenant_id") or None
-    return jsonify(db.get_outbound_campaigns(tenant_id=tenant_id))
+    skipped_quota) - ללשונית B2B Campaigns בדשבורד. admin: הכל (או ה-tenant
+    שביקש); partner/client: רק ה-tenant_ids שלהם (בקשה ל-tenant אחר -> 403)."""
+    requested = request.args.get("tenant_id") or None
+    if requested:
+        tenant_id, err = _campaign_tenant_or_error(requested)
+        if err:
+            return err
+        return jsonify(db.get_outbound_campaigns(tenant_id=tenant_id))
+    allowed_tenant_ids = _effective_tenant_ids(None)
+    campaigns = db.get_outbound_campaigns(tenant_id=None)
+    if allowed_tenant_ids is not None:
+        allowed = set(allowed_tenant_ids)
+        campaigns = [c for c in campaigns if (c.get("tenant_id") or DEFAULT_TENANT_ID) in allowed]
+    return jsonify(campaigns)
 
 
 @app.route("/api/campaigns/<campaign_id>/queue")
 def api_campaign_queue(campaign_id):
     """תור השליחה החי של קמפיין ספציפי (כל הפריטים, כל הסטטוסים) - polling
-    מה-UI בזמן שהשליחה רצה ברקע, בדיוק כמו GET /api/reactivate/batches/<id>."""
-    tenant_id = request.args.get("tenant_id") or None
-    return jsonify(db.get_outbound_queue(tenant_id=tenant_id, campaign_id=campaign_id))
+    מה-UI בזמן שהשליחה רצה ברקע, בדיוק כמו GET /api/reactivate/batches/<id>.
+    ה-tenant נקבע לפי שורות התור עצמן (לא לפי הבקשה) ונבדק מול הרשאות המשתמש."""
+    tenant_id, rows, err = _campaign_rows_or_error(campaign_id, request.args.get("tenant_id") or None)
+    if err:
+        return err
+    return jsonify(_filter_rows_for_client(rows, tenant_id))
 
 
 @app.route("/api/campaigns/<campaign_id>/start", methods=["POST"])
@@ -1752,21 +2035,52 @@ def api_campaign_start(campaign_id):
     רנדומליות בין הודעה להודעה, שיכול לארוך דקות/שעות לקמפיין גדול - יותר
     מדי זמן להחזיק בקשת HTTP פתוחה. הנתיב מחזיר מיד; הדשבורד עוקב אחרי
     ההתקדמות דרך GET /api/campaigns/<id>/queue (polling)."""
-    data = request.get_json(silent=True) or {}
-    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    role_err = _campaign_write_role_or_error()
+    if role_err:
+        return role_err
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    requested_tenant_id = data.get("tenant_id") if isinstance(data.get("tenant_id"), str) else None
+    # ה-tenant האמיתי מגיע משורות התור - tenant_id בגוף הבקשה רק מכריע במקרה של התנגשות
+    tenant_id, rows, err = _campaign_rows_or_error(campaign_id, requested_tenant_id)
+    if err:
+        return err
 
-    pending = db.get_outbound_queue(tenant_id=tenant_id, campaign_id=campaign_id, status="queued")
-    if not pending:
-        return jsonify({"error": "אין פריטים בסטטוס 'queued' לקמפיין הזה"}), 400
+    run_key = (tenant_id, campaign_id)
+    already_running_msg = {"error": "הקמפיין כבר בשליחה", "campaign_id": campaign_id}
+    with _running_campaigns_lock:
+        if run_key in _running_campaigns or _campaign_running_in_db(tenant_id, campaign_id):
+            return jsonify(already_running_msg), 409
+        # skipped_quota = נעצרו במכסה היומית בהרצה קודמת - קליק חוזר ממשיך איתם
+        pending = [r for r in rows if r.get("status") in ("queued", "skipped_quota")]
+        if not pending:
+            return jsonify({"error": "אין בקמפיין הזה פריטים שממתינים לשליחה"}), 400
+        _running_campaigns.add(run_key)
 
     def _run_in_background():
         try:
             outbound_engine.run_campaign(tenant_id=tenant_id, campaign_id=campaign_id)
         except Exception:
             logger.exception("קמפיין B2B outbound (campaign_id=%s) נכשל ברקע", campaign_id)
+        finally:
+            with _running_campaigns_lock:
+                _running_campaigns.discard(run_key)
 
-    threading.Thread(target=_run_in_background, daemon=True, name=f"outbound-campaign-{campaign_id}").start()
-    return jsonify({"ok": True, "campaign_id": campaign_id, "total_queued": len(pending), "status": "started"})
+    try:
+        threading.Thread(target=_run_in_background, daemon=True, name=f"outbound-campaign-{campaign_id}").start()
+    except Exception:
+        with _running_campaigns_lock:
+            _running_campaigns.discard(run_key)
+        raise
+    logger.info(
+        "📣 קמפיין הופעל: campaign_id=%s tenant=%s user=%s queued=%d",
+        campaign_id, tenant_id, g.current_user.get("user_id"), len(pending),
+    )
+    return jsonify({
+        "ok": True, "campaign_id": campaign_id, "tenant_id": tenant_id,
+        "total_queued": len(pending), "status": "started",
+    })
 
 
 @app.route("/api/tenant-settings")

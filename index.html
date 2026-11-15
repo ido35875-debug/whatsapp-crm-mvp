@@ -1307,6 +1307,7 @@
   .campaign-status-badge.simulated { background: var(--status-warning-soft); color: var(--status-warning); }
   .campaign-status-badge.failed { background: var(--status-critical-soft); color: var(--status-critical); }
   .campaign-status-badge.skipped_quota { background: var(--status-serious-soft); color: var(--status-serious); }
+  .campaign-status-badge.cancelled { background: var(--surface-3); color: var(--text-secondary); text-decoration: line-through; }
   .campaign-row-item {
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
     padding: 8px 0; border-bottom: 1px solid var(--gridline); font-size: 12.5px; cursor: pointer;
@@ -1589,6 +1590,35 @@
         <div class="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_320px]">
           <div class="glass rounded-2xl p-5">
             <h3 class="mb-3 flex items-center gap-2 text-sm font-bold text-slate-100"><i data-lucide="upload-cloud" class="h-4 w-4 text-indigo-400"></i> ייבוא קמפיין חדש</h3>
+            <!-- מקור הקמפיין: קובץ CSV (הזרימה הקיימת) או לידים קיימים מה-CRM -->
+            <div class="view-toggle" id="campaignSourceToggle" style="margin-bottom:12px;" role="tablist">
+              <button type="button" class="view-tab active" id="campaignSourceCsvBtn" data-source="csv">📄 העלאת קובץ CSV</button>
+              <button type="button" class="view-tab" id="campaignSourceCrmBtn" data-source="crm">👥 מתוך לידי ה-CRM</button>
+            </div>
+
+            <div id="campaignCrmMode" class="flex flex-col gap-3" style="display:none;">
+              <div>
+                <div class="mb-2 text-xs font-semibold text-slate-300">סטטוס ליד</div>
+                <div id="campaignCrmStatuses" class="flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-300"><span class="text-xs text-slate-500">טוען...</span></div>
+                <div class="mt-1 text-xs text-slate-500">בלי סימון = כל הסטטוסים, חוץ מ"לא רלוונטי" ו"בטיפול אנושי" (נכנסים רק בסימון מפורש)</div>
+              </div>
+              <div class="flex flex-wrap items-center gap-3">
+                <label for="campaignCrmProject" class="text-xs font-semibold text-slate-300">פרויקט</label>
+                <select id="campaignCrmProject" class="min-w-[220px]"><option value="">כל הפרויקטים</option></select>
+                <span id="campaignCrmTotal" class="text-xs text-slate-500"></span>
+              </div>
+              <textarea id="campaignCrmTemplate" rows="3" maxlength="1000"
+                placeholder="תבנית הודעה (אופציונלי) - {name} ו-{project} ימולאו אוטומטית לכל ליד"
+                class="w-full rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-200 placeholder:text-slate-500 focus:border-indigo-500/60 focus:outline-none"></textarea>
+              <div class="flex flex-wrap items-center gap-2">
+                <button type="button" id="campaignCrmPreviewBtn">👁️ תצוגה מקדימה</button>
+                <button type="button" class="primary" id="campaignCrmQueueBtn" disabled title="הריצו תצוגה מקדימה קודם">➕ הוסף לתור</button>
+                <span class="text-xs text-slate-500">הוספה לתור לא שולחת - השליחה מתחילה רק ב-"▶️ התחל שליחה"</span>
+              </div>
+              <div class="campaign-import-result" id="campaignCrmResult"></div>
+            </div>
+
+            <div id="campaignCsvMode">
             <form id="campaignImportForm" class="flex flex-col gap-3">
               <label id="campaignFileDrop"
                 class="flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed border-slate-700 bg-slate-900/40 px-4 py-8 text-center text-sm text-slate-400 transition hover:border-indigo-500/60 hover:text-slate-200">
@@ -1602,6 +1632,7 @@
               <button type="submit" class="primary self-start" id="campaignImportBtn">ייבא לתור</button>
             </form>
             <div class="campaign-import-result" id="campaignImportResult"></div>
+            </div>
 
             <h3 class="mb-3 mt-6 flex items-center gap-2 text-sm font-bold text-slate-100"><i data-lucide="list-checks" class="h-4 w-4 text-indigo-400"></i> תור שליחה</h3>
             <div class="mb-3 flex flex-wrap items-center gap-3">
@@ -4824,6 +4855,14 @@ document.getElementById("categoryFilter").addEventListener("change", renderTable
 document.getElementById("tenantFilter").addEventListener("change", () => {
   renderTable();
   loadReactivationCard(); // הכמות הזמינה להחייאה תלוית-tenant - מתעדכנת עם הסינון
+  // הקמפיין שנבחר שייך ל-tenant הקודם - מאפסים בחירה + dropdown + תור יחד
+  document.getElementById("campaignSelect").value = "";
+  selectCampaign(null);
+  // קמפיין מלידי CRM תלוי-tenant - מרעננים ספירות ומבטלים תצוגה מקדימה קודמת
+  if (currentSection === "campaigns") {
+    loadCampaignsList();
+    if (document.getElementById("campaignCrmMode").style.display !== "none") loadCampaignLeadFilters();
+  }
 });
 
 // ---- Unified Inbox: רשימת שיחות + חלון צ'אט קבוע (לא slide-over) ----
@@ -4910,7 +4949,10 @@ function switchSection(section) {
   });
   // כל בלוק טוען/מרענן את עצמו רק כשנכנסים אליו בפועל - לא בכל טעינת עמוד
   if (section === "overview") renderOverviewCards();
-  if (section === "campaigns") { loadCampaignsList(); }
+  if (section === "campaigns") {
+    loadCampaignsList();
+    if (document.getElementById("campaignCrmMode").style.display !== "none") loadCampaignLeadFilters();
+  }
   if (section === "ai-agents") { loadAiAgentsSection(); }
   if (section === "analytics") { loadAnalyticsSection(); }
   if (section === "settings") { loadTenantSettingsSection(); }
@@ -5163,7 +5205,7 @@ let campaignQueuePollTimer = null;
 
 const CAMPAIGN_STATUS_LABELS = {
   queued: "בתור", sending: "נשלח כעת...", sent: "✓ נשלח", simulated: "🧪 סימולציה",
-  failed: "✗ נכשל", skipped_quota: "⏸ מכסה יומית",
+  failed: "✗ נכשל", skipped_quota: "⏸ מכסה יומית", cancelled: "⊘ בוטל",
 };
 
 function campaignFileSelected(file) {
@@ -5224,6 +5266,182 @@ document.getElementById("campaignImportForm").addEventListener("submit", async (
   }
 });
 
+// ---- קמפיין מתוך לידי ה-CRM (POST /api/campaigns/from-leads) ----
+// זרימה: סינון → 👁️ תצוגה מקדימה (preview=true, לא כותב כלום) → ➕ הוסף לתור
+// (preview=false, תור בלבד) → בחירה אוטומטית של הקמפיין ב-campaignSelect. השליחה
+// עצמה נשארת רק בקליק על "▶️ התחל שליחה" (חוק בטיחות #1) - אין כאן התחלה אוטומטית.
+const CAMPAIGN_EXCLUDE_LABELS = {
+  blocked: "חסומים",
+  already_queued: "כבר בתור של קמפיין פתוח",
+  status: "סטטוס מוחרג (לא רלוונטי / בטיפול אנושי)",
+  duplicate: "מספר כפול",
+};
+let campaignCrmPreviewValid = false;
+let campaignLeadFiltersSeq = 0;
+
+function campaignCrmTenantId() {
+  return document.getElementById("tenantFilter").value || "default";
+}
+
+function setCampaignSource(source) {
+  const isCrm = source === "crm";
+  document.getElementById("campaignCrmMode").style.display = isCrm ? "" : "none";
+  document.getElementById("campaignCsvMode").style.display = isCrm ? "none" : "";
+  document.getElementById("campaignSourceCrmBtn").classList.toggle("active", isCrm);
+  document.getElementById("campaignSourceCsvBtn").classList.toggle("active", !isCrm);
+  if (isCrm) loadCampaignLeadFilters();
+}
+document.getElementById("campaignSourceCsvBtn").addEventListener("click", () => setCampaignSource("csv"));
+document.getElementById("campaignSourceCrmBtn").addEventListener("click", () => setCampaignSource("crm"));
+
+function invalidateCampaignCrmPreview() {
+  campaignCrmPreviewValid = false;
+  const btn = document.getElementById("campaignCrmQueueBtn");
+  btn.disabled = true;
+  btn.title = "הריצו תצוגה מקדימה קודם";
+}
+
+function selectedCampaignCrmStatuses() {
+  return Array.from(document.querySelectorAll("#campaignCrmStatuses input[type=checkbox]:checked")).map(cb => cb.value);
+}
+
+async function loadCampaignLeadFilters() {
+  const statusesEl = document.getElementById("campaignCrmStatuses");
+  const projectEl = document.getElementById("campaignCrmProject");
+  const totalEl = document.getElementById("campaignCrmTotal");
+  const seq = ++campaignLeadFiltersSeq;
+  const previousStatuses = new Set(selectedCampaignCrmStatuses());
+  const previousProject = projectEl.value;
+  invalidateCampaignCrmPreview();
+  try {
+    const res = await fetch(`/api/campaigns/lead-filters?tenant_id=${encodeURIComponent(campaignCrmTenantId())}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    if (seq !== campaignLeadFiltersSeq) return; // תשובה ישנה (החליפו tenant בינתיים)
+
+    const counts = data.statuses || {};
+    const known = STATUS_OPTIONS.map(([v]) => v);
+    const extra = Object.keys(counts).filter(s => !known.includes(s));
+    const options = STATUS_OPTIONS.concat(extra.map(s => [s, s]));
+    statusesEl.innerHTML = options.map(([value, label]) => `
+      <label class="inline-flex cursor-pointer items-center gap-1.5">
+        <input type="checkbox" value="${escapeHtml(value)}" ${previousStatuses.has(value) ? "checked" : ""}>
+        <span>${escapeHtml(label)}</span>
+        <span class="text-xs text-slate-500">(${Number(counts[value] || 0)})</span>
+      </label>`).join("");
+
+    const projects = data.projects || {};
+    projectEl.innerHTML = '<option value="">כל הפרויקטים</option>' + Object.keys(projects)
+      .sort((a, b) => a.localeCompare(b, "he"))
+      .map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)} (${Number(projects[p] || 0)})</option>`).join("");
+    if (previousProject && Object.prototype.hasOwnProperty.call(projects, previousProject)) projectEl.value = previousProject;
+
+    totalEl.textContent = `סה"כ ${Number(data.total || 0)} לידים ב-tenant`;
+  } catch (err) {
+    if (seq !== campaignLeadFiltersSeq) return;
+    statusesEl.innerHTML = '<div class="error">שגיאה בטעינת אפשרויות הסינון: ' + escapeHtml(err.message) + "</div>";
+    totalEl.textContent = "";
+  }
+}
+
+document.getElementById("campaignCrmStatuses").addEventListener("change", invalidateCampaignCrmPreview);
+document.getElementById("campaignCrmProject").addEventListener("change", invalidateCampaignCrmPreview);
+document.getElementById("campaignCrmTemplate").addEventListener("input", invalidateCampaignCrmPreview);
+
+function campaignCrmPayload(preview) {
+  return {
+    tenant_id: campaignCrmTenantId(),
+    statuses: selectedCampaignCrmStatuses(),
+    project: document.getElementById("campaignCrmProject").value || null,
+    message_template: document.getElementById("campaignCrmTemplate").value.trim() || null,
+    preview,
+  };
+}
+
+function campaignExcludedHtml(excluded) {
+  const parts = Object.entries(excluded || {})
+    .filter(([, n]) => Number(n) > 0)
+    .map(([k, n]) => `${escapeHtml(CAMPAIGN_EXCLUDE_LABELS[k] || k)}: ${Number(n)}`);
+  return parts.length ? `<div class="skip-line">הוחרגו: ${parts.join(" · ")}</div>` : "";
+}
+
+document.getElementById("campaignCrmPreviewBtn").addEventListener("click", async () => {
+  const resultEl = document.getElementById("campaignCrmResult");
+  const btn = document.getElementById("campaignCrmPreviewBtn");
+  invalidateCampaignCrmPreview();
+  btn.disabled = true;
+  resultEl.innerHTML = '<div class="loading">מחשב תצוגה מקדימה...</div>';
+  try {
+    const res = await fetch("/api/campaigns/from-leads", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(campaignCrmPayload(true)),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+
+    const count = Number(data.count || 0);
+    const quota = Number(data.daily_quota || 0);
+    const quotaLine = quota && count > quota
+      ? `<div class="skip-line">⚠️ ${count} לידים מעל המכסה היומית (${quota}) - נשלחים עד ${quota} ביום; השאר מסומנים "מכסה יומית" - כדי להמשיך איתם לוחצים שוב "▶️ התחל שליחה" למחרת.</div>`
+      : "";
+    const sampleHtml = (data.sample || []).map(s => `
+      <div class="campaign-queue-row" style="align-items:flex-start;">
+        <div class="cq-main">
+          <div class="cq-name">${escapeHtml(s.name || s.phone)} · <span class="muted">${escapeHtml(statusMeta(s.lead_status).label)}</span>${s.project ? " · " + escapeHtml(s.project) : ""}</div>
+          <div class="cq-phone" dir="ltr" style="text-align:right;">${escapeHtml(s.phone)}</div>
+          <div style="white-space:pre-wrap; margin-top:4px; color:var(--text-secondary);">${escapeHtml(s.message)}</div>
+        </div>
+      </div>`).join("");
+    resultEl.innerHTML =
+      (count > 0
+        ? `<div class="ok-line">✓ ${count} לידים ייכנסו לתור</div>`
+        : '<div class="skip-line">אין לידים מתאימים לפי הסינון שנבחר</div>') +
+      campaignExcludedHtml(data.excluded) + quotaLine +
+      (sampleHtml ? `<div class="mt-2 text-xs text-slate-400">דוגמאות להודעות (עד 5):</div>${sampleHtml}` : "");
+
+    if (count > 0) {
+      campaignCrmPreviewValid = true;
+      const queueBtn = document.getElementById("campaignCrmQueueBtn");
+      queueBtn.disabled = false;
+      queueBtn.title = "";
+    }
+  } catch (err) {
+    resultEl.innerHTML = '<div class="error">שגיאה בתצוגה המקדימה: ' + escapeHtml(err.message) + "</div>";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("campaignCrmQueueBtn").addEventListener("click", async () => {
+  if (!campaignCrmPreviewValid) return;
+  const resultEl = document.getElementById("campaignCrmResult");
+  const btn = document.getElementById("campaignCrmQueueBtn");
+  btn.disabled = true;
+  const payload = campaignCrmPayload(false);
+  campaignCrmPreviewValid = false;
+  try {
+    const res = await fetch("/api/campaigns/from-leads", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+
+    const skipped = data.skipped || [];
+    const skipLine = skipped.length ? `<div class="skip-line">${skipped.length} לידים דולגו (טלפון חסר/לא תקין)</div>` : "";
+    resultEl.innerHTML =
+      `<div class="ok-line">✓ ${Number(data.queued || 0)} לידים נוספו לתור (קמפיין ${escapeHtml(data.campaign_id)}) - עדיין לא נשלח דבר. לחצו "▶️ התחל שליחה" כדי להתחיל.</div>` +
+      skipLine + campaignExcludedHtml(data.excluded);
+
+    await loadCampaignsList();
+    document.getElementById("campaignSelect").value = data.campaign_id;
+    selectCampaign(data.campaign_id);
+    loadCampaignLeadFilters(); // הספירות לא משתנות, אבל מאפס את מצב התצוגה המקדימה
+  } catch (err) {
+    resultEl.innerHTML = '<div class="error">שגיאה בהוספה לתור: ' + escapeHtml(err.message) + "</div>";
+  }
+});
+
 function campaignQueueRowHtml(item) {
   return `
     <div class="campaign-queue-row">
@@ -5231,9 +5449,42 @@ function campaignQueueRowHtml(item) {
         <div class="cq-name">${escapeHtml(item.name || item.phone)}${item.company ? " · " + escapeHtml(item.company) : ""}</div>
         <div class="cq-phone">${escapeHtml(item.phone)}</div>
       </div>
-      <span class="campaign-status-badge ${item.status}">${CAMPAIGN_STATUS_LABELS[item.status] || item.status}</span>
+      <span class="campaign-status-badge ${escapeHtml(item.status)}" title="${escapeHtml(item.error || "")}">${escapeHtml(CAMPAIGN_STATUS_LABELS[item.status] || item.status)}</span>
     </div>
   `;
+}
+
+// מצב הרצה בצד הלקוח: אחרי start מוצלח (או 409) הכפתור נשאר נעול עד שההרצה
+// מסתיימת - בין הודעה להודעה יש השהיית Anti-Ban של 45-90 שניות שבה אין פריט
+// 'sending' ועדיין יש 'queued', ולכן "יש queued" לבדו לא אומר שאפשר להתחיל שוב.
+// ההרצה נחשבת גמורה כשאין queued/sending, או כשאין שום התקדמות זמן רב
+// (CAMPAIGN_RUN_STALL_MS - מעל ההשהיה המקסימלית). השרת עדיין מחזיר 409 אם רץ.
+const CAMPAIGN_RUN_STALL_MS = 150000;
+let campaignRun = null; // { campaignId, doneCount, lastProgressAt }
+
+function markCampaignRunStarted(campaignId) {
+  campaignRun = { campaignId, doneCount: -1, lastProgressAt: Date.now() };
+}
+
+function campaignRunIsActive(campaignId, items) {
+  const sending = items.some(i => i.status === "sending");
+  const queued = items.some(i => i.status === "queued");
+  if (!campaignRun || campaignRun.campaignId !== campaignId) return sending;
+  const doneCount = items.filter(i => i.status !== "queued" && i.status !== "sending").length;
+  if (doneCount !== campaignRun.doneCount) {
+    campaignRun.doneCount = doneCount;
+    campaignRun.lastProgressAt = Date.now();
+  }
+  const stalled = Date.now() - campaignRun.lastProgressAt > CAMPAIGN_RUN_STALL_MS;
+  const active = sending || (queued && !stalled);
+  if (!active) campaignRun = null;
+  return active;
+}
+
+function setCampaignStartBtnState(running, hasQueued) {
+  const btn = document.getElementById("campaignStartBtn");
+  btn.disabled = running || !hasQueued;
+  btn.textContent = running ? "⏳ בשליחה..." : "▶️ התחל שליחה";
 }
 
 async function loadCampaignQueue(campaignId) {
@@ -5246,8 +5497,10 @@ async function loadCampaignQueue(campaignId) {
       ? items.map(campaignQueueRowHtml).join("")
       : '<div class="empty">אין פריטים בתור</div>';
 
+    if (campaignId !== selectedCampaignId) return; // תשובה ישנה (בחרו קמפיין אחר בינתיים)
     const stillActive = items.some(i => i.status === "queued" || i.status === "sending");
-    document.getElementById("campaignStartBtn").disabled = !items.some(i => i.status === "queued");
+    const running = campaignRunIsActive(campaignId, items);
+    setCampaignStartBtnState(running, items.some(i => i.status === "queued" || i.status === "skipped_quota"));
     if (stillActive && currentSection === "campaigns") {
       clearTimeout(campaignQueuePollTimer);
       campaignQueuePollTimer = setTimeout(() => loadCampaignQueue(campaignId), 4000);
@@ -5264,7 +5517,7 @@ function selectCampaign(campaignId) {
   selectedCampaignId = campaignId;
   if (!campaignId) {
     document.getElementById("campaignQueueWrap").innerHTML = "";
-    document.getElementById("campaignStartBtn").disabled = true;
+    setCampaignStartBtnState(false, false);
     return;
   }
   loadCampaignQueue(campaignId);
@@ -5272,32 +5525,49 @@ function selectCampaign(campaignId) {
 document.getElementById("campaignSelect").addEventListener("change", (e) => selectCampaign(e.target.value));
 
 document.getElementById("campaignStartBtn").addEventListener("click", async () => {
-  if (!selectedCampaignId) return;
+  const campaignId = selectedCampaignId;
+  if (!campaignId) return;
   const btn = document.getElementById("campaignStartBtn");
   btn.disabled = true;
   btn.textContent = "⏳ מתחיל...";
   try {
-    const res = await fetch(`/api/campaigns/${selectedCampaignId}/start`, {
+    // ה-tenant האמיתי נקבע בשרת לפי שורות התור - לא נשלח מכאן
+    const res = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/start`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tenant_id: document.getElementById("tenantFilter").value || "default" }),
+      body: JSON.stringify({}),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      markCampaignRunStarted(campaignId);
+      setCampaignStartBtnState(true, true);
+      alert(data.error || "הקמפיין כבר בשליחה");
+      if (campaignId === selectedCampaignId) loadCampaignQueue(campaignId);
+      return;
+    }
     if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
-    loadCampaignQueue(selectedCampaignId);
+    markCampaignRunStarted(campaignId);
+    setCampaignStartBtnState(true, true);
+    if (campaignId === selectedCampaignId) loadCampaignQueue(campaignId);
   } catch (err) {
     alert("הפעלת השליחה נכשלה: " + err.message);
-  } finally {
-    btn.textContent = "▶️ התחל שליחה";
+    if (campaignId === selectedCampaignId) loadCampaignQueue(campaignId);
+    else setCampaignStartBtnState(false, false);
   }
 });
 
 function campaignRowHtml(c) {
-  const progressPct = c.total > 0 ? Math.round(((c.sent + c.simulated + c.failed) / c.total) * 100) : 0;
+  const cancelled = Number(c.cancelled || 0);
+  const progressPct = c.total > 0 ? Math.round(((c.sent + c.simulated + c.failed + cancelled) / c.total) * 100) : 0;
+  // ספירות משניות (רק כשיש) - נכשל/מכסה יומית/בוטל (ליד נמחק או סומן לא רלוונטי אחרי ההכנסה לתור)
+  const extraCounts = [["failed", c.failed], ["skipped_quota", c.skipped_quota], ["cancelled", cancelled]]
+    .filter(([, n]) => Number(n) > 0)
+    .map(([st, n]) => `${CAMPAIGN_STATUS_LABELS[st]} ${Number(n)}`).join(" · ");
   return `
     <div class="campaign-row-item" data-campaign-id="${escapeHtml(c.campaign_id)}">
       <div style="flex:1; min-width:0;">
         <div>${c.total} אנשי קשר</div>
         <div class="campaign-progress-bar"><div class="campaign-progress-bar-fill" style="width:${progressPct}%;"></div></div>
+        ${extraCounts ? `<div class="muted" style="font-size:11px;">${escapeHtml(extraCounts)}</div>` : ""}
       </div>
       <span class="muted" style="font-size:11px;">${c.sent + c.simulated}/${c.total}</span>
     </div>

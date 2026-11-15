@@ -1271,6 +1271,101 @@ def delete_lead(phone: str, tenant_id: str = DEFAULT_TENANT_ID) -> bool:
     return True
 
 
+def _tenant_cards(tenant_id: str) -> list[tuple[str, dict]]:
+    """(מפתח, כרטיס) של tenant אחד בלבד - קידומת המפתח "<tenant>::" וגם
+    tenant_id בכרטיס (אם קיים) תואמים. קריאה בלבד דרך load_customers."""
+    prefix = f"{tenant_id}::"
+    out = []
+    for key, card in load_customers().items():
+        if not isinstance(card, dict) or not str(key).startswith(prefix):
+            continue
+        if card.get("tenant_id") not in (None, "", tenant_id):
+            continue
+        out.append((key, card))
+    return out
+
+
+def _card_status(card: dict) -> str:
+    """lead_status של כרטיס, כש-חסר/None/"" = "new" (ליד חדש שלא טופל)."""
+    return card.get("lead_status") or "new"
+
+
+def select_campaign_leads(
+    tenant_id: str,
+    statuses: list[str] | None = None,
+    project: str | None = None,
+) -> list[dict]:
+    """בחירת לידים קיימים מה-CRM לקמפיין Outbound (במקום העלאת CSV). קריאה
+    בלבד - בלי שום כתיבה/תופעת לוואי.
+
+    - רק כרטיסי ה-tenant הזה; כרטיס בלי phone מדולג.
+    - statuses: None/ריק = כל הסטטוסים. "new" תואם גם lead_status חסר/None/"".
+    - project: None/"" = בלי סינון; אחרת השוואה case-insensitive אחרי strip.
+    - phone מוחזר **בדיוק כפי שנשמר בכרטיס** (בלי נרמול) - כדי שהקמפיין
+      ירשום חזרה לאותו כרטיס.
+    - כפילויות 05x/+9725x (ראו CLAUDE.md): מנורמלים ל-E.164, ונשאר רק הכרטיס
+      עם הכי הרבה history - אדם לא יקבל את הקמפיין פעמיים.
+    - ממוין לפי status_changed_at יורד (חסר - בסוף)."""
+    wanted = {s for s in (statuses or []) if s}
+    project_norm = (project or "").strip().casefold()
+
+    best: dict[str, tuple[str, dict]] = {}
+    for key, card in _tenant_cards(tenant_id):
+        phone = card.get("phone")
+        if not phone or not str(phone).strip():
+            continue
+        if wanted and _card_status(card) not in wanted:
+            continue
+        if project_norm and str(card.get("project") or "").strip().casefold() != project_norm:
+            continue
+        try:
+            norm = _to_e164(str(phone)) or str(phone)
+        except Exception:
+            norm = str(phone)
+        prev = best.get(norm)
+        if prev is None or len(card.get("history") or []) > len(prev[1].get("history") or []):
+            best[norm] = (key, card)
+
+    leads = [
+        {
+            "key": key,
+            "phone": card.get("phone"),
+            "tenant_id": card.get("tenant_id") or tenant_id,
+            "name": card.get("customer_name"),
+            "company": card.get("business_name"),
+            "project": card.get("project"),
+            "lead_status": _card_status(card),
+            "ai_enabled": card.get("ai_enabled", True),
+            "_changed": card.get("status_changed_at") or "",
+        }
+        for key, card in best.values()
+    ]
+    # מיון יציב בשני שלבים: יורד לפי תאריך, ואז חסרי-תאריך לסוף
+    leads.sort(key=lambda d: d["_changed"], reverse=True)
+    leads.sort(key=lambda d: d["_changed"] == "")
+    for d in leads:
+        del d["_changed"]
+    return leads
+
+
+def campaign_filter_options(tenant_id: str) -> dict:
+    """אפשרויות סינון לדרופדאונים של יצירת קמפיין מה-CRM: ספירה לפי סטטוס
+    (חסר = "new"), לפי project (רק ערכים לא ריקים), וסה"כ כרטיסי ה-tenant.
+    קריאה בלבד."""
+    statuses: dict[str, int] = {}
+    projects: dict[str, int] = {}
+    project_label: dict[str, str] = {}  # casefold → הכתיב הראשון שנראה ("Nexus"/"nexus" = אפשרות אחת)
+    cards = _tenant_cards(tenant_id)
+    for _key, card in cards:
+        st = _card_status(card)
+        statuses[st] = statuses.get(st, 0) + 1
+        proj = str(card.get("project") or "").strip()
+        if proj:
+            label = project_label.setdefault(proj.casefold(), proj)
+            projects[label] = projects.get(label, 0) + 1
+    return {"statuses": statuses, "projects": projects, "total": len(cards)}
+
+
 if __name__ == "__main__":
     demo_messages = [
         ("0501234567", "היי, קוראים לי דני, יש לי חנות פרחים בחיפה"),
