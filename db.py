@@ -588,6 +588,12 @@ def get_last_message(phone: str, tenant_id: str = "default") -> dict | None:
         conn.close()
 
 
+# שאילתות bulk בונות תנאי OR לכל זוג (phone, tenant_id). ב-SQLite יש תקרת עומק
+# ביטוי (1000), כך שמעל ~500 לידים השאילתה נכשלה ב-"Expression tree is too large".
+# מפצלים למנות - עדיין מעט round-trips, בלי תלות בגודל ה-CRM.
+_BULK_PAIR_CHUNK = 300
+
+
 def get_last_messages_bulk(phone_tenant_pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
     """כמו get_last_message, לכל הלידים *בבת-אחת* (שאילתת window function
     אחת, לא N שאילתות נפרדות) - אותה בעיית N+1 בדיוק כמו compute_lead_
@@ -595,6 +601,11 @@ def get_last_messages_bulk(phone_tenant_pairs: list[tuple[str, str]]) -> dict[tu
     קרא ל-get_last_message בלולאה, ליד-ליד."""
     if not phone_tenant_pairs:
         return {}
+    if len(phone_tenant_pairs) > _BULK_PAIR_CHUNK:
+        merged: dict[tuple[str, str], dict] = {}
+        for i in range(0, len(phone_tenant_pairs), _BULK_PAIR_CHUNK):
+            merged.update(get_last_messages_bulk(phone_tenant_pairs[i:i + _BULK_PAIR_CHUNK]))
+        return merged
     conn = _get_connection()
     try:
         conn.row_factory = sqlite3.Row
@@ -1478,6 +1489,11 @@ def compute_lead_scores_bulk(phone_tenant_pairs: list[tuple[str, str]]) -> dict[
     מיועד לאלפים."""
     if not phone_tenant_pairs:
         return {}
+    if len(phone_tenant_pairs) > _BULK_PAIR_CHUNK:
+        merged: dict[tuple[str, str], int] = {}
+        for i in range(0, len(phone_tenant_pairs), _BULK_PAIR_CHUNK):
+            merged.update(compute_lead_scores_bulk(phone_tenant_pairs[i:i + _BULK_PAIR_CHUNK]))
+        return merged
     conn = _get_connection()
     try:
         conn.row_factory = sqlite3.Row

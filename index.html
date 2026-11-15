@@ -1298,6 +1298,21 @@
   .campaign-queue-row .cq-main { min-width: 0; }
   .campaign-queue-row .cq-name { font-weight: 600; }
   .campaign-queue-row .cq-phone { color: var(--text-muted); font-size: 11.5px; }
+  /* בחירה ידנית של לידים לקמפיין CRM */
+  .crm-pick-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 6px; }
+  .crm-pick-head input[type=search] {
+    flex: 1 1 180px; min-width: 0; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface-2); color: inherit; font-family: inherit; font-size: 12.5px;
+  }
+  .crm-pick-head button { padding: 5px 10px; font-size: 12px; }
+  .crm-pick-count { font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+  .crm-pick-list { max-height: 340px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; padding: 6px; }
+  .crm-pick-row {
+    display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; cursor: pointer; font-size: 12.5px;
+  }
+  .crm-pick-row:hover { background: var(--surface-2); }
+  .crm-pick-row .cq-main { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crm-pick-row .cq-phone { color: var(--text-muted); font-size: 11.5px; }
   .campaign-status-badge {
     font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; white-space: nowrap;
   }
@@ -5294,11 +5309,112 @@ function setCampaignSource(source) {
 document.getElementById("campaignSourceCsvBtn").addEventListener("click", () => setCampaignSource("csv"));
 document.getElementById("campaignSourceCrmBtn").addEventListener("click", () => setCampaignSource("crm"));
 
-function invalidateCampaignCrmPreview() {
-  campaignCrmPreviewValid = false;
+// בחירה ידנית: הרשימה הזכאית מהתצוגה המקדימה + מפתחות מסומנים (tenant::phone)
+let campaignCrmLeads = [];          // [{key,name,phone,lead_status,project,_hay}]
+let campaignCrmSelected = new Set();
+let campaignCrmQuota = 0;
+
+function updateCampaignCrmQueueBtn() {
   const btn = document.getElementById("campaignCrmQueueBtn");
-  btn.disabled = true;
-  btn.title = "הריצו תצוגה מקדימה קודם";
+  const n = campaignCrmSelected.size;
+  btn.disabled = !campaignCrmPreviewValid || n === 0;
+  btn.title = !campaignCrmPreviewValid ? "הריצו תצוגה מקדימה קודם" : (n === 0 ? "לא נבחרו לידים" : "");
+}
+
+function updateCampaignCrmPickCounter() {
+  const n = campaignCrmSelected.size;
+  const countEl = document.getElementById("campaignCrmPickCount");
+  if (countEl) countEl.textContent = `נבחרו ${n} מתוך ${campaignCrmLeads.length}`;
+  const quotaEl = document.getElementById("campaignCrmQuotaLine");
+  if (quotaEl) {
+    quotaEl.textContent = campaignCrmQuota && n > campaignCrmQuota
+      ? `⚠️ ${n} לידים נבחרו - מעל המכסה היומית (${campaignCrmQuota}). נשלחים עד ${campaignCrmQuota} ביום; השאר מסומנים "מכסה יומית" - כדי להמשיך איתם לוחצים שוב "▶️ התחל שליחה" למחרת.`
+      : "";
+    quotaEl.style.display = quotaEl.textContent ? "" : "none";
+  }
+  updateCampaignCrmQueueBtn();
+}
+
+function campaignCrmPickRows() {
+  return document.querySelectorAll("#campaignCrmPickList .crm-pick-row");
+}
+
+// בחר הכל / נקה הכל - חלים רק על השורות הגלויות (אחרי סינון החיפוש)
+function campaignCrmSetVisible(checked) {
+  campaignCrmPickRows().forEach(row => {
+    if (row.style.display === "none") return;
+    const lead = campaignCrmLeads[Number(row.dataset.idx)];
+    const cb = row.querySelector("input[type=checkbox]");
+    if (!lead || !cb) return;
+    cb.checked = checked;
+    if (checked) campaignCrmSelected.add(lead.key); else campaignCrmSelected.delete(lead.key);
+  });
+  updateCampaignCrmPickCounter();
+}
+
+function campaignCrmApplySearch(query) {
+  const q = (query || "").trim().toLowerCase();
+  let visible = 0;
+  campaignCrmPickRows().forEach(row => {
+    const lead = campaignCrmLeads[Number(row.dataset.idx)];
+    const show = !q || (lead && lead._hay.includes(q));
+    row.style.display = show ? "" : "none";
+    if (show) visible++;
+  });
+  const visEl = document.getElementById("campaignCrmPickVisible");
+  if (visEl) visEl.textContent = q ? `(מוצגים ${visible})` : "";
+}
+
+function campaignCrmPickerHtml(truncated, maxSelectable, total) {
+  if (!campaignCrmLeads.length) return "";
+  const rows = campaignCrmLeads.map((l, i) => `
+    <label class="crm-pick-row" data-idx="${i}">
+      <input type="checkbox" checked>
+      <span class="cq-main"><span class="cq-name" style="font-weight:600;">${escapeHtml(l.name || l.phone)}</span>
+        · <span class="cq-phone" dir="ltr">${escapeHtml(l.phone)}</span>
+        · <span class="muted">${escapeHtml(statusMeta(l.lead_status).label)}</span>${l.project ? " · " + escapeHtml(l.project) : ""}</span>
+    </label>`).join("");
+  return `
+    <div class="crm-pick-head">
+      <input type="search" id="campaignCrmPickSearch" placeholder="חיפוש ברשימה (שם/טלפון/פרויקט)">
+      <button type="button" data-pick-action="all">בחר הכל</button>
+      <button type="button" data-pick-action="none">נקה הכל</button>
+      <span class="crm-pick-count" id="campaignCrmPickCount"></span>
+      <span class="text-xs text-slate-500" id="campaignCrmPickVisible"></span>
+    </div>
+    <div class="mb-1 text-xs text-slate-500">"בחר הכל"/"נקה הכל" חלים רק על השורות המוצגות כרגע (אחרי החיפוש). רק הלידים המסומנים ייכנסו לתור.</div>
+    ${truncated ? `<div class="skip-line">מוצגים ${Number(maxSelectable)} הראשונים מתוך ${Number(total)} - צמצמו את הסינון כדי לבחור מהשאר.</div>` : ""}
+    <div class="crm-pick-list" id="campaignCrmPickList">${rows}</div>`;
+}
+
+// event delegation על מכל התוצאה (קבוע) - לא מאזין לכל שורה
+(function initCampaignCrmPicker() {
+  const resultEl = document.getElementById("campaignCrmResult");
+  resultEl.addEventListener("change", e => {
+    const cb = e.target;
+    if (!(cb instanceof HTMLInputElement) || cb.type !== "checkbox") return;
+    const row = cb.closest(".crm-pick-row");
+    if (!row) return;
+    const lead = campaignCrmLeads[Number(row.dataset.idx)];
+    if (!lead) return;
+    if (cb.checked) campaignCrmSelected.add(lead.key); else campaignCrmSelected.delete(lead.key);
+    updateCampaignCrmPickCounter();
+  });
+  resultEl.addEventListener("click", e => {
+    const btn = e.target.closest && e.target.closest("[data-pick-action]");
+    if (!btn) return;
+    campaignCrmSetVisible(btn.dataset.pickAction === "all");
+  });
+  resultEl.addEventListener("input", e => {
+    if (e.target && e.target.id === "campaignCrmPickSearch") campaignCrmApplySearch(e.target.value);
+  });
+})();
+
+let campaignCrmPreviewSeq = 0; // תצוגה מקדימה שחזרה אחרי שינוי סינון/תבנית לא מאשרת הוספה לתור
+function invalidateCampaignCrmPreview() {
+  campaignCrmPreviewSeq++;
+  campaignCrmPreviewValid = false;
+  updateCampaignCrmQueueBtn();
 }
 
 function selectedCampaignCrmStatuses() {
@@ -5369,6 +5485,7 @@ document.getElementById("campaignCrmPreviewBtn").addEventListener("click", async
   const resultEl = document.getElementById("campaignCrmResult");
   const btn = document.getElementById("campaignCrmPreviewBtn");
   invalidateCampaignCrmPreview();
+  const previewSeq = campaignCrmPreviewSeq;
   btn.disabled = true;
   resultEl.innerHTML = '<div class="loading">מחשב תצוגה מקדימה...</div>';
   try {
@@ -5380,10 +5497,16 @@ document.getElementById("campaignCrmPreviewBtn").addEventListener("click", async
     if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
 
     const count = Number(data.count || 0);
-    const quota = Number(data.daily_quota || 0);
-    const quotaLine = quota && count > quota
-      ? `<div class="skip-line">⚠️ ${count} לידים מעל המכסה היומית (${quota}) - נשלחים עד ${quota} ביום; השאר מסומנים "מכסה יומית" - כדי להמשיך איתם לוחצים שוב "▶️ התחל שליחה" למחרת.</div>`
-      : "";
+    campaignCrmQuota = Number(data.daily_quota || 0);
+    campaignCrmLeads = (Array.isArray(data.leads) ? data.leads : []).map(l => ({
+      key: String(l.key || ""), name: String(l.name || ""), phone: String(l.phone || ""),
+      lead_status: l.lead_status || "new", project: String(l.project || ""),
+      _hay: `${l.name || ""} ${l.phone || ""} ${l.project || ""} ${statusMeta(l.lead_status).label}`.toLowerCase(),
+    })).filter(l => l.key);
+    campaignCrmSelected = new Set(campaignCrmLeads.map(l => l.key));
+    // אזהרת מכסה - לפי מספר הנבחרים (מתעדכנת חי ב-updateCampaignCrmPickCounter)
+    const quotaLine = '<div class="skip-line" id="campaignCrmQuotaLine" style="display:none;"></div>';
+    const pickerHtml = campaignCrmPickerHtml(data.truncated, data.max_selectable || campaignCrmLeads.length, count);
     const sampleHtml = (data.sample || []).map(s => `
       <div class="campaign-queue-row" style="align-items:flex-start;">
         <div class="cq-main">
@@ -5394,18 +5517,16 @@ document.getElementById("campaignCrmPreviewBtn").addEventListener("click", async
       </div>`).join("");
     resultEl.innerHTML =
       (count > 0
-        ? `<div class="ok-line">✓ ${count} לידים ייכנסו לתור</div>`
+        ? `<div class="ok-line">✓ ${count} לידים זכאים - סמנו מי ייכנס לתור</div>`
         : '<div class="skip-line">אין לידים מתאימים לפי הסינון שנבחר</div>') +
-      campaignExcludedHtml(data.excluded) + quotaLine +
+      campaignExcludedHtml(data.excluded) + quotaLine + pickerHtml +
       (sampleHtml ? `<div class="mt-2 text-xs text-slate-400">דוגמאות להודעות (עד 5):</div>${sampleHtml}` : "");
 
-    if (count > 0) {
-      campaignCrmPreviewValid = true;
-      const queueBtn = document.getElementById("campaignCrmQueueBtn");
-      queueBtn.disabled = false;
-      queueBtn.title = "";
-    }
+    if (count > 0 && campaignCrmLeads.length && previewSeq === campaignCrmPreviewSeq) campaignCrmPreviewValid = true;
+    updateCampaignCrmPickCounter();
   } catch (err) {
+    campaignCrmLeads = [];
+    campaignCrmSelected = new Set();
     resultEl.innerHTML = '<div class="error">שגיאה בתצוגה המקדימה: ' + escapeHtml(err.message) + "</div>";
   } finally {
     btn.disabled = false;
@@ -5413,11 +5534,12 @@ document.getElementById("campaignCrmPreviewBtn").addEventListener("click", async
 });
 
 document.getElementById("campaignCrmQueueBtn").addEventListener("click", async () => {
-  if (!campaignCrmPreviewValid) return;
+  if (!campaignCrmPreviewValid || campaignCrmSelected.size === 0) return;
   const resultEl = document.getElementById("campaignCrmResult");
   const btn = document.getElementById("campaignCrmQueueBtn");
   btn.disabled = true;
   const payload = campaignCrmPayload(false);
+  payload.selected_keys = Array.from(campaignCrmSelected);
   campaignCrmPreviewValid = false;
   try {
     const res = await fetch("/api/campaigns/from-leads", {
@@ -5429,9 +5551,13 @@ document.getElementById("campaignCrmQueueBtn").addEventListener("click", async (
 
     const skipped = data.skipped || [];
     const skipLine = skipped.length ? `<div class="skip-line">${skipped.length} לידים דולגו (טלפון חסר/לא תקין)</div>` : "";
+    const ignored = Number(data.ignored_keys || 0);
+    const ignoredLine = ignored ? `<div class="skip-line">${ignored} מהלידים שנבחרו כבר לא היו זכאים (נחסמו/נכנסו לתור בינתיים) ולא נוספו</div>` : "";
+    campaignCrmLeads = [];
+    campaignCrmSelected = new Set();
     resultEl.innerHTML =
       `<div class="ok-line">✓ ${Number(data.queued || 0)} לידים נוספו לתור (קמפיין ${escapeHtml(data.campaign_id)}) - עדיין לא נשלח דבר. לחצו "▶️ התחל שליחה" כדי להתחיל.</div>` +
-      skipLine + campaignExcludedHtml(data.excluded);
+      ignoredLine + skipLine + campaignExcludedHtml(data.excluded);
 
     await loadCampaignsList();
     document.getElementById("campaignSelect").value = data.campaign_id;

@@ -1751,6 +1751,9 @@ CAMPAIGN_DEFAULT_EXCLUDED_STATUSES = {"not_relevant", "human_handling"}
 # סטטוסי תור "פתוחים" - ליד שכבר ממתין/נשלח כרגע בקמפיין אחר לא נכנס שוב
 CAMPAIGN_OPEN_QUEUE_STATUSES = ("queued", "sending", "skipped_quota")  # skipped_quota ממשיך בהרצה הבאה
 CAMPAIGN_PREVIEW_SAMPLE_SIZE = 5
+# תקרת הרשימה המלאה בתצוגה המקדימה ותקרת selected_keys בהוספה לתור (בחירה ידנית)
+CAMPAIGN_SELECT_MAX = 2000
+CAMPAIGN_SELECTED_KEY_MAX_LEN = 300
 
 
 def _campaign_tenant_or_error(requested_tenant_id):
@@ -1906,8 +1909,10 @@ def api_campaign_lead_filters():
 @app.route("/api/campaigns/from-leads", methods=["POST"])
 def api_campaign_from_leads():
     """יוצר קמפיין Outbound מלידי CRM קיימים. preview=true (ברירת מחדל): לא
-    כותב כלום, רק מחזיר ספירה/החרגות/דוגמאות. preview=false: מכניס לתור בלבד
-    (status='queued') - **לא** מתחיל שליחה; זה נשאר רק ב-POST /api/campaigns/
+    כותב כלום, רק מחזיר ספירה/החרגות/דוגמאות + leads (הרשימה הזכאית המלאה, עד
+    CAMPAIGN_SELECT_MAX, truncated אם יותר). preview=false: דורש selected_keys
+    (בחירה ידנית) ומכניס לתור רק את החיתוך שלהם עם הרשימה הזכאית שמחושבת מחדש, בתור
+    בלבד (status='queued') - **לא** מתחיל שליחה; זה נשאר רק ב-POST /api/campaigns/
     <id>/start אחרי קליק אנושי (חוק בטיחות #1)."""
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
@@ -1945,6 +1950,20 @@ def api_campaign_from_leads():
     if not isinstance(preview, bool):
         return jsonify({"error": "preview חייב להיות true/false"}), 400
 
+    selected_keys = None
+    if not preview:
+        role_err = _campaign_write_role_or_error()
+        if role_err:
+            return role_err
+        # בחירה ידנית חובה: רק מה שהמשתמש סימן נכנס לתור (ורק אם עדיין זכאי)
+        selected_keys = data.get("selected_keys")
+        if not isinstance(selected_keys, list) or not selected_keys:
+            return jsonify({"error": "יש לבחור לפחות ליד אחד (selected_keys - רשימה לא ריקה)"}), 400
+        if len(selected_keys) > CAMPAIGN_SELECT_MAX:
+            return jsonify({"error": f"ניתן לבחור עד {CAMPAIGN_SELECT_MAX} לידים בקמפיין אחד"}), 400
+        if not all(isinstance(k, str) and k and len(k) <= CAMPAIGN_SELECTED_KEY_MAX_LEN for k in selected_keys):
+            return jsonify({"error": "selected_keys חייב להכיל מחרוזות מפתח ליד תקינות בלבד"}), 400
+
     eligible, excluded = _select_crm_campaign_leads(tenant_id, statuses, project)
     count = len(eligible)
 
@@ -1960,6 +1979,19 @@ def api_campaign_from_leads():
             }
             for lead in eligible[:CAMPAIGN_PREVIEW_SAMPLE_SIZE]
         ]
+        # הרשימה המלאה לבחירה ידנית. הטלפון מלא - כמו בטבלת הלידים (/api/leads)
+        # לאותו משתמש; client מקבל כאן ממילא רק לידים שבבעלותו. בלי הודעה
+        # פר-ליד (משקל התשובה) - ההודעה זהה לתבנית, הדוגמאות ב-sample.
+        leads_list = [
+            {
+                "key": lead.get("key") or "",
+                "name": lead.get("name") or "",
+                "phone": str(lead.get("phone") or ""),
+                "lead_status": lead.get("lead_status") or "new",
+                "project": lead.get("project") or "",
+            }
+            for lead in eligible[:CAMPAIGN_SELECT_MAX]
+        ]
         return jsonify({
             "ok": True,
             "preview": True,
@@ -1967,30 +1999,49 @@ def api_campaign_from_leads():
             "count": count,
             "excluded": excluded,
             "sample": sample,
+            "leads": leads_list,
+            "truncated": count > CAMPAIGN_SELECT_MAX,
+            "max_selectable": CAMPAIGN_SELECT_MAX,
             "daily_quota": outbound_engine.DAILY_QUOTA,
         })
-
-    role_err = _campaign_write_role_or_error()
-    if role_err:
-        return role_err
 
     if count == 0:
         return jsonify({"error": "אין לידים מתאימים לפי הסינון שנבחר - לא נוצר קמפיין", "excluded": excluded}), 400
 
+    # לא סומכים על המפתחות מהלקוח: רק החיתוך עם הרשימה הזכאית שחושבה עכשיו מחדש
+    # (אותם סינונים/החרגות/RBAC) - מפתח של tenant אחר/חסום/כבר-בתור/מומצא נזרק.
+    selected_set = set(selected_keys)
+    to_queue = [lead for lead in eligible if lead.get("key") in selected_set]
+    ignored_keys = len(selected_set) - len(to_queue)
+    if not to_queue:
+        logger.info(
+            "📣 קמפיין מלידי CRM לא נוצר - אף ליד שנבחר אינו זכאי: user=%s tenant=%s eligible=%d selected=%d",
+            g.current_user.get("user_id"), tenant_id, count, len(selected_set),
+        )
+        return jsonify({
+            "error": "אף אחד מהלידים שנבחרו כבר אינו זכאי (נחסם/נכנס לתור/הסינון השתנה) - הריצו תצוגה מקדימה מחדש",
+            "ignored_keys": ignored_keys,
+            "excluded": excluded,
+        }), 400
+
     campaign_id = uuid.uuid4().hex[:12]
     result = outbound_engine.import_crm_leads(
-        eligible, tenant_id=tenant_id, campaign_id=campaign_id, message_template=message_template
+        to_queue, tenant_id=tenant_id, campaign_id=campaign_id, message_template=message_template
     )
     logger.info(
-        "📣 קמפיין מלידי CRM נוצר (תור בלבד, לא נשלח): campaign_id=%s user=%s tenant=%s statuses=%s project=%s count=%d queued=%d",
+        "📣 קמפיין מלידי CRM נוצר (תור בלבד, לא נשלח): campaign_id=%s user=%s tenant=%s statuses=%s project=%s "
+        "eligible=%d selected=%d ignored=%d queued=%d",
         campaign_id, g.current_user.get("user_id"), tenant_id, statuses or "all", project or "all",
-        count, result.get("queued", 0),
+        count, len(selected_set), ignored_keys, result.get("queued", 0),
     )
     return jsonify({
         "ok": True,
         "campaign_id": campaign_id,
         "tenant_id": tenant_id,
+        "eligible": count,
+        "selected": len(selected_set),
         "queued": result.get("queued", 0),
+        "ignored_keys": ignored_keys,
         "skipped": result.get("skipped", []),
         "excluded": excluded,
         "daily_quota": outbound_engine.DAILY_QUOTA,
