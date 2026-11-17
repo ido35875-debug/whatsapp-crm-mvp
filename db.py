@@ -206,6 +206,32 @@ def _existing_columns(conn, table: str) -> set[str]:
 _schema_ready = False
 _schema_lock = threading.Lock()
 
+_EXTERNAL_REF_INDEX = "idx_calendar_tasks_tenant_external_ref"
+
+
+def _ensure_external_ref_unique_index(conn) -> None:
+    """אינדקס UNIQUE חלקי על (tenant_id, external_ref) למשימות מיובאות (migrate_bmby.py) -
+    רשת ביטחון ברמת המסד נגד משימה כפולה בייבוא חוזר/מקבילי. חלקי (WHERE external_ref
+    IS NOT NULL) - משימות שנוצרו במערכת עצמה (external_ref=null) לא מושפעות. נתמך גם
+    ב-SQLite (>=3.8) וגם ב-Postgres, IF NOT EXISTS כמו שאר ה-DDL כאן.
+    הגנה: אם כבר קיימות שורות כפולות (לא אמור לקרות - אבל CREATE UNIQUE INDEX היה
+    נכשל ומפיל את כל _init_schema, כלומר את השרת) - לא יוצרים, רק מתעדים בלוג;
+    האידמפוטנטיות בקוד (find_task_by_external_ref) ממשיכה לעבוד גם בלעדיו."""
+    dup = conn.execute(
+        "SELECT tenant_id, external_ref FROM calendar_tasks WHERE external_ref IS NOT NULL "
+        "GROUP BY tenant_id, external_ref HAVING COUNT(*) > 1 LIMIT 1"
+    ).fetchone()
+    if dup is not None:
+        import logging
+        logging.getLogger("whatsapp_crm").warning(
+            "calendar_tasks: יש external_ref כפולים - האינדקס הייחודי %s לא נוצר", _EXTERNAL_REF_INDEX
+        )
+        return
+    conn.execute(
+        f"CREATE UNIQUE INDEX IF NOT EXISTS {_EXTERNAL_REF_INDEX} "
+        "ON calendar_tasks (tenant_id, external_ref) WHERE external_ref IS NOT NULL"
+    )
+
 
 def _init_schema(conn) -> None:
     """כל ה-CREATE TABLE/CREATE INDEX/ALTER TABLE - משותף כמעט לגמרי בין sqlite
@@ -322,6 +348,7 @@ def _init_schema(conn) -> None:
                 conn.execute(
                     "UPDATE calendar_tasks SET task_type = 'meeting' WHERE intent IN ('new', 'reschedule')"
                 )
+    _ensure_external_ref_unique_index(conn)
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS system_feedback (
@@ -1219,6 +1246,162 @@ def find_task_by_external_ref(tenant_id: str, external_ref: str) -> dict | None:
             (tenant_id, external_ref),
         ).fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+# ---- עזרי ייבוא ממערכת חיצונית (migrate_bmby.py) ----
+# פונקציות הקריאה כאן (existing_*) הן read-only ובלי שינוי סכימה (_connect_raw, לא
+# _get_connection) - כדי ש-dry-run של מיגרציה לא ייצור את crm_data.db ולא יריץ DDL
+# מול Postgres. פונקציות הכתיבה (insert_imported_notes/create_imported_task) רצות
+# רק ב---apply, דרך _get_connection הרגיל.
+
+def _table_exists_readonly(conn, table: str) -> bool:
+    return bool(_existing_columns(conn, table))
+
+
+def customers_table_exists_readonly() -> bool:
+    """Postgres: האם טבלת הכרטיסים customers (cust_key,data) קיימת - בלי DDL (dry-run
+    של מיגרציה מול מסד ריק). לא רלוונטי ל-SQLite המקומי (שם הכרטיסים ב-customers.json,
+    וטבלת customers ב-crm_data.db היא הטבלה הזרה - ראו CLAUDE.md)."""
+    if not IS_POSTGRES:
+        raise RuntimeError("customers_table_exists_readonly: רק במצב Postgres")
+    conn = _connect_raw()
+    try:
+        return _table_exists_readonly(conn, "customers")
+    finally:
+        conn.close()
+
+
+def existing_task_external_refs(tenant_id: str, prefix: str) -> set[str]:
+    """כל ה-external_ref של ה-tenant שמתחילים ב-prefix (למשל "bmby:task:") - שאילתה
+    אחת במקום find_task_by_external_ref לכל משימה. set ריק אם אין קובץ/טבלה/עמודה."""
+    if not IS_POSTGRES and not DB_FILE.exists():
+        return set()
+    conn = _connect_raw()
+    try:
+        if "external_ref" not in _existing_columns(conn, "calendar_tasks"):
+            return set()
+        # substr ולא LIKE - "_" ב-prefix הוא wildcard ב-LIKE. substr זהה בשני הבאקאנדים.
+        rows = conn.execute(
+            "SELECT external_ref FROM calendar_tasks WHERE tenant_id = ? AND substr(external_ref, 1, ?) = ?",
+            (tenant_id, len(prefix), prefix),
+        ).fetchall()
+        return {row["external_ref"] for row in rows}
+    finally:
+        conn.close()
+
+
+def _norm_ts(value) -> str:
+    """חותמת זמן של messages (str ב-SQLite, datetime naive-UTC ב-Postgres TIMESTAMP) ->
+    ISO UTC בדיוק שניות, להשוואה יציבה בין הבאקאנדים."""
+    if isinstance(value, datetime):
+        ts = value
+    else:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def existing_note_messages(tenant_id: str) -> dict[tuple[str, str], list[str]]:
+    """{(phone, ts_utc_iso_seconds): [message, ...]} לכל ההערות הפנימיות (channel='note')
+    של ה-tenant - בסיס לאידמפוטנטיות של ייבוא הערות (שאילתה אחת לכל ההרצה)."""
+    if not IS_POSTGRES and not DB_FILE.exists():
+        return {}
+    conn = _connect_raw()
+    try:
+        if not _table_exists_readonly(conn, "messages"):
+            return {}
+        rows = conn.execute(
+            "SELECT phone, timestamp, message FROM messages WHERE tenant_id = ? AND channel = 'note'",
+            (tenant_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    out: dict[tuple[str, str], list[str]] = {}
+    for row in rows:
+        try:
+            key = (row["phone"], _norm_ts(row["timestamp"]))
+        except (TypeError, ValueError):
+            continue
+        out.setdefault(key, []).append(row["message"])
+    return out
+
+
+def insert_imported_notes(tenant_id: str, phone: str, entries: list[dict]) -> int:
+    """מכניס הערות פנימיות מיובאות לטבלת messages (channel='note', direction='out') עם
+    חותמת הזמן **המקורית** - כמו הערה ידנית מ-POST /api/messages/note: מופיעות בציר
+    הזמן בדשבורד (GET /api/messages), לעולם לא נשלחות ללקוח, ולא נכתבות ל-card["history"]
+    (שמוזן כהקשר למענה האוטומטי - extract._format_history_for_reply).
+    entries: [{"timestamp": ISO מודע-timezone, "message": str}]. טרנזקציה אחת לכרטיס
+    (הכל או כלום). האידמפוטנטיות - באחריות הקורא (existing_note_messages)."""
+    rows = []
+    for entry in entries:
+        ts = datetime.fromisoformat(entry["timestamp"])
+        if ts.tzinfo is None:
+            raise ValueError(f"insert_imported_notes: timestamp בלי timezone: {entry['timestamp']}")
+        if not entry.get("message"):
+            raise ValueError("insert_imported_notes: message ריק")
+        rows.append((tenant_id, phone, entry["message"], ts.astimezone(timezone.utc).isoformat()))
+    if not rows:
+        return 0
+    conn = _get_connection()
+    try:
+        for tenant, ph, message, ts_iso in rows:
+            conn.execute(
+                "INSERT INTO messages (tenant_id, phone, channel, direction, message, timestamp, simulated) "
+                "VALUES (?, ?, 'note', 'out', ?, ?, 0)",
+                (tenant, ph, message, ts_iso),
+            )
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
+
+
+def create_imported_task(
+    phone: str,
+    tenant_id: str,
+    title: str,
+    due_date: str,
+    due_time: str | None,
+    notes: str | None,
+    status: str,
+    task_type: str,
+    external_ref: str,
+    source: str = "bmby_import",
+    reminder_sent: bool = False,
+    invite_sent: bool = False,
+    marketer_reminder_status: str | None = None,
+) -> int | None:
+    """כמו create_task, למשימה מיובאת - INSERT יחיד שכולל גם את דגלי הסקדולר (כך שאין
+    חלון שבו scheduler רואה פגישה מיובאת לפני שסומנה). external_ref חובה; משימה עם
+    אותו (tenant_id, external_ref) כבר קיימת -> None (האינדקס הייחודי החלקי, או בדיקה
+    מפורשת אם האינדקס לא קיים). מחזיר את ה-id החדש."""
+    if not external_ref:
+        raise ValueError("create_imported_task: external_ref חובה")
+    conn = _get_connection()
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM calendar_tasks WHERE tenant_id = ? AND external_ref = ?", (tenant_id, external_ref)
+        ).fetchone()
+        if exists is not None:
+            return None
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            cur = conn.execute(
+                "INSERT INTO calendar_tasks "
+                "(tenant_id, phone, title, due_date, due_time, notes, status, source, task_type, external_ref, "
+                "reminder_sent, invite_sent, marketer_reminder_status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (tenant_id, phone, title, due_date, due_time, notes, status, source, task_type, external_ref,
+                 int(reminder_sent), int(invite_sent), marketer_reminder_status, now, now),
+            )
+        except IntegrityError:
+            return None  # נוצרה במקביל (האינדקס הייחודי) - close() עושה rollback
+        conn.commit()
+        return cur.lastrowid
     finally:
         conn.close()
 

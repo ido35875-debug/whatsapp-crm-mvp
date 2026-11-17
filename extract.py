@@ -1051,40 +1051,87 @@ def import_lead(
     return card, created["is_new"]
 
 
-def append_imported_history(
-    phone: str, entries: list[dict], tenant_id: str = DEFAULT_TENANT_ID
-) -> tuple[int, int]:
-    """מוסיף לסוף history רשומות שיובאו ממערכת חיצונית (למשל הערות/פעילויות
-    מבמבי - migrate_bmby.py) עם חותמת הזמן **המקורית** שלהן. append-only (חוק
-    בטיחות 6): לא משנה/ממיין/מוחק רשומה קיימת - רק מוסיף בסוף.
+# שדות שמותר להעביר ל-import_leads_batch - בדיוק הפרמטרים של import_lead (חוץ מהמפתח).
+_IMPORT_LEAD_FIELDS = (
+    "customer_name", "business_name", "location", "lead_status", "import_source", "category", "agent",
+    "notes", "client_id", "email", "address", "property_type", "budget", "requirements", "rooms", "project",
+)
 
-    אידמפוטנטי: כל רשומה חייבת "import_ref" יציב (ValueError אחרת); רשומה
-    שה-import_ref שלה כבר קיים בכרטיס (או כפול בתוך entries עצמו) מדולגת -
-    הרצה חוזרת לעולם לא מכפילה. timestamp חייב להיות ISO מודע-timezone
-    (last_contact_at משווה חותמות - ערבוב naive/aware היה מפיל TypeError).
-    הכרטיס חייב להתקיים (KeyError אחרת - לא יוצר כרטיס). אטומי פר-כרטיס
-    (update_card). מחזיר (appended, skipped_as_duplicate)."""
-    for entry in entries:
-        if not entry.get("import_ref"):
-            raise ValueError("append_imported_history: כל רשומה חייבת import_ref")
-        ts = datetime.fromisoformat(entry["timestamp"])
-        if ts.tzinfo is None:
-            raise ValueError(f"append_imported_history: timestamp בלי timezone: {entry['timestamp']}")
-    counts = {"appended": 0, "skipped": 0}
 
-    def _mutate(card: dict, _is_new: bool) -> None:
-        history = card.setdefault("history", [])
-        seen = {h.get("import_ref") for h in history if h.get("import_ref")}
-        for entry in entries:
-            if entry["import_ref"] in seen:
-                counts["skipped"] += 1
-                continue
-            history.append(dict(entry))
-            seen.add(entry["import_ref"])
-            counts["appended"] += 1
+def import_leads_batch(
+    items: list[dict], tenant_id: str = DEFAULT_TENANT_ID, chunk_size: int = 200
+) -> list[dict]:
+    """ייבוא מרוכז (migrate_bmby.py): לכל פריט - upsert של שדות בדיוק כמו import_lead
+    (ערך ריק/None לא נוגע בשדה הקיים) **ואחריו** mutate(card, is_new) אופציונלי של
+    הקורא (מטא-דאטה של הייבוא), הכל בכתיבה אחת לכרטיס - במקום import_lead + update_card
+    נפרדים (2 כתיבות מלאות של customers.json לכל כרטיס במצב JSON).
 
-    update_card(_customer_key(tenant_id, phone), _mutate)
-    return counts["appended"], counts["skipped"]
+    items: [{"phone": str, "fields": {...}, "mutate": callable|None, "create": bool=True}].
+    create=False: כרטיס חסר = שגיאה לפריט (לא נוצר). **לא** כותב ל-history.
+    Postgres: update_card פר-כרטיס (טרנזקציה + FOR UPDATE לכל שורה, כמו import_lead).
+    JSON מקומי: מנה של chunk_size כרטיסים תחת _json_lock - קריאה אחת, כתיבה אטומית
+    אחת לכל מנה (אותן הבטחות כמו update_card: process יחיד, os.replace אטומי).
+    שגיאה בפריט אחד (חריגה ב-mutate/שדה לא חוקי) לא נכתבת ולא עוצרת את השאר.
+    מחזיר רשימה מקבילה ל-items: [{"ok": bool, "is_new": bool, "error": Exception|None}]."""
+    for item in items:
+        unknown = set(item.get("fields") or {}) - set(_IMPORT_LEAD_FIELDS)
+        if unknown:
+            raise ValueError(f"import_leads_batch: שדות לא נתמכים: {sorted(unknown)}")
+        status = (item.get("fields") or {}).get("lead_status")
+        if status and status not in VALID_LEAD_STATUSES:
+            raise ValueError(f"import_leads_batch: lead_status לא חוקי: {status}")
+
+    def _apply(item: dict, card: dict, is_new: bool) -> None:
+        for field, value in (item.get("fields") or {}).items():
+            if value:
+                card[field] = value
+        if item.get("mutate"):
+            item["mutate"](card, is_new)
+
+    results: list[dict] = []
+    if _use_database():
+        for item in items:
+            created = {"is_new": False}
+            key = _customer_key(tenant_id, item["phone"])
+
+            def _mutate(card: dict, is_new: bool, _item=item, _created=created) -> None:
+                _created["is_new"] = is_new
+                _apply(_item, card, is_new)
+
+            try:
+                default = _new_card(item["phone"], tenant_id) if item.get("create", True) else None
+                update_card(key, _mutate, default=default)
+                results.append({"ok": True, "is_new": created["is_new"], "error": None})
+            except Exception as exc:  # פריט בעייתי אחד לא עוצר את השאר
+                results.append({"ok": False, "is_new": False, "error": exc})
+        return results
+
+    for start in range(0, len(items), max(1, chunk_size)):
+        chunk = items[start:start + chunk_size]
+        with _json_lock:
+            customers = _read_customers_file()
+            changed = False
+            for item in chunk:
+                key = _customer_key(tenant_id, item["phone"])
+                current = customers.get(key)
+                try:
+                    if current is None:
+                        if not item.get("create", True):
+                            raise KeyError(key)
+                        card, is_new = _new_card(item["phone"], tenant_id), True
+                    else:
+                        card, is_new = copy.deepcopy(current), False
+                    _apply(item, card, is_new)
+                except Exception as exc:
+                    results.append({"ok": False, "is_new": False, "error": exc})
+                    continue
+                if card != current:
+                    customers[key] = card
+                    changed = True
+                results.append({"ok": True, "is_new": is_new, "error": None})
+            if changed:
+                _write_customers_file_atomic(customers)
+    return results
 
 
 def update_lead_category(phone: str, category: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:

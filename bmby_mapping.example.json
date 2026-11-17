@@ -92,7 +92,7 @@
   },
 
   "status_policy": "fill_missing",
-  "_status_policy": "fill_missing (ברירת מחדל): סטטוס מבמבי נכתב רק לכרטיס חדש/בלי סטטוס - כרטיס שכבר מטופל במערכת שומר את הסטטוס שלו. overwrite: במבי גובר. בשני המקרים status_changed_at לא נקבע (ומוסר אם הסטטוס הוחלף) - כדי שלא יתחיל טיימר פולו-אפ אוטומטי; התאריך המקורי נשמר ב-bmby_status_updated_at.",
+  "_status_policy": "fill_missing (ברירת מחדל): סטטוס מבמבי נכתב רק לכרטיס חדש/בלי סטטוס - כרטיס שכבר מטופל במערכת שומר את הסטטוס שלו. overwrite: במבי גובר. status_changed_at לא נקבע לכרטיס חדש/בלי סטטוס (כדי שלא יתחיל טיימר פולו-אפ אוטומטי). overwrite על ליד חי: סטטוס זהה = status_changed_at נשמר (הטיימר ממשיך); סטטוס שהשתנה = status_changed_at מוסר (הקודם נשמר ב-bmby_prev_lead_status/bmby_prev_status_changed_at). התאריך המקורי מבמבי נשמר ב-bmby_status_updated_at.",
 
   "field_policy": "fill_missing",
   "_field_policy": "fill_missing (ברירת מחדל): בכרטיס קיים לא דורסים שדה שכבר יש בו ערך שונה (מדווח ב-field_conflicts). overwrite: ערכי במבי דורסים.",
@@ -118,14 +118,19 @@
   },
   "task_type_default": "followup",
   "task_missing_due_date": "today",
+  "future_meeting_reminder": false,
+  "_future_meeting_reminder": "פגישות עתידיות מיובאות כ-meeting עם invite_sent=1 תמיד (הוזמנו כבר בבמבי). false (ברירת מחדל) = גם reminder_sent=1 - לא תישלח תזכורת WhatsApp אוטומטית גם אם SCHEDULER_AUTO_MEETING_REMINDER יודלק. true = התזכורת תתוזמן כרגיל (נשלחת בפועל רק אם הדגל דולק). פגישה פתוחה שמועדה עבר מיובאת כמשימת מעקב (followup), לא כפגישה.",
+  "future_meeting_marketer_task": true,
+  "_future_meeting_marketer_task": "true (ברירת מחדל) = לפגישה עתידית תיווצר בזמנה משימת '📞 אישור הגעה' פנימית למשווק (scheduler.check_pending_marketer_reminders - לא פנייה ללקוח). false = לא.",
   "_task_missing_due_date": "today = משימה פתוחה בלי תאריך יעד תקבע להיום (שתופיע ביומן); skip = לדלג ולדווח.",
 
   "date_formats": ["%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y", "%d.%m.%Y %H:%M", "%d.%m.%Y", "%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%d/%m/%y %H:%M", "%d/%m/%y"],
-  "_date_formats": "ISO 8601 נבדק תמיד קודם. תאריכי Excel (תא תאריך) נקראים ישירות. תאריך בלי אזור זמן = שעון timezone למטה; נשמר ב-history כ-UTC ISO. משימות: due_date/due_time נשמרים בשעון מקומי (כמו שהיומן מצפה).",
+  "_date_formats": "פורמט אמריקאי (%m/%d/%Y) נתמך רק אם מוסיפים אותו כאן במפורש - ובלי לערבב עם %d/%m (דו-משמעי; הסקריפט מסרב). ISO 8601 נבדק תמיד קודם. תאריכי Excel (תא תאריך) נקראים ישירות. תאריך בלי אזור זמן = שעון timezone למטה; ההערות נשמרות בטבלת messages (channel=note) כ-UTC ISO. משימות: due_date/due_time נשמרים בשעון מקומי (כמו שהיומן מצפה).",
   "timezone": "Asia/Jerusalem",
 
   "csv_encodings": ["utf-8-sig", "cp1255"],
   "_csv_encodings": "CSV מבמבי/Excel בעברית לעיתים בקידוד Windows-1255 - נבדקים לפי הסדר.",
 
-  "history_message_prefix": "[במבי] "
+  "history_message_prefix": "[במבי] ",
+  "_history_message_prefix": "קידומת לכל הערה מיובאת (messages, channel=note) - מזהה בציר הזמן שההערה הגיעה מבמבי."
 }

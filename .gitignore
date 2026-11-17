@@ -73,3 +73,9 @@ Thumbs.db
 
 # --- ייצוא מקומי של נתוני הנדל"ן מהפרודקשן (מידע אישי של לקוחות) ---
 data_realestate/
+
+# --- מיגרציית BMBY (migrate_bmby.py): ייצוא, מיפוי ודוחות מכילים מידע אישי של לקוחות ---
+# bmby_mapping.example.json (התבנית) נשאר ב-git בכוונה.
+bmby_export/
+bmby_mapping.json
+bmby_migration_report_*.json
