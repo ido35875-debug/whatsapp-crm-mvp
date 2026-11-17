@@ -42,6 +42,36 @@ VALID_LEAD_STATUSES = {
     "new", "contacted", "follow_up", "hot", "not_relevant", "reactivation", "human_handling", "no_answer",
 }
 
+# משפך מכירות (funnel_stage) - שדה נפרד ומקביל ל-lead_status. lead_status נשאר
+# "סטטוס מערכת" שמניע אוטומציות (human_handling עוצר את הבוט, scheduler שולח
+# פולו-אפ ל-contacted/follow_up, קמפיינים מחריגים not_relevant/human_handling) -
+# funnel_stage הוא שלב המכירה שהנציג מנהל ידנית, ולא משפיע על אף אוטומציה.
+# הסדר = סדר התצוגה בממשק. "all" ("כל המתעניינים") הוא פילטר, לא שלב.
+FUNNEL_STAGES = ("new", "followup", "first_contact", "no_answer", "closed", "lost")
+VALID_FUNNEL_STAGES = set(FUNNEL_STAGES)
+# כרטיס בלי funnel_stage שמור (כל הכרטיסים הקיימים) - השלב נגזר מ-lead_status
+# בזמן קריאה, בלי לכתוב לכרטיס (אין הגירה/כתיבה המונית לפרודקשן). רק שינוי ידני
+# (update_lead_funnel_stage) שומר funnel_stage בכרטיס, ומאז הוא גובר.
+LEAD_STATUS_TO_FUNNEL_STAGE = {
+    "new": "new",
+    "contacted": "first_contact",
+    "follow_up": "followup",
+    "hot": "followup",
+    "no_answer": "no_answer",
+    "not_relevant": "lost",
+    "human_handling": "first_contact",
+    "reactivation": "first_contact",
+}
+
+
+def card_funnel_stage(card: dict | None) -> str:
+    """שלב המשפך של כרטיס: funnel_stage שמור (אם תקין), אחרת נגזר מ-lead_status."""
+    card = card or {}
+    stored = card.get("funnel_stage")
+    if stored in VALID_FUNNEL_STAGES:
+        return stored
+    return LEAD_STATUS_TO_FUNNEL_STAGE.get(card.get("lead_status") or "new", "new")
+
 EXTRACTION_PROMPT = """\
 אתה עוזר שמחלץ פרטי לקוח מהודעת וואטסאפ בעברית או באנגלית.
 מתוך ההודעה הבאה, חלץ חמישה שדות: customer_name (שם הלקוח), business_name (שם העסק שלו, אם צוין),
@@ -1227,6 +1257,20 @@ def update_lead_status(
             _append_history(card, source_channel, note, direction=direction, simulated=simulated)
 
     return update_card(_customer_key(tenant_id, phone), _mutate, default=_new_card(phone, tenant_id))
+
+
+def update_lead_funnel_stage(phone: str, stage: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
+    """שומר funnel_stage (+ funnel_stage_changed_at) בכרטיס קיים. לא נוגע ב-lead_status,
+    ב-status_changed_at (טיימר הפולו-אפ) או ב-history (append-only, משמש הקשר ל-AI).
+    כרטיס חסר = KeyError (לא יוצר כרטיס). שלב לא תקין = ValueError."""
+    if stage not in VALID_FUNNEL_STAGES:
+        raise ValueError(f"שלב משפך לא תקין: {stage!r}")
+
+    def _mutate(card: dict, _is_new: bool) -> None:
+        card["funnel_stage"] = stage
+        card["funnel_stage_changed_at"] = datetime.now(timezone.utc).isoformat()
+
+    return update_card(_customer_key(tenant_id, phone), _mutate)
 
 
 def update_lead_fields(

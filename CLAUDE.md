@@ -50,6 +50,7 @@
 ```
 
 - **מפתח:** `"<tenant_id>::<phone>"` - לא ID מספרי, לעולם.
+- **`funnel_stage`** (אופציונלי) - שלב במשפך המכירה, **נפרד** מ-`lead_status` ולא מניע אף אוטומציה: `new`/`followup`/`first_contact`/`no_answer`/`closed`/`lost` (`extract.FUNNEL_STAGES`; "כל המתעניינים" בממשק = פילטר `all`, לא ערך). כרטיס בלי השדה = השלב **נגזר** מ-`lead_status` בזמן קריאה (`extract.card_funnel_stage`, מיפוי `LEAD_STATUS_TO_FUNNEL_STAGE`) - אין הגירה שכותבת לכרטיסים. נשמר בכרטיס רק בשינוי ידני (`extract.update_lead_funnel_stage` / `POST /api/leads/funnel-stage`, + `funnel_stage_changed_at`), ומאז גובר. לא נכתב ל-`history`; השינוי נרשם בציר הזמן (`messages`, `channel=status_change`).
 - **`lead_status`** - אחד מ-`VALID_LEAD_STATUSES` ב-`server.py`: `new`/`contacted`/`hot`/`not_relevant`/`reactivation` (לא ערכי סטטוס בעברית, לא `null` בשקט - `null`/חסר = ליד חדש שלא טופל).
 - **`history`** - append-only, `direction`: `"in"`(מהלקוח)/`"out"`(מהמערכת), `channel`: `whatsapp`/`voice`/`note`/`followup`/`followup_2`/`followup_3`/`followup_final`. שדה `simulated:true` מסמן הודעה שלא נשלחה בפועל (Trial/כשל ספק).
 - **`category`/`agent`/`notes`** - מטא-דאטה חופשית, לא נוגעים ב-`history`/`lead_status`.

@@ -468,6 +468,56 @@
   select.status-select:disabled { opacity: .6; cursor: default; }
   .panel-status-wrap { margin-top: 8px; }
 
+  /* ==== משפך לידים (funnel_stage) - שדה נפרד מ-lead_status ====
+     צבע לכל שלב: --stage-fg / --stage-bg (אותם טוקנים של שאר הסטטוסים, כך
+     שגם ערכת הנושא הבהירה מקבלת אותם אוטומטית). */
+  .funnel-stage-new           { --stage-fg: var(--text-secondary); --stage-bg: var(--surface-3); }
+  .funnel-stage-followup      { --stage-fg: var(--status-serious); --stage-bg: var(--status-serious-soft); }
+  .funnel-stage-first_contact { --stage-fg: var(--status-warning); --stage-bg: var(--status-warning-soft); }
+  .funnel-stage-no_answer     { --stage-fg: #a78bfa; --stage-bg: rgba(167,139,250,0.18); }
+  .funnel-stage-closed        { --stage-fg: var(--status-good); --stage-bg: var(--status-good-soft); }
+  .funnel-stage-lost          { --stage-fg: var(--status-critical); --stage-bg: var(--status-critical-soft); }
+  .funnel-stage-all           { --stage-fg: var(--accent); --stage-bg: var(--accent-soft); }
+
+  .funnel-bar {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px;
+  }
+  .funnel-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid transparent; border-radius: 999px; padding: 6px 14px;
+    background: var(--surface-3); color: var(--text-secondary);
+    font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .funnel-chip::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--stage-fg);
+  }
+  .funnel-chip .funnel-chip-count {
+    font-variant-numeric: tabular-nums; font-size: 12px; opacity: .8;
+  }
+  .funnel-chip:hover { color: var(--stage-fg); }
+  .funnel-chip.active {
+    background: var(--stage-bg); color: var(--stage-fg); border-color: var(--stage-fg);
+  }
+  .funnel-chip:focus-visible, .funnel-quick-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  select.funnel-select {
+    border: none; border-radius: 999px; padding: 3px 10px;
+    font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; outline: none;
+    width: 100%; max-width: 100%; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis;
+    background: var(--stage-bg); color: var(--stage-fg);
+  }
+  select.funnel-select:disabled { opacity: .6; cursor: default; }
+
+  .funnel-quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .funnel-quick-btn {
+    border: 1px solid var(--stage-bg); border-radius: 999px; padding: 3px 10px;
+    background: transparent; color: var(--stage-fg);
+    font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .funnel-quick-btn:hover { background: var(--stage-bg); }
+  .funnel-quick-btn.active { background: var(--stage-bg); border-color: var(--stage-fg); }
+  .funnel-quick-btn:disabled { opacity: .6; cursor: default; }
+
   /* מתג מענה AI פעיל/ידני (שלב 5 - Enterprise Production Readiness) - אותה
      שפה חזותית כמו status-select (גלולה, פונט/מרווח זהים) כדי שירגיש חלק
      מאותה שורת בקרות, לא רכיב זר */
@@ -1465,6 +1515,7 @@
         </div>
 
         <div id="tableView">
+    <div class="funnel-bar" id="funnelBar" role="tablist" aria-label="שלבי משפך הלידים"></div>
     <div class="stat-grid" id="statGrid"></div>
 
     <div class="dashboard-layout">
@@ -1510,6 +1561,8 @@
             <option value="reactivation">החייאת לידים</option>
           </select>
           <button type="button" id="bulkApplyBtn">עדכן סטטוס לנבחרים</button>
+          <select id="bulkFunnelSelect" aria-label="שלב משפך לעדכון"></select>
+          <button type="button" id="bulkFunnelApplyBtn">עדכן שלב משפך לנבחרים</button>
           <button type="button" class="primary" id="bulkDialBtn">📞 התחל חיוג רציף</button>
           <button type="button" id="bulkClearBtn">בטל בחירה</button>
         </div>
@@ -1554,6 +1607,7 @@
           <p id="inboxChatSub"></p>
           <div id="inboxChatStatusWrap" class="panel-status-wrap"></div>
           <div id="inboxChatAiToggleWrap" class="panel-status-wrap"></div>
+          <div id="inboxChatFunnelWrap"></div>
           <div id="inboxChatScoreWrap" class="panel-score-wrap"></div>
           <div id="inboxChatPropertyWrap" class="panel-property-wrap"></div>
           <div id="inboxChatSummaryWrap" class="panel-summary-wrap"></div>
@@ -1829,6 +1883,8 @@
           <div class="lead-top-widget-label">סטטוס ליד</div>
           <div id="panelStatusWrap" class="panel-status-wrap"></div>
           <div id="panelAiToggleWrap" class="panel-status-wrap"></div>
+          <div class="lead-top-widget-label" style="margin-top:10px;">שלב במשפך</div>
+          <div id="panelFunnelWrap"></div>
         </div>
         <div class="lead-top-widget-followup">
           <div class="lead-top-widget-label">⏰ פולו-אפ מתוזמן</div>
@@ -2402,6 +2458,86 @@ function findLead(phone, tenantId) {
   return allLeads.find(l => l.phone === phone && (l.tenant_id || "default") === tenantId);
 }
 
+// ---- משפך לידים (funnel_stage) - שדה נפרד מ-lead_status (שמניע אוטומציות) ----
+// הסדר = סדר התצוגה (זהה ל-db.FUNNEL_STAGES). "all" הוא פילטר בלבד, לא שלב.
+const FUNNEL_STAGES = [
+  ["new", "לידים חדשים"],
+  ["followup", "פולואפ איכותי"],
+  ["first_contact", "נוצר קשר ראשוני"],
+  ["no_answer", "אין מענה"],
+  ["closed", "סגר"],
+  ["lost", "לא נסגר"],
+];
+const FUNNEL_ALL = ["all", "כל המתעניינים"];
+const FUNNEL_STAGE_KEYS = new Set(FUNNEL_STAGES.map(([k]) => k));
+const FUNNEL_FILTER_STORAGE_KEY = "crm_funnel_filter";
+
+function leadFunnelStage(lead) {
+  return lead && FUNNEL_STAGE_KEYS.has(lead.funnel_stage) ? lead.funnel_stage : "new";
+}
+let activeFunnelFilter = (() => {
+  try {
+    const saved = localStorage.getItem(FUNNEL_FILTER_STORAGE_KEY);
+    return saved === "all" || FUNNEL_STAGE_KEYS.has(saved) ? saved : "all";
+  } catch (err) {
+    return "all";
+  }
+})();
+
+function renderFunnelBar() {
+  const bar = document.getElementById("funnelBar");
+  if (!bar) return;
+  const counts = Object.fromEntries(FUNNEL_STAGES.map(([k]) => [k, 0]));
+  for (const lead of allLeads) counts[leadFunnelStage(lead)]++;
+  const chips = [[...FUNNEL_ALL, allLeads.length], ...FUNNEL_STAGES.map(([k, label]) => [k, label, counts[k]])];
+  bar.innerHTML = chips.map(([key, label, count]) => `
+    <button type="button" role="tab" class="funnel-chip funnel-stage-${key} ${key === activeFunnelFilter ? "active" : ""}"
+            aria-selected="${key === activeFunnelFilter}" data-funnel-filter="${key}">
+      ${label} <span class="funnel-chip-count">${count}</span>
+    </button>
+  `).join("");
+}
+
+function funnelSelectHtml(phone, tenantId, lead) {
+  const current = leadFunnelStage(lead);
+  const options = FUNNEL_STAGES.map(([k, label]) =>
+    `<option value="${k}" ${k === current ? "selected" : ""}>${label}</option>`
+  ).join("");
+  return `<select class="funnel-select funnel-stage-${current}" aria-label="שלב במשפך"
+            data-phone="${escapeHtml(phone)}" data-tenant="${escapeHtml(tenantId)}">${options}</select>`;
+}
+
+// כפתורי שלב מהירים (קליק אחד) - לפאנל הליד ול-Inbox
+function funnelQuickHtml(phone, tenantId, lead) {
+  const current = leadFunnelStage(lead);
+  return `<div class="funnel-quick" role="group" aria-label="שלב במשפך">${FUNNEL_STAGES.map(([k, label]) => `
+    <button type="button" class="funnel-quick-btn funnel-stage-${k} ${k === current ? "active" : ""}"
+            aria-pressed="${k === current}" data-funnel-stage="${k}"
+            data-phone="${escapeHtml(phone)}" data-tenant="${escapeHtml(tenantId)}">${label}</button>
+  `).join("")}</div>`;
+}
+
+async function setLeadFunnelStage(phone, tenantId, stage) {
+  const res = await fetch("/api/leads/funnel-stage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone, tenant_id: tenantId, funnel_stage: stage }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+  const lead = findLead(phone, tenantId);
+  if (lead) lead.funnel_stage = stage; // עדכון מיידי בזיכרון - loadLeads ירענן ברקע
+  return data;
+}
+
+function refreshFunnelViews() {
+  renderFunnelBar();
+  renderTable();
+  if (document.getElementById("kanbanView").style.display !== "none") renderKanban();
+  panelChat.syncStatus();
+  inboxChat.syncStatus();
+}
+
 // מתג מענה AI פעיל/ידני לליד (שלב 5 - Enterprise Production Readiness). ברירת
 // מחדל (aiEnabled===undefined, כרטיס בלי השדה בכלל) = פעיל - תואם בדיוק את
 // server.py._ai_enabled_for (שדה חסר נחשב True, לא צריך מיגרציה ללידים קיימים).
@@ -2585,6 +2721,7 @@ async function loadLeads({ silent = false } = {}) {
     checkHotLeadAlerts();
     populateTenantFilter();
     populateCategoryFilter();
+    renderFunnelBar();
     renderStats();
     renderTable();
     loadControlCenter();
@@ -2689,6 +2826,7 @@ function getFilteredLeads() {
   const scoreFilter = document.getElementById("scoreFilter").value;
 
   return allLeads.filter(lead => {
+    if (activeFunnelFilter !== "all" && leadFunnelStage(lead) !== activeFunnelFilter) return false;
     if (tenantFilter && lead.tenant_id !== tenantFilter) return false;
     if (categoryFilter && lead.category !== categoryFilter) return false;
     if (scoreFilter && scoreBand(lead.score) !== scoreFilter) return false;
@@ -2746,6 +2884,7 @@ function renderTable() {
         <td><input type="text" class="agent-input" placeholder="סוכן מטפל..." value="${escapeHtml(lead.agent || "")}" data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}"></td>
         <td><span class="tag">${escapeHtml(channelLabel(lead.source_channel))}</span></td>
         <td>${statusSelectHtml(lead.phone, tenantId, lead.lead_status)}</td>
+        <td>${funnelSelectHtml(lead.phone, tenantId, lead)}</td>
         <td>${scoreBadgeHtml(lead.score)}</td>
         <td>${lastActivityCellHtml(lead)}</td>
         <td><input type="text" class="category-input" placeholder="קטגוריה..." value="${escapeHtml(lead.category || "")}" data-phone="${escapeHtml(lead.phone)}" data-tenant="${escapeHtml(tenantId)}"></td>
@@ -2764,15 +2903,15 @@ function renderTable() {
   wrap.innerHTML = `
     <table>
       <colgroup>
-        <col style="width:3%"><col style="width:3%"><col style="width:19%">
-        <col style="width:12%"><col style="width:9%"><col style="width:6%">
-        <col style="width:10%"><col style="width:6%"><col style="width:10%">
-        <col style="width:6%"><col style="width:5.5%"><col style="width:10.5%">
+        <col style="width:3%"><col style="width:3%"><col style="width:15%">
+        <col style="width:10%"><col style="width:7%"><col style="width:6%">
+        <col style="width:10%"><col style="width:10%"><col style="width:6%"><col style="width:8%">
+        <col style="width:8%"><col style="width:5.5%"><col style="width:8.5%">
       </colgroup>
       <thead>
         <tr>
           <th><input type="checkbox" class="row-checkbox" id="selectAllCheckbox" ${allVisibleSelected ? "checked" : ""}></th>
-          <th>#</th><th>שם</th><th>טלפון</th><th title="סוכן מטפל">סוכן</th><th>ערוץ</th><th>סטטוס</th>
+          <th>#</th><th>שם</th><th>טלפון</th><th title="סוכן מטפל">סוכן</th><th>ערוץ</th><th>סטטוס</th><th title="שלב במשפך הלידים">שלב</th>
           <th title="ציון חום">חום</th><th title="פעילות אחרונה">פעילות</th><th>קטגוריה</th><th>עסק</th><th class="col-actions"></th>
         </tr>
       </thead>
@@ -3094,6 +3233,10 @@ function createChatController(ids) {
     if (ids.aiToggleWrap) {
       document.getElementById(ids.aiToggleWrap).innerHTML =
         aiToggleHtml(currentLead.phone, currentLead.tenantId, lead ? lead.ai_enabled : true);
+    }
+    if (ids.funnelWrap) {
+      document.getElementById(ids.funnelWrap).innerHTML =
+        funnelQuickHtml(currentLead.phone, currentLead.tenantId, lead);
     }
     if (ids.scoreWrap) {
       document.getElementById(ids.scoreWrap).innerHTML = scoreBadgeHtml(lead ? lead.score : null);
@@ -3457,7 +3600,7 @@ function createChatController(ids) {
 
 const panelChat = createChatController({
   body: "panelBody", chatBody: "panelChatBody", name: "panelName", sub: "panelSub",
-  statusWrap: "panelStatusWrap", scoreWrap: "panelScoreWrap",
+  statusWrap: "panelStatusWrap", funnelWrap: "panelFunnelWrap", scoreWrap: "panelScoreWrap",
   summaryWrap: "panelSummaryWrap", missingFieldsWrap: "panelMissingFieldsWrap", aiToggleWrap: "panelAiToggleWrap",
   composerForm: "composerForm", composerInput: "composerInput",
   composerSend: "composerSend", composerError: "composerError",
@@ -3485,7 +3628,7 @@ const panelChat = createChatController({
 });
 
 const inboxChat = createChatController({
-  body: "inboxChatBody", name: "inboxChatName", sub: "inboxChatSub", statusWrap: "inboxChatStatusWrap", scoreWrap: "inboxChatScoreWrap",
+  body: "inboxChatBody", name: "inboxChatName", sub: "inboxChatSub", statusWrap: "inboxChatStatusWrap", funnelWrap: "inboxChatFunnelWrap", scoreWrap: "inboxChatScoreWrap",
   propertyWrap: "inboxChatPropertyWrap", summaryWrap: "inboxChatSummaryWrap", missingFieldsWrap: "inboxChatMissingFieldsWrap", aiToggleWrap: "inboxChatAiToggleWrap",
   composerForm: "inboxComposerForm", composerInput: "inboxComposerInput",
   composerSend: "inboxComposerSend", composerError: "inboxComposerError",
@@ -6168,6 +6311,76 @@ document.getElementById("bulkApplyBtn").addEventListener("click", async () => {
 document.getElementById("bulkClearBtn").addEventListener("click", () => {
   selectedLeads.clear();
   renderTable();
+});
+
+// ---- משפך לידים: פילטר, select בטבלה, כפתורים מהירים בפאנל, ועדכון מרובה ----
+document.getElementById("funnelBar").addEventListener("click", (e) => {
+  const chip = e.target.closest(".funnel-chip");
+  if (!chip) return;
+  activeFunnelFilter = chip.dataset.funnelFilter;
+  try { localStorage.setItem(FUNNEL_FILTER_STORAGE_KEY, activeFunnelFilter); } catch (err) { /* לא קריטי */ }
+  renderFunnelBar();
+  renderTable();
+  if (document.getElementById("kanbanView").style.display !== "none") renderKanban();
+});
+
+document.addEventListener("change", async (e) => {
+  const select = e.target.closest(".funnel-select");
+  if (!select) return;
+  select.disabled = true;
+  try {
+    await setLeadFunnelStage(select.dataset.phone, select.dataset.tenant, select.value);
+    refreshFunnelViews();
+    loadLeads({ silent: true });
+  } catch (err) {
+    alert("עדכון שלב המשפך נכשל: " + err.message);
+    await loadLeads(); // משחזר את הערך הקודם מהשרת
+  }
+});
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".funnel-quick-btn");
+  if (!btn || btn.classList.contains("active")) return;
+  const group = btn.closest(".funnel-quick");
+  group.querySelectorAll("button").forEach(b => { b.disabled = true; });
+  try {
+    await setLeadFunnelStage(btn.dataset.phone, btn.dataset.tenant, btn.dataset.funnelStage);
+    refreshFunnelViews();
+    loadLeads({ silent: true });
+  } catch (err) {
+    alert("עדכון שלב המשפך נכשל: " + err.message);
+    group.querySelectorAll("button").forEach(b => { b.disabled = false; });
+  }
+});
+
+document.getElementById("bulkFunnelSelect").innerHTML =
+  FUNNEL_STAGES.map(([k, label]) => `<option value="${k}">${label}</option>`).join("");
+document.getElementById("bulkFunnelApplyBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("bulkFunnelApplyBtn");
+  const stage = document.getElementById("bulkFunnelSelect").value;
+  const keys = [...selectedLeads];
+  if (!keys.length) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = `מעדכן ${keys.length} לידים...`;
+  let failed = 0;
+  try {
+    await Promise.all(keys.map(async (key) => {
+      const sep = key.indexOf("::");
+      try {
+        await setLeadFunnelStage(key.slice(sep + 2), key.slice(0, sep), stage);
+      } catch (err) {
+        failed++;
+        console.error("עדכון שלב משפך מרובה נכשל עבור", key, err);
+      }
+    }));
+    selectedLeads.clear();
+    await loadLeads();
+    if (failed) alert(`${failed} מתוך ${keys.length} לידים לא עודכנו - ראו קונסול`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 });
 
 document.getElementById("bulkDialBtn").addEventListener("click", () => {

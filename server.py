@@ -85,7 +85,10 @@ try:
     import voice_call
     from extract import (
         DEFAULT_TENANT_ID,
+        FUNNEL_STAGES,
+        VALID_FUNNEL_STAGES,
         VALID_LEAD_STATUSES,
+        card_funnel_stage,
         apply_qualification_turn_result,
         delete_lead,
         generate_call_summary,
@@ -109,6 +112,7 @@ try:
         update_lead_ai_enabled,
         update_lead_category,
         update_lead_fields,
+        update_lead_funnel_stage,
         update_lead_status,
         update_lead_voice_extraction,
     )
@@ -828,6 +832,10 @@ def api_leads():
     include_score = request.args.get("include_score") == "1"
     allowed_tenant_ids = _effective_tenant_ids(request.args.get("tenant_id") or None)
     required_client_id = _effective_client_id()
+    # ?funnel_stage=<שלב> מסנן לפי שלב במשפך; ריק או "all" = כל המתעניינים.
+    funnel_filter = (request.args.get("funnel_stage") or "all").strip()
+    if funnel_filter != "all" and funnel_filter not in VALID_FUNNEL_STAGES:
+        return jsonify({"error": "שלב משפך לא תקין"}), 400
 
     leads = []
     for key, card in load_customers().items():
@@ -838,6 +846,9 @@ def api_leads():
             continue
         if required_client_id is not None and card.get("client_id") != required_client_id:
             continue
+        funnel_stage = card_funnel_stage(card)
+        if funnel_filter != "all" and funnel_stage != funnel_filter:
+            continue
         lead = {
             "tenant_id": resolved_tenant_id,
             "phone": phone,
@@ -847,6 +858,8 @@ def api_leads():
             "source_channel": card.get("source_channel"),
             "import_source": card.get("import_source"),
             "lead_status": card.get("lead_status"),
+            "funnel_stage": funnel_stage,
+            "funnel_stage_changed_at": card.get("funnel_stage_changed_at"),
             "category": card.get("category"),
             "agent": card.get("agent"),
             "property_type": card.get("property_type"),
@@ -1175,6 +1188,58 @@ def _log_status_change(phone: str, tenant_id: str, old_status: str | None, new_s
         phone, f'🔄 הסטטוס השתנה מ-"{old_label}" ל-"{new_label}"',
         direction="out", tenant_id=tenant_id, channel="status_change",
     )
+
+
+FUNNEL_STAGE_LABELS = {
+    "new": "לידים חדשים", "followup": "פולואפ איכותי", "first_contact": "נוצר קשר ראשוני",
+    "no_answer": "אין מענה", "closed": "סגר", "lost": "לא נסגר",
+}
+
+
+@app.route("/api/funnel")
+def api_funnel():
+    """שלבי המשפך (לפי הסדר) + ספירת לידים לכל שלב ו-"all" (כל המתעניינים) -
+    אותו בידוד tenant/client בדיוק כמו /api/leads."""
+    allowed_tenant_ids = _effective_tenant_ids(request.args.get("tenant_id") or None)
+    required_client_id = _effective_client_id()
+    counts = {stage: 0 for stage in FUNNEL_STAGES}
+    for key, card in load_customers().items():
+        tenant_id = card.get("tenant_id", key.partition("::")[0])
+        if allowed_tenant_ids is not None and tenant_id not in allowed_tenant_ids:
+            continue
+        if required_client_id is not None and card.get("client_id") != required_client_id:
+            continue
+        counts[card_funnel_stage(card)] += 1
+    return jsonify({
+        "stages": [{"key": s, "label": FUNNEL_STAGE_LABELS[s], "count": counts[s]} for s in FUNNEL_STAGES],
+        "all": {"key": "all", "label": "כל המתעניינים", "count": sum(counts.values())},
+    })
+
+
+@app.route("/api/leads/funnel-stage", methods=["POST"])
+def api_update_lead_funnel_stage():
+    """משנה את שלב המשפך של ליד (extract.update_lead_funnel_stage) - לא נוגע ב-
+    lead_status/status_changed_at/history, כך שאף אוטומציה לא מושפעת. אוכף בעלות
+    (tenant+client) כמו /api/leads/status. השינוי נרשם כאירוע בציר הזמן
+    (messages, channel='status_change') - לא ב-history של הכרטיס."""
+    data = request.get_json(silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    tenant_id = data.get("tenant_id") or DEFAULT_TENANT_ID
+    stage = data.get("funnel_stage")
+    if not phone or stage not in VALID_FUNNEL_STAGES:
+        return jsonify({"error": "טלפון או שלב משפך לא תקינים"}), 400
+    old_card, err = _authorize_lead_access(phone, tenant_id)
+    if err:
+        return err
+
+    old_stage = card_funnel_stage(old_card)
+    card = update_lead_funnel_stage(phone, stage, tenant_id=tenant_id)
+    if old_stage != stage:
+        db.log_message(
+            phone, f'🧭 שלב המשפך השתנה מ-"{FUNNEL_STAGE_LABELS[old_stage]}" ל-"{FUNNEL_STAGE_LABELS[stage]}"',
+            direction="out", tenant_id=tenant_id, channel="status_change",
+        )
+    return jsonify({"ok": True, "funnel_stage": card_funnel_stage(card), "card": card})
 
 
 @app.route("/api/leads/status", methods=["POST"])
